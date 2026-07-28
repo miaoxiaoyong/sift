@@ -6,8 +6,14 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/miaoxiaoyong/sift/internal/controlplane"
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println(controlplane.Version)
+		return
+	}
 	fmt.Fprintln(os.Stderr, "sift-agent-wrapper: wrapper stub — not implemented (WBS M1 bootstrap)")
 }

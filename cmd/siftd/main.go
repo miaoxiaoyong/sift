@@ -12,6 +12,7 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
 	"github.com/miaoxiaoyong/sift/internal/daemon"
+	"github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 	"path/filepath"
 )
@@ -24,6 +25,11 @@ func main() {
 	snapshot, err := config.Load(home, time.Now())
 	if err != nil {
 		fatal(err)
+	}
+	if hasEnabledProjects(snapshot.Config) {
+		if _, err := runtime.ResolveInstalledWrapper(controlplane.Version); err != nil {
+			fatal(err)
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -61,4 +67,13 @@ func main() {
 		fatal(err)
 	}
 }
+func hasEnabledProjects(cfg *config.Config) bool {
+	for _, project := range cfg.Projects {
+		if project.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
 func fatal(err error) { fmt.Fprintln(os.Stderr, "siftd:", err); os.Exit(1) }
