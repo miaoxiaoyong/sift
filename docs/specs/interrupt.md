@@ -60,7 +60,15 @@ fallback（无 T4/T6）不得采用自然语言自由模板。其 `brief_markdow
 事实：<k1>=<v1>；<k2>=<v2>；…；<kn>=<vn>。建议：<recommended_action>
 ```
 
-`k1…kn` 是 §3.1 的必需事实键顺序；`recommended_action` 已在表内时仍只渲染一次，位于事实段的对应位置并再次作为建议值。每个值先执行下列 `Escape`：将 CRLF/CR 规范成 LF，拒绝其余控制字符；依次把 `\\`、`` ` ``、`*`、`_`、`[`、`]`、`(`、`)`、`#`、`+`、`-`、`!`、`>` 替换为前置反斜杠的字面量；不得 trim、换行、Markdown 链接化或由 LLM 改写。缺失必需事实即拒绝发射，绝不以“未知”代填。
+`k1…kn` 是 §3.1 的必需事实键顺序；`recommended_action` 已在表内时仍只渲染一次，位于事实段的对应位置并再次作为建议值。每个值先执行下列 `Escape`：值含 CRLF、裸 CR 或裸 LF 中任一字节序列时，分别以 `interrupt_brief_crlf_rejected`、`interrupt_brief_cr_rejected` 或 `interrupt_brief_lf_rejected` 拒绝发射，**不得**规范化或保留换行；再拒绝其余 Unicode `Cc` 控制码点；最后依次把 `\\`、`` ` ``、`*`、`_`、`[`、`]`、`(`、`)`、`#`、`+`、`-`、`!`、`>` 替换为前置反斜杠的字面量。不得 trim、插入换行、Markdown 链接化或由 LLM 改写。缺失必需事实即拒绝发射，绝不以“未知”代填。
+
+换行拒绝 vectors（输入均为 UTF-8；未生成 Interrupt、预算或 operation）：
+
+| 原始值 | 结局 |
+|---|---|
+| `a\r\nb` | 拒绝：`interrupt_brief_crlf_rejected` |
+| `a\rb` | 拒绝：`interrupt_brief_cr_rejected` |
+| `a\nb` | 拒绝：`interrupt_brief_lf_rejected` |
 
 `links` 总是存在。每项是 `Link {label,target}`；`target` 必须是已验证可访问的 HTTPS forge URL 或绝对本地路径，`label` 是表中对应事实键。先按 `(target UTF-8 bytes, label UTF-8 bytes)` 升序排序，再对完全相同的 `(label,target)` 去重；renderer 依此顺序输出。链接不是从 `brief` 或 LLM 文本抽取的。
 
@@ -82,13 +90,15 @@ fallback（无 T4/T6）不得采用自然语言自由模板。其 `brief_markdow
 
 ### 3.4 M3 forge comment 发布
 
-首次发布是 `forge_comment`，其 `purpose=interrupt`，`subject_id=interrupt_id`，`generation=1`，operation key 为 **`comment:interrupt:<interrupt_id>:1`**。payload 使用 [`outbox.md` §5.1](outbox.md) 的 `purpose=interrupt`，其 markdown 由本节确定性 renderer 产生；目标依次为 Run 的已验证 Issue、已验证 Change、或创建 manual Run 时冻结的已验证 discussion target。三者皆无时拒绝发射并记录 `interrupt_publish_target_missing`，不得创建一个无目标的 operation。
+首次发布是 `forge_comment`，其 `purpose=interrupt`，`subject_id=interrupt_id`，`generation=1`，operation key 为 **`comment:interrupt:<interrupt_id>:1`**。payload 使用 [`outbox.md` §5.1](outbox.md) 的 `purpose=interrupt`，其 markdown 由本节确定性 renderer 产生；目标依次为 Run 的已验证 Issue、已验证 Change、或 `runs.discussion_target_*` 中创建 manual Run 时冻结的已验证 discussion target。三者皆无时拒绝发射并记录 `interrupt_publish_target_missing`，不得创建一个无目标的 operation。
+
+manual Run 的 discussion target 以 [`storage.md` §5.2](storage.md) 的三列为唯一权威：创建端口在插入 Run 前，按其绑定 project 用 Forge `GetIssue` 或 `GetChange` 验证调用方给出的 `TargetRef` 和 URL；验证成功后同 Run 一起持久化 `discussion_target_kind`、`discussion_target_id`、`discussion_target_url`，随后不可更新。manual Run 必须冻结该目标；未提供、验证失败或与 project 不符即拒绝创建 Run。它是预先选定的讨论面，不会把 `issue_id` 或 `change_id` 伪造成 Run 的来源/产物；因此 manual Run 可没有 Issue、也尚无 Change，同时仍有可恢复的 comment 目标。outbox payload 只从这三个冻结值产生，不从当前 Task Spec、links 或可漂移的 forge 搜索重建。
 
 `interrupt:<interrupt_id>:publish:<escalation_no>` 专属于 M5 `channel_publish`；M3 不创建该 key 或 Channel delivery。发布失败、重试和“已生成/已送达”分离按 storage/outbox 契约处理。
 
 ### 3.5 Golden vectors
 
-以下 vectors 固定 `severity=normal`、无 soft/merge/escalation、`links=[]` 仅在 §3.3 允许时使用；`options` 的每项均是 `{id,label,effect,risk}`。它们是 fallback renderer 的逐字节基准（省略的 `expires_at`、`on_expire` 和 `generation_key` 分别由 §4/§5 冻结）：
+以下 vectors 仅为 fallback **renderer 子对象**的逐字节基准：覆盖 `reason`、`headline`、`brief`、`min_modality`、`links` 和 `options`，不声明或省略对象级 `severity`。`links=[]` 仅在 §3.3 允许时使用；`options` 的每项均是 `{id,label,effect,risk}`。`expires_at`、`on_expire` 和 `generation_key` 分别由 §4/§5 冻结。
 
 ```json
 {"reason":"design_approval","headline":"需要批准后再开始","brief":"事实：risk_summary=高；recommended_action=approve；task_spec_ref=/r/task。建议：approve","min_modality":"text","links":[{"label":"task_spec_ref","target":"/r/task"}],"options":[{"id":"approve","label":"批准并开始","effect":"Run 进入可启动状态","risk":"开始后会消耗执行资源"},{"id":"reject","label":"拒绝并停止","effect":"Run 停止","risk":"需人工重新发起"},{"id":"hold","label":"暂缓决定","effect":"保持等待","risk":"Run 继续占用待处理项"}]}
@@ -135,23 +145,35 @@ Severity(..., true)  = max(low, OneLevelDown(base))
 
 ## 5. 生成键与发布
 
-生成键是 `SHA-256` 的 canonical typed UTF-8 preimage：
+生成键是 `SHA-256` 的 canonical typed UTF-8 preimage。每一段严格是实际单个 NUL 字节分隔的 `<type:name>\x00<value>\x00`，不是字面六字节 `\\x00`。完整固定前缀为：
 
 ```text
-sift.interrupt.generation\x00v1\x00string:run_id\x00<run_id>\x00enum:reason\x00<reason>\x00...
+string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00<run_id>\x00enum:reason\x00<reason>\x00
 ```
 
-`...` 按下表的字段名和值顺序以 `<type:name>\\x00<value>\\x00` 继续；每个值必须是非空 UTF-8 且不得含 NUL，整数使用无前导零的十进制。字段名、类型标签、domain 和 version 都是 preimage 的一部分。
+后续字段按下表顺序追加。所有 `string` 值是非空 UTF-8 且不含 NUL；`enum` 值必须是其表列出的精确 ASCII 字面量；`uint` 是无正负号、无前导零的十进制正整数；`sha256` 是 64 个小写十六进制字符，表示原始 SHA-256 digest 的**小写 hex 文本**；`git_oid` 是 40（SHA-1 repository）或 64（SHA-256 repository）个小写十六进制字符的 Git object ID，绝不是 `sha256` digest。字段名、类型标签、domain 和 version 都参与散列。
 
 | reason | 后续 typed fields |
 |---|---|
 | `design_approval` | `string:task_spec_snapshot_id` |
 | `guardrail_violation` | `string:policy_snapshot_id`, `string:violation_code`, `sha256:subject_digest` |
-| `code_review` | `string:change_id`, `sha256:head_sha` |
+| `code_review` | `string:change_id`, `git_oid:head_sha` |
 | `agent_blocked` | `uint:attempt_no`, `uint:generation`, `string:report_id` |
-| `merge_conflict` | `string:change_id`, `sha256:head_sha`, `sha256:conflict_digest` |
+| `merge_conflict` | `string:change_id`, `git_oid:head_sha`, `sha256:conflict_digest` |
 | `failure_review` | `uint:attempt_no`, `uint:generation`, `sha256:failure_digest` |
-| `startup_stall` | `uint:attempt_no`, `uint:generation`, `enum:cause=startup_stall` |
+| `startup_stall` | `uint:attempt_no`, `uint:generation`, `enum:cause`（值为 `startup_stall`） |
+
+下列完整 vectors 中 `\x00` 表示一个 NUL 字节；最后一列是整个 preimage 的 SHA-256 小写 hex。它们同时冻结字段名和值的编码。
+
+| reason | 完整 preimage | generation key |
+|---|---|---|
+| `design_approval` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00design_approval\x00string:task_spec_snapshot_id\x00task-01\x00` | `2eff88491a846f04025bc5a7019be780e96b00172adfa1b35154e71a77a27a83` |
+| `guardrail_violation` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00guardrail_violation\x00string:policy_snapshot_id\x00policy-01\x00string:violation_code\x00rule-01\x00sha256:subject_digest\x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x00` | `da9fc5161aa8f8a58f30b8c4e55833f4c4d23888112f19154b0de7c95968572e` |
+| `code_review` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00code_review\x00string:change_id\x00change-01\x00git_oid:head_sha\x000123456789abcdef0123456789abcdef01234567\x00` | `7389e85b479a5c919062677e5a9a9e9f3465db0473b2d41171479be736a83e59` |
+| `agent_blocked` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00agent_blocked\x00uint:attempt_no\x001\x00uint:generation\x002\x00string:report_id\x00report-01\x00` | `ebc17dc66d66fb86c9d48d7e79c86a632e44f0fd0248b5c5713b6a9e95825643` |
+| `merge_conflict` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00merge_conflict\x00string:change_id\x00change-01\x00git_oid:head_sha\x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x00sha256:conflict_digest\x00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\x00` | `56378c8559b5f6bdcebb3e097ff7385c78c0eabdcb1a56ae5effac50f0cdf1a3` |
+| `failure_review` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00failure_review\x00uint:attempt_no\x001\x00uint:generation\x002\x00sha256:failure_digest\x00cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\x00` | `98da21cd0a751c6f54f043302d88fa93b08f15c98a406ecac4b09d51ad573cca` |
+| `startup_stall` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00startup_stall\x00uint:attempt_no\x001\x00uint:generation\x002\x00enum:cause\x00startup_stall\x00` | `18630f7c14d7526246fab89c1c99c6a47e80e38cca3efe9e54c1e54d149badae` |
 
 `startup_stall` 的 generation key 始终语义为 **`(run_id, attempt_no, generation, cause=startup_stall)`**。`process_identity_unknown`、`termination_unconfirmed`、`process_group_unverified` 是 `diagnostic_cause` 事实/隔离诊断，不参与键。超时扫描、恢复扫描、`kill`、`retry` 的同一 attempt/generation 必须命中一条 open Interrupt，即使其诊断分类不同。
 
@@ -169,10 +191,10 @@ M5 才接通 `startup_stall` 的 retry 探测请求/结果两段式和指令执�
 
 ## 7. M3 验收派生
 
-- 七种 reason 的 §3.5 golden object 在无 T4/T6 时逐字节相同；links 排序/去重、缺失必需事实和 Markdown 转义均有测试。
+- 七种 reason 的 §3.5 renderer 子对象在无 T4/T6 时逐字节相同；links 排序/去重、缺失必需事实、CRLF/CR/LF 拒绝和 Markdown 转义均有测试。
 - 同形字段但不同 reason 的 generation preimage 不相同；同 key 的并发发射只产生一条 Interrupt、一次预算和一条 `forge_comment` operation。
 - 对 `startup_stall` 并发调用四个发现者，断言键为 `(run_id, attempt_no, generation, cause=startup_stall)`，诊断分类不拆条，Run 可见为 `waiting_human` 且 attempt/worktree 保持隔离。
 - M3 首发 operation 为 `forge_comment` / `comment:interrupt:<interrupt_id>:1`；Channel key 只在 M5 升级投递测试出现。
 - severity 覆盖 `max=0`、首次升级、恰达上限、超过上限和 critical 饱和，以及 M5 至多降一级。
-- manual Run 无 Issue 时覆盖本地链接、合法空数组、缺最低链接和缺 forge discussion target 的拒发边界。
+- manual Run 无 Issue、尚无 Change 时，用创建时冻结的已验证 discussion target 成功创建 `forge_comment`；另覆盖本地链接、合法空数组、缺最低链接和缺 forge discussion target 的拒发边界。
 - 尝试 `startup_stall + auto_reject`、超过四个 options、非互斥 options、调用方指定 severity 必须被拒绝。

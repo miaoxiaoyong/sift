@@ -199,6 +199,9 @@ PRAGMA wal_autocheckpoint = 1000;
 | `issue_id` | TEXT | NULL |
 | `issue_url` | TEXT | NULL |
 | `issue_author` | TEXT | NULL |
+| `discussion_target_kind` | TEXT | NULL 或 `issue \| change`；manual Run 创建时冻结的 forge comment 目标类型 |
+| `discussion_target_id` | TEXT | NULL；与 kind 成对存在的项目内 target ID |
+| `discussion_target_url` | TEXT | NULL；与 kind/id 同次 Forge 验证后冻结的规范 URL |
 | `status` | TEXT | `queued \| running \| waiting_human \| done \| failed` |
 | `version` | INTEGER | NOT NULL，初值 1，每次 transition +1 |
 | `kind` | TEXT | NULL，T2 的规范化 kind |
@@ -218,7 +221,9 @@ PRAGMA wal_autocheckpoint = 1000;
 
 约束：
 
-- forge source 必须具有 project/forge/issue 字段；manual source 仍绑定 project/forge，但 issue 字段为空。V0 不创建无项目、无法产出 Change 的 Run。
+- forge source 必须具有 project/forge/issue 字段，且 discussion target 三列为空；manual source 仍绑定 project/forge，issue 字段为空，并必须有三列同非空的已验证 discussion target。V0 不创建无项目、无法产出 Change 的 Run。
+- manual Run 创建端口在同一创建事务前，以其 project 的 Forge `GetIssue` 或 `GetChange` 验证 discussion target 的 kind/id/url；验证的 URL 必须写入本行，不得从用户输入原样信任。该目标是预选讨论面，不改变 `issue_*` 来源字段或 `change_*` 产物字段的语义。
+- discussion target 三列只能同空或同非空；一经插入不可更新。manual Run 不存在这三列即拒绝创建，故后续 Interrupt 恢复/重试无需查询漂移的 forge 对象来猜测发布位置。
 - `(forge_kind, forge_host, forge_project_key, issue_id)` 在 `issue_id IS NOT NULL` 时唯一，构成 Intake 幂等键。
 - `done` 必须有 `change_id`；`gate_bypassed` 不改变状态语义。
 - `current_task_spec_id` 以 `(runs.id, current_task_spec_id)` 组合外键保证属于本 Run。
@@ -886,7 +891,7 @@ CAS 失败整笔回滚并返回 `RejectedStale`；非法状态组合在开事务
 
 ### 12.2 Interrupt 五件事
 
-同一事务：Run 转 `waiting_human`（或确认已处于合法人工态）→ 按 generation key 查重 → 首次时扣一次注意力预算并取得 entry id → 插入引用该 entry 的 Interrupt → 追加事件 → 创建 publish operation。generation key 已存在时直接返回既有 Interrupt，不得重复扣费或创建第二 operation。
+同一事务：Run 转 `waiting_human`（或确认已处于合法人工态）→ 按 generation key 查重 → 首次时扣一次注意力预算并取得 entry id → 插入引用该 entry 的 Interrupt → 追加事件 → 从 Run 的已验证 Issue、已验证 Change 或冻结 `discussion_target_*` 创建 publish operation。generation key 已存在时直接返回既有 Interrupt，不得重复扣费或创建第二 operation。manual Run 的冻结 target 不存在时，该事务以 `interrupt_publish_target_missing` 回滚/拒绝，不得留下无发布目标的 Interrupt。
 
 ### 12.3 Intake batch
 
@@ -1060,6 +1065,7 @@ COMMIT
 5. retry/hold/escalate/封顶 hold 均不写 resolution；reject 只写一次 `reject`，retry 探测成功只写一次 `retry_after_absence`，重放返回既有结果。
 6. Interrupt close 字段同空同非空且写后不可变；每个 close reason 的映射有约束测试，关闭从不回退 attention charge。
 7. 受控终止的确认消失与未确认分支分别原子收敛；后者保持冻结并只有一条可见 `startup_stall` Interrupt，前者按 recovery/retry/kill 来源决定是否创建新 attempt。
+8. manual Run 在无 `issue_*`、`change_*` 时，以创建时已验证并冻结的 `discussion_target_*` 成功写入 interrupt `forge_comment`；三列缺失、非成对或创建后修改均被约束拒绝。
 
 ## 17. 自查结果
 
