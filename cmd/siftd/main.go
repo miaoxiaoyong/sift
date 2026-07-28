@@ -27,11 +27,15 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(home.Path, "sift.db"), BinaryVersion: controlplane.Version, Now: time.Now()})
+	now := time.Now()
+	db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(home.Path, "sift.db"), BinaryVersion: controlplane.Version, Now: now})
 	if err != nil {
 		fatal(err)
 	}
 	defer db.Close()
+	if err := db.ActivateConfig(ctx, snapshot, controlplane.Version, now.UnixMilli()); err != nil {
+		fatal(err)
+	}
 	workers, err := daemon.Assemble(db, snapshot.Config, time.Now)
 	if err != nil {
 		fatal(err)

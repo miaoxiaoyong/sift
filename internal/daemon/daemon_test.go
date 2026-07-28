@@ -2,16 +2,101 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/forge"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
+
+func TestEmptyDBDaemonTickPersistsForgeIntakeAndT1(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	cfg := &config.Config{
+		Version:   1,
+		Projects:  []config.Project{{ID: "project-1", Enabled: true, Forge: config.ForgeRef{Kind: config.ForgeKindGitHub, Host: "github.com", Project: "acme/widgets", CLI: "gh"}}},
+		Brain:     config.Brain{CallTimeout: time.Second},
+		Forge:     config.Forge{HourlyAPILimit: 10, WarningRatio: .8, SlowPollInterval: time.Minute},
+		Outbox:    config.Outbox{LeaseTTL: time.Minute},
+		Scheduler: config.Scheduler{IntakeIdleInterval: time.Minute, IntakeActiveInterval: time.Second},
+		Labels:    config.Labels{Trigger: "sift"},
+		Operators: config.Operators{GitHub: []string{"operator"}},
+	}
+	db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(t.TempDir(), "sift.db"), BinaryVersion: "test", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	snapshot := &config.Snapshot{Config: cfg, Hash: "empty-db-tick", CanonicalJSON: []byte(`{"version":1}`)}
+	if err := db.ActivateConfig(ctx, snapshot, "test", now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
+		if len(args) < 2 {
+			return nil, nil, fmt.Errorf("fixture received incomplete args: %v", args)
+		}
+		path := args[1]
+		switch {
+		case strings.HasPrefix(path, "/repos/acme%2Fwidgets/issues?labels="):
+			return []byte(`[{"number":42,"title":"Fix it","body":"details","html_url":"https://github.com/acme/widgets/issues/42","state":"open","user":{"login":"contributor"},"labels":[{"name":"sift"}],"updated_at":"2026-07-29T11:59:00Z"}]`), nil, nil
+		case path == "/repos/acme%2Fwidgets/issues/42":
+			return []byte(`{"number":42,"title":"Fix it","body":"details","html_url":"https://github.com/acme/widgets/issues/42","state":"open","user":{"login":"contributor"},"updated_at":"2026-07-29T11:59:00Z"}`), nil, nil
+		case strings.HasPrefix(path, "/repos/acme%2Fwidgets/issues/42/timeline"):
+			return []byte(`[{"id":7,"label":{"name":"sift"},"actor":{"login":"operator"},"event":"labeled","created_at":"2026-07-29T11:58:00Z"}]`), nil, nil
+		default:
+			return nil, nil, fmt.Errorf("unexpected fixture path %q", path)
+		}
+	}
+	d, err := AssembleWithRunner(db, cfg, func() time.Time { return now }, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := db.ForgeAPIBudgetStatus(ctx, "project-1", now.UnixMilli(), 10, .8)
+	if err != nil || status.Consumed == 0 {
+		t.Fatalf("forge budget = %+v, err=%v; want persisted charge", status, err)
+	}
+	cur, err := db.IntakeCursor(ctx, "project-1", "issues")
+	if err != nil || cur.Cursor == "" {
+		t.Fatalf("intake cursor = %+v, err=%v; want persisted receipt cursor", cur, err)
+	}
+
+	checkDB, err := sql.Open("sqlite", db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer checkDB.Close()
+	var receipts, items, calls, runs int
+	for _, q := range []struct {
+		name, query string
+		dest        *int
+	}{
+		{"receipt", `SELECT COUNT(*) FROM forge_event_receipts WHERE project_id='project-1'`, &receipts},
+		{"intake", `SELECT COUNT(*) FROM intake_items WHERE project_id='project-1'`, &items},
+		{"t1", `SELECT COUNT(*) FROM brain_calls WHERE project_id='project-1' AND touchpoint='T1'`, &calls},
+		{"run", `SELECT COUNT(*) FROM runs WHERE project_id='project-1' AND status='queued'`, &runs},
+	} {
+		if err := checkDB.QueryRow(q.query).Scan(q.dest); err != nil {
+			t.Fatalf("%s query: %v", q.name, err)
+		}
+	}
+	if receipts != 1 || items != 1 || calls != 1 || runs != 1 {
+		t.Fatalf("persisted counts: receipts=%d intake=%d t1=%d queued_runs=%d", receipts, items, calls, runs)
+	}
+}
 
 func TestAssembleWiresIntakeT1ReconcilerCommentsAndBudget(t *testing.T) {
 	ctx := context.Background()

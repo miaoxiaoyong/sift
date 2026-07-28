@@ -38,10 +38,17 @@ type Daemon struct {
 // acknowledged after a crash without a second post (covered by forgeworker's
 // crash-recovery test). The caller owns DB.
 func Assemble(db *storage.DB, cfg *config.Config, now func() time.Time) (*Daemon, error) {
-	return assemble(db, cfg, now, forge.NewProductionAdapter)
+	return assemble(db, cfg, now, nil, forge.NewProductionAdapter)
 }
 
-func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, newAdapter func(forge.Kind, string, forge.Runner, forge.Charger) (*forge.Adapter, error)) (*Daemon, error) {
+// AssembleWithRunner is the fixture-injection seam for daemon integration
+// tests. Production callers should use Assemble, which executes the configured
+// Forge CLI.
+func AssembleWithRunner(db *storage.DB, cfg *config.Config, now func() time.Time, runner forge.Runner) (*Daemon, error) {
+	return assemble(db, cfg, now, runner, forge.NewProductionAdapter)
+}
+
+func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner forge.Runner, newAdapter func(forge.Kind, string, forge.Runner, forge.Charger) (*forge.Adapter, error)) (*Daemon, error) {
 	if db == nil || cfg == nil {
 		return nil, errors.New("daemon: database and config are required")
 	}
@@ -55,7 +62,7 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, newAdapt
 		}
 		ref := forge.ProjectRef{Kind: forge.Kind(p.Forge.Kind), Host: p.Forge.Host, ProjectKey: p.Forge.Project}
 		charger := &forgebudget.Charger{DB: db, Limit: int64(cfg.Forge.HourlyAPILimit), WarningRatio: cfg.Forge.WarningRatio, Now: now}
-		adapter, err := newAdapter(ref.Kind, p.Forge.CLI, nil, charger)
+		adapter, err := newAdapter(ref.Kind, p.Forge.CLI, runner, charger)
 		if err != nil {
 			return nil, fmt.Errorf("project %s: %w", p.ID, err)
 		}
