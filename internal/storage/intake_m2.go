@@ -68,9 +68,12 @@ func (d *DB) IntakeReplyOperations(ctx context.Context, intakeID string) ([]Inta
 	var out []IntakeReplyOperation
 	for rows.Next() {
 		var op IntakeReplyOperation
-		if err := rows.Scan(&op.Key, &op.Payload, &op.Evidence); err != nil {
+		var payload, evidence string
+		if err := rows.Scan(&op.Key, &payload, &evidence); err != nil {
 			return nil, err
 		}
+		op.Payload = json.RawMessage(payload)
+		op.Evidence = json.RawMessage(evidence)
 		out = append(out, op)
 	}
 	return out, rows.Err()

@@ -37,7 +37,7 @@ func (c *ReplyConsumer) RunOnce(ctx context.Context) error {
 			return err
 		}
 		for _, item := range items {
-			stream := "issue_comments:" + item.IssueID
+			stream := "issue_comments"
 			cursor, err := c.DB.IntakeCursor(ctx, project.ID, stream)
 			if err != nil {
 				return err
