@@ -120,6 +120,14 @@ JSON 数字不得为 NaN/Infinity。网络帧无需作为存储 hash 输入；�
 
 `ok=true` 时只能有 `result`；`ok=false` 时只能有 `error`。错误文本不得回显 token、nonce、session、permit、原始 auth、控制文件内容或数据库错误。
 
+### 3.4 版本握手
+
+每次 RPC 都携完整的四元组：request 的 `(protocol_major, protocol_minor, client_version)` 与 response 的 `server_version`；不能因为调用方是同一归档中的 CLI/wrapper 而省略任一字段。`sift`、`sift-agent-wrapper` 分别以自己的 canonical SemVer 填 `client_version`，daemon 以自己的版本填 `server_version`。服务端按 §3.2 的顺序在鉴权和 params 解码前拒绝不兼容版本；客户端也必须在使用 `result/error` 前校验 response envelope、request id、protocol 版本和 server binary major。
+
+wrapper 还有一段文件到进程的握手：[`bootstrap.json` v2](#71-bootstrapjson-v2) 必须携 `protocol_major`、`protocol_minor`、`daemon_version`、`wrapper_version`。wrapper 先校验自身版本与 `wrapper_version` 完全相等、再校验 daemon/wrapper binary major 与协议版本；失败时 unlink 已读取的 bootstrap、不得调用 acquire、更不得写 control 或 spawn。随后 `claim.acquire` 的 RPC envelope 再以 wrapper 实际版本作为 `client_version` 完成双向校验，文件字段不能替代 RPC 握手。
+
+**破坏性变更：** 本次冻结将旧 `bootstrap.json` v1 升为 v2，并新增三个必填版本字段（`protocol_minor`、`daemon_version`、`wrapper_version`）；v1 与字段缺失文件必须 fail closed，不做默认补值。RPC envelope 仍为 v1，wire protocol major/minor 仍为 `1/0`。
+
 错误码全集：
 
 | code | retryable | 语义 |
@@ -172,6 +180,16 @@ wrapper 在 acquire 前生成随机 session candidate；daemon 以 bootstrap non
 wrapper 在 permit 请求前生成随机 permit candidate；daemon 以 session 验证请求，只在 `starting → spawning` CAS 成功时保存 candidate hash并授权它。相同 session + candidate + control digest 重放幂等确认，换 candidate 拒绝。
 
 session/permit 明文只存在 wrapper 内存和对应 RPC request 生命周期，数据库只存 hash，不写 `control.json`、argv、环境变量或日志。客户端生成 candidate 不等于自授权；线性化点仍是 daemon CAS。`claim.started` 必须同时出示已授权的 session 与 permit。
+
+### 4.4 Launch operation lease 与 dispatch
+
+`launch_agent` 沿用 [`outbox.md` §4](outbox.md) 的 lease envelope。`ClaimOutboxOperation` 产生的 `(operation_id, outbox_attempt_id, lease_owner, lease_expires_at_ms)` 是 daemon 内部的 expected lease；这些字段和 lease owner **不下发 wrapper**，也不进入 bootstrap。只有持有 expected lease 的 worker 可调用 `PrepareLaunchDispatch`，该事务同时校验 operation key 对应 `(run_id, attempt_no, generation)`、operation 仍为 `executing`、lease owner 未被替换，并一次性写入 dispatch id、nonce/token hash。事务提交前不得写 bootstrap 或调用 backend。
+
+提交后固定顺序为：原子写 bootstrap → 回填文件 digest 执行证据 → backend 只启动 wrapper。每个外部步骤前 worker 都重新确认 expected lease；确认失败的旧 worker 立即停止。lease 到期本身不证明 wrapper 未启动，也不授权直接生成新 dispatch：daemon 恢复必须先扫描 attempt、bootstrap/control 与进程事实，再按 §4.2 选择复用同一 dispatch，或在证明旧 wrapper 尚未取得 spawn 能力后递增 generation。恢复完成前禁止 claim/reclaim launch operation。
+
+`claim.acquire` 是 dispatch 的收口线性化点：`AcquireLaunchClaim` 在一个事务中验证当前 claim/dispatch、绑定 session、推进 `pending → starting`，并把对应 launch outbox attempt/result/operation 标为 succeeded。acquire 与 worker completion 不得各自提交两套“launch succeeded”结果。lease 在 RPC 到达前刚过期不是单独的拒绝理由；只要恢复尚未作废该 dispatch 且所有 binding 仍匹配，daemon 以当前事实完成上述事务。若恢复已递增 generation 或替换 dispatch，则返回 `stale`。
+
+wrapper 从不持有 operation lease，也从不写 SQLite。它唯一允许的持久写入是本 attempt run dir 中 §7 的原子文件；operation、claim、session、permit、attempt/Run 阶段与事件全部只能由 daemon 的受限存储端口写入。
 
 ## 5. `run.sock` 方法
 
@@ -231,11 +249,32 @@ params 必含 run/attempt/generation/dispatch、`wrapper_instance_id` 与 wrappe
 }
 ```
 
-服务端验证 nonce hash、generation、dispatch、operation lease 派发事实与进程身份。首次成功 CAS 绑定 instance并保存 session candidate hash，响应只确认 candidate 已授权；同 instance + 完全相同请求幂等确认。换 candidate 或竞争 instance 拒绝。失败不启动 Agent，wrapper 必须退出。
+服务端验证 nonce hash、generation、dispatch、operation lease 派发事实与进程身份。首次成功 CAS 绑定 instance并保存 session candidate hash，响应为 `{"disposition":"acquired"}`；同 instance + 完全相同请求返回相同结果，不新增事件。换 candidate 或竞争 instance 拒绝。失败不启动 Agent，wrapper 必须退出。
+
+`wrapper_identity` 必须与 socket peer 可观测进程及已解析 wrapper executable 一致；`pid>0`、`started_at_ms>0`、`pgid>0`，且 pid 必须属于 pgid。`wrapper_instance_id` 与 `dispatch_id` 为 32 位小写十六进制随机 ID。params 中没有 operation lease 字段；伪造 lease owner 不存在可接受入口。
 
 ### 5.4 `claim.permit_spawn`
 
-params 为 run/attempt/generation、wrapper instance、wrapper identity、`control_digest` 与 `permit_candidate`；auth 出示 session。daemon 读取并校验 `control.json`：wrapper identity、run token hash、worktree 与 claim 一致，Agent identity 为空。成功 CAS `starting → spawning` 并保存 permit candidate hash，响应只确认该 candidate 已授权；同 session/candidate/digest 重放幂等确认。任何字段漂移或换 candidate 为 `conflict`。
+params 为 run/attempt/generation、wrapper instance、wrapper identity、`control_digest` 与 `permit_candidate`；auth 出示 session。完整 schema：
+
+```json
+{
+  "run_id": "...",
+  "attempt_no": 1,
+  "generation": 1,
+  "wrapper_instance_id": "...",
+  "wrapper_identity": {
+    "pid": 123,
+    "started_at_ms": 1,
+    "executable": "/absolute/path/sift-agent-wrapper",
+    "pgid": 123
+  },
+  "control_digest": "<64 lowercase hex>",
+  "permit_candidate": "<64 lowercase hex>"
+}
+```
+
+daemon 读取并校验 `control.json`：wrapper identity、run token hash、worktree 与 claim 一致，Agent identity 为空；文件 schema/owner/mode/digest 任一不符均拒绝。成功 CAS `starting → spawning` 并保存 permit candidate hash，响应为 `{"disposition":"permitted"}`。同 session/candidate/digest 的重放返回相同结果，不新增事件、不再次推进阶段；任何字段漂移或换 candidate 为 `conflict`。
 
 ### 5.5 `claim.started`
 
@@ -264,6 +303,35 @@ params 为 run/attempt/generation、wrapper instance、Agent identity、`control
 - 完全相同的 started 重放返回既有 disposition，不重复事件或 transition。
 
 成功 disposition 为 `running | finished_observed | superseded_by_fact | superseded_by_decision | duplicate`。
+
+### 5.6 Wrapper spawn guard 与确定性拒绝
+
+wrapper 的本地状态机必须与 daemon 阶段分开实现：
+
+```text
+bootstrap_read → acquired → control_written → permit_wait
+permit_wait --permitted--> spawn_ready --consume one-shot--> spawn_entered
+spawn_entered --spawn ok + control rewrite--> started_wait → supervising
+spawn_entered --spawn error----------------> exit (由 daemon 恢复，禁止重试 spawn)
+```
+
+permit RPC 超时或响应丢失时，只能在 `permit_wait` 以**完全相同**的 session、candidate 与 params 重试；新 RPC envelope 使用新的 request_id。收到首个 `permitted` 后，wrapper 在调用 spawn adapter **之前**原子消费进程内 one-shot guard；从 `spawn_entered` 起，迟到/重复 permit response 一律忽略，不能回到 `permit_wait`，spawn 失败也不得用同 permit 再试。wrapper 崩溃后的新进程没有该 session；daemon 依靠已持久化 `spawning` 与受控终止/absence 证据收敛，而不是让新 wrapper 复用 permit。
+
+鉴权 gateway 和三个 handler 必须按下表给出可断言结果；所有拒绝均为零阶段推进、零 capability 写入、零 spawn 调用，只追加 §9 允许的安全事件：
+
+| 用例 | 结果 |
+|------|------|
+| run token 调任一 `claim.*`；bootstrap 调 permit/started；session 调 acquire/started；缺 permit 的 session 调 started；permit/session 交换字段 | `unauthorized` |
+| credential secret 不匹配其已选 kind，或跨 run/attempt binding | `unauthorized` |
+| 已认证 credential 携旧 generation、旧 dispatch 或已被替换的 attempt | `stale` |
+| 同 bootstrap 下竞争 `wrapper_instance_id`；既有 instance 换 session candidate | `conflict` |
+| permit 重放时换 candidate、control digest、wrapper identity 或 instance | `conflict` |
+| started 的 session 与 permit 不属于同一 claim/generation，或 Agent/control/result 证据不一致 | `unauthorized`（凭据组合错）或 `conflict`（已认证后的证据错） |
+| 方法与 auth 合法但阶段尚未到达或已越过，且不是规范定义的幂等重放 | `conflict` |
+| 任一 wrapper 请求未知/缺失字段、错误类型、非 canonical ID/hash/identity | `invalid_request` |
+| 任一 wrapper 请求协议或 binary major 不兼容 | `unsupported_protocol` / `unsupported_binary`，优先于 auth/params |
+
+V10a wrapper 段至少逐行覆盖上表，并额外断言：同 acquire 请求事件数不变；同 permit 请求的 daemon transition 数为 1；permit 响应重放/延迟交错下 spawn adapter 调用数始终为 1；同 started 请求不重复 transition/event；竞争 instance、跨 generation 与各 credential kind 交叉均无控制文件外的副作用。
 
 ## 6. `siftd.sock` 方法
 
@@ -355,14 +423,17 @@ params：
 
 所有 JSON 文件使用 closed schema 和 canonical JSON；写入协议统一为：同目录随机临时文件 0600 → 写全 → fsync file → rename → 必要时 fsync directory。读取方拒绝 symlink、非 regular file、owner 不符、模式宽于 0600、超出 frame 上限或 digest 不符。
 
-### 7.1 `bootstrap.json` v1
+### 7.1 `bootstrap.json` v2
 
-由 launch outbox worker 在 `PrepareLaunchDispatch` 提交后创建，wrapper 成功读取后立即 unlink：
+由 launch outbox worker 在 `PrepareLaunchDispatch` 提交后创建，wrapper 无论版本/内容校验成功与否都在安全读取后立即 unlink：
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "protocol_major": 1,
+  "protocol_minor": 0,
+  "daemon_version": "0.1.0",
+  "wrapper_version": "0.1.0",
   "run_id": "...",
   "attempt_no": 1,
   "generation": 1,
@@ -465,9 +536,9 @@ wrapper 原样追加 Agent PTY 字节流并按 config 轮转。日志不是 JSON
 
 事件 payload 对 token/nonce/session/permit 只允许写固定字符串 `redacted`；不得写 hash 供离线撞库关联。认证前的大量失败允许按低基数聚合计数，但不得静默丢掉首次与熔断事件。
 
-## 10. M1 验收
+## 10. M1 基线与 M3 handoff 验收
 
-1. V10a：无/错误 operator token 的全部 ops 请求被拒；run token 不能调用 claim 或 ops；bootstrap/session/permit 不能调用 Report。
+1. V10a：无/错误 operator token 的全部 ops 请求被拒；run token 不能调用 claim 或 ops；bootstrap/session/permit 不能调用 Report；wrapper 三段的 credential/instance/generation 交叉拒绝与零副作用逐行满足 §5.6，permit 响应重放时 spawn adapter 调用计数仍为 1。
 2. V10b：同 UID Agent 在 V0 可显式读取 operator token并成功调用 ops，同时 `doctor` 必须报告 `unsafe-local`，不得伪称隔离闭合。
 3. protocol major/minor、未知字段/方法/枚举、超限 frame 全部 fail closed；错误不泄露 credential。
 4. 两 socket 均为 0600 Unix socket，第二 daemon 被 lock 拒绝；测试进程无 TCP/UDP listener。
@@ -490,7 +561,9 @@ wrapper 原样追加 Agent PTY 字节流并按 config 轮转。日志不是 JSON
 ## 12. 自查结果
 
 - [x] 双 socket 的 method 集合与 credential kind 无交叉授权。
-- [x] run token 只能 Report，completed 不写 Run 状态；wrapper 启动只经三段 handoff。
+- [x] run token 只能 Report，completed 不写 Run 状态；wrapper 启动只经 operation lease + 三段 handoff，wrapper 不写 DB。
+- [x] wrapper/daemon 版本握手字段完整；bootstrap v1→v2 的破坏性变更已显式标注。
+- [x] permit 重放与 spawn one-shot 的状态边界明确；V10a wrapper 拒绝矩阵可直接派生测试。
 - [x] launch dispatch 崩溃窗口可由 generation/文件证据收敛；session/permit candidate 重放不需在 SQLite 保存明文。
 - [x] `spawning` 的 kill/retry 如实返回 accepted，absence 证据前不换 owner。
 - [x] bootstrap/task/control/heartbeat/result/log 均有路径、权限、schema 或字节语义及生命周期。
