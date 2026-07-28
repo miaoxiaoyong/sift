@@ -6,9 +6,9 @@
 
 ## 项目现状
 
-M1 已有 Go 实现：三个命令、SQLite/状态机/outbox 骨架、配置与控制面、Brain T1/T2 调用壳及 fake 骨架链均已有代码和测试；五份基础规格（`config`、`storage`、`control-plane`、`outbox`、[`brain`](docs/specs/brain.md)）保持 `active`。产品需求：[docs/PRD.md](docs/PRD.md)；架构与工作基线见 [docs/DESIGN.md](docs/DESIGN.md) / [docs/WBS.md](docs/WBS.md)。
+M1–M2 已有 Go 实现：控制面/配置/Brain 壳之上，已接双平台 Forge 适配、Intake 调度与回复消费、outbox comment worker、API 预算与 V3/V7/V11 首段证据；[`specs/forge.md`](docs/specs/forge.md) 与五份基础规格保持 `active`。产品需求：[docs/PRD.md](docs/PRD.md)；架构与工作基线见 [docs/DESIGN.md](docs/DESIGN.md) / [docs/WBS.md](docs/WBS.md)。
 
-[S1/M1 第二次定向复审](docs/reviews/2026-07-29-s1-m1-rereview-2-pi-gpt-5.6-sol.md) 结论为 **PASS WITH NOTES**（V0 强制 `unsafe-local` warning 使真实 doctor 当前不会 exit 0，属预期注记）。M1 门禁已通过；下一步进入 **M2：Forge 与 Intake**——先写 [`specs/forge.md`](docs/specs/forge.md)，再实现双平台适配、Intake crash marker / generation 仲裁与 V3/V7/V11 首段。不得把 M1 fake 骨架描述为 M2 Intake 已实现。
+[S2/M2 第四次定向复审](docs/reviews/2026-07-29-s2-m2-rereview-4-pi-gpt-5.6-sol.md) 结论为 **PASS WITH NOTES**（doctor 时序 flake 与双 issue consumer 集成测试粒度属非阻断注记）。M2 门禁已通过；下一步进入 **M3：Runtime 与启动停滞安全闭环**。不得把 M2 Intake/Forge 描述为 M3 process backend / Interrupt 发射核心已实现。
 
 ## 上下文规则（摘要）
 

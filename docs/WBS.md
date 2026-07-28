@@ -201,40 +201,40 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 2.1 Forge 端口与双平台适配
 
-- [ ] 逐项实现 PRD §5.2 最小动词集；签名与中性类型由 `specs/forge.md` 唯一定义
-- [ ] GitHub/GitLab 差异在边界归一；不确定语义输出 `unknown`，不得猜测
-- [ ] 评论与标签事件的 actor 为必需语义；缺失时适配器 fail closed
-- [ ] argv 数组执行 `gh/glab api`，禁止 shell 拼接
-- [ ] 统一错误为 `Transient | RateLimited | AuthOrCapability | ContractViolation | SemanticConflict`
+- [x] 逐项实现 PRD §5.2 最小动词集；签名与中性类型由 `specs/forge.md` 唯一定义
+- [x] GitHub/GitLab 差异在边界归一；不确定语义输出 `unknown`，不得猜测
+- [x] 评论与标签事件的 actor 为必需语义；缺失时适配器 fail closed
+- [x] argv 数组执行 `gh/glab api`，禁止 shell 拼接
+- [x] 统一错误为 `Transient | RateLimited | AuthOrCapability | ContractViolation | SemanticConflict`
 
 #### 2.2 Change/merge 副作用契约
 
-- [ ] Change marker 跨 open/closed/merged 全状态查找；同 base/head 无匹配 marker 时返回冲突，绝不接管
-- [ ] merge 端口接受 expected head，适配器映射为远端原子条件检查
-- [ ] 能力探测不能证明条件合并时，将该项目 `auto_merge` capability 置为不可用；不得只告警后继续
-- [ ] V3/V7 覆盖 marker、冲突、stale head 与能力缺失禁用
+- [x] Change marker 跨 open/closed/merged 全状态查找；同 base/head 无匹配 marker 时返回冲突，绝不接管
+- [x] merge 端口接受 expected head，适配器映射为远端原子条件检查
+- [x] 能力探测不能证明条件合并时，将该项目 `auto_merge` capability 置为不可用；不得只告警后继续
+- [x] V3/V7 覆盖 marker、冲突、stale head 与能力缺失禁用
 
 #### 2.3 Intake、T1 接线与反向同步
 
-- [ ] 每项目独立自适应轮询，游标在整批持久化后推进；幂等键 `(forge, project, issue_id)`
-- [ ] 触发标签事件先回溯 actor；不可信作者被可信 actor 触发时强制开工前审批
-- [ ] T1 接在归一 Issue 后；T1 不可用时直接入队
-- [ ] 实现 `intake_items` 投影/CAS、回复 receipt 消费与 `PersistIntakeDecision` 写端口；澄清/重复确认评论与 intake 状态变更由同一领域事务创建 outbox operation
-- [ ] 澄清/确认评论在「远端成功、本地提交前崩溃」后按 marker 查询收敛，不重复发送；覆盖真实 Forge comment worker 的崩溃重放测试
-- [ ] 回复按当前 clarification generation 仲裁；旧 generation 回复只追加审计事件，不推进 intake 状态
-- [ ] 逐项实现 PRD §4.5 反向同步；事实观测不套 actor 鉴权，移除触发标签必须鉴权
-- [ ] 运行期 `AuthOrCapability` 只隔离对应项目并告警一次；健康项目继续调度
+- [x] 每项目独立自适应轮询，游标在整批持久化后推进；幂等键 `(forge, project, issue_id)`
+- [x] 触发标签事件先回溯 actor；不可信作者被可信 actor 触发时强制开工前审批
+- [x] T1 接在归一 Issue 后；T1 不可用时直接入队
+- [x] 实现 `intake_items` 投影/CAS、回复 receipt 消费与 `PersistIntakeDecision` 写端口；澄清/重复确认评论与 intake 状态变更由同一领域事务创建 outbox operation
+- [x] 澄清/确认评论在「远端成功、本地提交前崩溃」后按 marker 查询收敛，不重复发送；覆盖真实 Forge comment worker 的崩溃重放测试
+- [x] 回复按当前 clarification generation 仲裁；旧 generation 回复只追加审计事件，不推进 intake 状态
+- [x] 逐项实现 PRD §4.5 反向同步；事实观测不套 actor 鉴权，移除触发标签必须鉴权
+- [x] 运行期 `AuthOrCapability` 只隔离对应项目并告警一次；健康项目继续调度
 
 #### 2.4 Forge API 预算
 
-- [ ] API 调用只在 Forge 适配层收费；接近/达到上限时降为慢轮询并告警
-- [ ] reset、退避与预算状态持久化；不得在 M5 再建第二收费口
+- [x] API 调用只在 Forge 适配层收费；接近/达到上限时降为慢轮询并告警
+- [x] reset、退避与预算状态持久化；不得在 M5 再建第二收费口
 
 #### 2.5 契约与事实收敛测试
 
-- [ ] 双平台 fixture 跑同一契约套件：分页、actor 缺失、限流、平台差异、marker、merge CAS
-- [ ] intake 评论 worker 的远端成功/本地提交前崩溃重放不重复发送；旧 generation 回复只审计、不推进状态
-- [ ] V11 首段：fake/fixture 中让 `waiting_human` Run 的 Change 被外部合并，断言 `done + gate_bypassed`
+- [x] 双平台 fixture 跑同一契约套件：分页、actor 缺失、限流、平台差异、marker、merge CAS
+- [x] intake 评论 worker 的远端成功/本地提交前崩溃重放不重复发送；旧 generation 回复只审计、不推进状态
+- [x] V11 首段：fake/fixture 中让 `waiting_human` Run 的 Change 被外部合并，断言 `done + gate_bypassed`
 - [ ] V11 在 M4 闭合 Gate/审计/Ledger 分类，在 M5 闭合指标分母
 
 ### 先写 spec
@@ -243,11 +243,11 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### M2 门禁
 
-- [ ] V3 通过；V7 的 Forge/marker/CAS 部分通过
-- [ ] 条件合并能力缺失时 `auto_merge` 被结构性禁用
-- [ ] actor 缺失事件被忽略；坏项目不影响健康项目
-- [ ] Intake crash marker 与旧 generation 回复仲裁测试通过
-- [ ] V11 外部事实收敛首段通过
+- [x] V3 通过；V7 的 Forge/marker/CAS 部分通过（[第四次定向复审 PASS WITH NOTES](reviews/2026-07-29-s2-m2-rereview-4-pi-gpt-5.6-sol.md)）
+- [x] 条件合并能力缺失时 `auto_merge` 被结构性禁用
+- [x] actor 缺失事件被忽略；坏项目不影响健康项目
+- [x] Intake crash marker 与旧 generation 回复仲裁测试通过
+- [x] V11 外部事实收敛首段通过
 
 ---
 
@@ -255,7 +255,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### 前置
 
-- [ ] M2 门禁通过
+- [x] M2 门禁通过（[第四次定向复审 PASS WITH NOTES](reviews/2026-07-29-s2-m2-rereview-4-pi-gpt-5.6-sol.md)）
 
 ### 任务
 
