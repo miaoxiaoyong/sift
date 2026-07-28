@@ -33,6 +33,15 @@ type ForgeEventReceipt struct {
 	Actor string
 }
 
+// IntakeReplyOperation is the durable clarification operation used to identify
+// the generation that a reply may belong to. The marker is on the outbound
+// clarification comment, not on the operator reply.
+type IntakeReplyOperation struct {
+	Key      string
+	Payload  json.RawMessage
+	Evidence json.RawMessage
+}
+
 func (d *DB) ForgeEventReceipt(ctx context.Context, projectID, eventID string) (ForgeEventReceipt, error) {
 	var receipt ForgeEventReceipt
 	err := d.db.QueryRowContext(ctx, `SELECT COALESCE(actor,'') FROM forge_event_receipts WHERE project_id=? AND forge_event_id=?`, projectID, eventID).Scan(&receipt.Actor)
@@ -51,7 +60,7 @@ func (d *DB) IntakeReplyOperations(ctx context.Context, intakeID string) ([]Inta
 	if intakeID == "" {
 		return nil, errors.New("storage: invalid intake id")
 	}
-	rows, err := d.db.QueryContext(ctx, `SELECT operation_key,payload_json FROM outbox_operations WHERE operation_key LIKE 'comment:intake-%:' || ? || ':%' ORDER BY operation_key`, intakeID)
+	rows, err := d.db.QueryContext(ctx, `SELECT operation_key,payload_json,COALESCE(remote_evidence_json,'') FROM outbox_operations WHERE operation_key LIKE 'comment:intake-%:' || ? || ':%' ORDER BY operation_key`, intakeID)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +68,7 @@ func (d *DB) IntakeReplyOperations(ctx context.Context, intakeID string) ([]Inta
 	var out []IntakeReplyOperation
 	for rows.Next() {
 		var op IntakeReplyOperation
-		if err := rows.Scan(&op.Key, &op.Payload); err != nil {
+		if err := rows.Scan(&op.Key, &op.Payload, &op.Evidence); err != nil {
 			return nil, err
 		}
 		out = append(out, op)

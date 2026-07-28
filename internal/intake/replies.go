@@ -13,8 +13,9 @@ import (
 )
 
 // ReplyConsumer turns allowlisted, deterministic intake commands into durable
-// ApplyIntakeReply calls. Generation is read from the current durable target;
-// old comments remain auditable and are rejected by storage's CAS arbitration.
+// ApplyIntakeReply calls. A reply is bound to the latest Sift clarification
+// marker observed before it, rather than being assigned the current projection
+// generation.
 type ReplyConsumer struct {
 	DB       *storage.DB
 	Forge    forge.Client
@@ -45,31 +46,35 @@ func (c *ReplyConsumer) RunOnce(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if len(operations) == 0 {
-				// No durable comment operation means there is no generation
-				// identity to consume. Never infer one from the projection.
-				continue
-			}
 			ctxCall := forge.WithChargeKey(ctx, "reply:"+project.ID+":"+item.IssueID+":"+cursor.Cursor)
 			comments, next, err := c.Forge.ListIssueComments(ctxCall, project.Ref, item.IssueID, forge.Cursor(cursor.Cursor))
 			if err != nil {
 				return err
 			}
+
+			// Markers belong to Sift-authored clarification comments. Walk the
+			// page in forge order and retain the latest marker seen so replies
+			// from different generations in one page are arbitrated correctly.
+			latestGeneration := 0
+			var latestMarkerAt time.Time
 			for _, comment := range comments {
-				var matched storage.IntakeReplyOperation
+				isMarker := false
 				for _, op := range operations {
-					if forge.FindOperationMarker(comment.Body, op.Key, forge.PayloadDigest(op.Payload)) {
-						matched = op
-						break
+					if !forge.FindOperationMarker(comment.Body, op.Key, forge.PayloadDigest(op.Payload)) {
+						continue
 					}
+					var markerPayload struct {
+						Generation int `json:"generation"`
+					}
+					if json.Unmarshal(op.Payload, &markerPayload) == nil && markerPayload.Generation >= 1 {
+						latestGeneration = markerPayload.Generation
+						latestMarkerAt = comment.CreatedAt
+					}
+					isMarker = true
+					break
 				}
-				if matched.Key == "" || !isAllowedActor(project.OperatorAllowlist, comment.Author) {
-					continue
-				}
-				var markerPayload struct {
-					Generation int `json:"generation"`
-				}
-				if json.Unmarshal(matched.Payload, &markerPayload) != nil || markerPayload.Generation < 1 {
+				// Never parse Sift's clarification body as an operator reply.
+				if isMarker || latestGeneration < 1 || (!comment.CreatedAt.IsZero() && comment.CreatedAt.Before(latestMarkerAt)) || !isAllowedActor(project.OperatorAllowlist, comment.Author) {
 					continue
 				}
 				accept, ok := intakeReply(comment.Body)
@@ -79,7 +84,7 @@ func (c *ReplyConsumer) RunOnce(ctx context.Context) error {
 				raw := sha256.Sum256([]byte(comment.Body))
 				if err := c.DB.ApplyIntakeReply(ctx, storage.IntakeReplyCmd{
 					IntakeID: item.ID, EventID: comment.ID, Actor: comment.Author,
-					RawDigest: hex.EncodeToString(raw[:]), Generation: markerPayload.Generation,
+					RawDigest: hex.EncodeToString(raw[:]), Generation: latestGeneration,
 					Accept: accept, ObservedAtMS: comment.CreatedAt.UnixMilli(), NowMS: now.UnixMilli(),
 				}); err != nil {
 					return err
