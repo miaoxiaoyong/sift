@@ -323,7 +323,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - [ ] `specs/control-plane.md`：acquire/permit/started 完整字段与版本握手
 - [ ] `specs/storage.md`：resolution、隔离、关闭原因
 - [ ] `specs/config.md`：启动 lease/等待/终止/复核/Report 退避默认值
-- [ ] `specs/interrupt.md`：先落全部 reason 的最小确定性契约与 `startup_stall` 特殊规则
+- [x] `specs/interrupt.md`：先落全部 reason 的最小确定性契约与 `startup_stall` 特殊规则（[三次字段评审 PASS WITH NOTES](reviews/2026-07-29-interrupt-rereview-2-pi-gpt-5.6-sol.md)）
 
 ### M3 门禁
 
