@@ -228,7 +228,9 @@ brain:
 | `absence_recheck_count` | `3` | `1..20` |
 | `absence_recheck_interval` | `1s` | `100ms..1m` |
 
-受控终止固定为：确认进程身份 → `SIGTERM` → 等 `termination_term_grace` → `SIGKILL` → 等 `termination_kill_grace` → 按配置次数复核消失。身份不确定时不得发信号，直接进入 `startup_stall`。`spawning` 超时永远不能单独授权换 owner。
+这些字段是 M3 启动交接与停滞收敛的唯一配置入口，命名与控制面/存储契约保持一致：`spawn_operation_lease_ttl` 对应启动 operation lease；`starting_permit_timeout` 是 `starting` 等待 `claim.permit_spawn` 的上限；`spawning_started_timeout` 是 `spawning` 等待 `claim.started` 的上限；复核使用 `absence_recheck_count` 与 `absence_recheck_interval`。控制面方法与阶段以 [`control-plane.md` §5](control-plane.md) 为准，attempt 的持久化阶段、generation 与 `attempt_probes` 字段以 [`storage.md` §5.3–§5.5](storage.md) 为准；本节不另造字段名或持久化状态。
+
+受控终止固定为：确认进程身份 → 按进程组发送 `SIGTERM` → 等 `termination_term_grace` → `SIGKILL` → 等 `termination_kill_grace` → 每隔 `absence_recheck_interval` 复核，最多 `absence_recheck_count` 次。身份不确定时不得发信号，直接进入 `startup_stall`；确认不了消失时必须冻结 attempt 并经统一 Interrupt 路径收敛。`spawning` 超时永远不能单独授权换 owner，必须先取得消失证据。
 
 ### 3.7 `outbox`
 
@@ -316,7 +318,9 @@ attention:
 | `interrupts_per_run_daily_quota` | `4` | `1..100`；只约束 Layer 1 Report 直接触发的 Interrupt |
 | `on_interrupt_quota_exceeded` | `failure_review_once` | V0 只能为此值 |
 
-Report 子配额统计所有 Report 直接触发的 Interrupt（含 critical）；不统计 Gate、恢复或系统事实产生的 Interrupt。触顶后拒绝后续致扰报告，并以稳定生成键最多发一条 `failure_review`；该异常打扰仍受全局注意力配额，critical 还同时受 critical fuse。Report 超限与重复判断只由确定性代码执行。`spawning` 可返回 `not_ready`；过期 attempt 与跨 Run token 永久拒绝，不进入重试。
+Report 子配额统计所有 Report 直接触发的 Interrupt（含 critical）；不统计 Gate、恢复或系统事实产生的 Interrupt。触顶后拒绝后续致扰报告，并以稳定生成键最多发一条 `failure_review`；该异常打扰仍受全局注意力配额，critical 还同时受 critical fuse。Report 超限与重复判断只由确定性代码执行。
+
+`spawning` 可返回 `not_ready`。Report 客户端以 `not_ready_initial_delay` 为首个等待间隔，按 `runtime.retry_multiplier` 指数增长并封顶于 `not_ready_max_delay`，累计等待不得超过 `not_ready_total_timeout`；因此必须满足 `not_ready_max_delay >= not_ready_initial_delay` 且 `not_ready_total_timeout >= not_ready_max_delay`。仅 `not_ready` 可重试，过期 attempt、跨 Run token、`pending/starting/finished/orphaned` 与其他鉴权/冲突错误永久拒绝，不进入退避。
 
 ### 3.11 `gate_defaults`
 
