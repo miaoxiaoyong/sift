@@ -42,6 +42,13 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 		now = time.UnixMilli(1)
 	}
 	for _, project := range p.Projects {
+		cursor, err := p.DB.IntakeCursor(ctx, project.ID, "issues")
+		if err != nil {
+			return err
+		}
+		if cursor.NextPollAtMS > 0 && now.UnixMilli() < cursor.NextPollAtMS {
+			continue
+		}
 		// Skip projects already quarantined by a prior auth/capability failure so
 		// a bad credential is neither re-probed nor re-alerted every tick (WBS
 		// §2.3: alert once, no hammering).
@@ -69,7 +76,7 @@ func (p *Poller) pollProject(ctx context.Context, project Project, now time.Time
 	}
 	// The cursor is frozen for this poll transaction, so it is also a stable
 	// replay identity for every Forge call in the tick.
-	ctx = forge.WithChargeKey(ctx, "intake:"+project.ID+":"+cur.Cursor)
+	ctx = forge.WithChargeKey(ctx, "intake:tick:"+now.Format(time.RFC3339Nano)+":"+project.ID)
 	issues, next, err := p.Forge.ListIssuesByLabel(ctx, project.Ref, project.TriggerLabel, forge.Cursor(cur.Cursor))
 	if err != nil {
 		return err

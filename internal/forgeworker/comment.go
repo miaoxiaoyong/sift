@@ -30,12 +30,13 @@ type commentPayload struct {
 // before every send, so a remote success followed by a local crash converges
 // without a second comment.
 type CommentWorker struct {
-	DB       *storage.DB
-	Client   forge.Client
-	Now      func() time.Time
-	Lease    time.Duration
-	WorkerID string
-	Complete func(context.Context, storage.ClaimedOperation, storage.CompleteOutcome) error
+	DB        *storage.DB
+	Client    forge.Client
+	Now       func() time.Time
+	Lease     time.Duration
+	WorkerID  string
+	ProjectID string
+	Complete  func(context.Context, storage.ClaimedOperation, storage.CompleteOutcome) error
 }
 
 func (w *CommentWorker) RunOnce(ctx context.Context) error {
@@ -46,7 +47,7 @@ func (w *CommentWorker) RunOnce(ctx context.Context) error {
 	if now.IsZero() {
 		now = time.UnixMilli(1)
 	}
-	c, err := w.DB.ClaimOutboxOperationKind(ctx, w.WorkerID, storage.OperationForgeComment, now.UnixMilli(), w.Lease.Milliseconds())
+	c, err := w.DB.ClaimOutboxOperationKindProject(ctx, w.WorkerID, storage.OperationForgeComment, w.ProjectID, now.UnixMilli(), w.Lease.Milliseconds())
 	if err != nil || c == nil {
 		return err
 	}

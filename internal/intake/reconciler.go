@@ -56,7 +56,7 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 }
 
 func (r *Reconciler) reconcileProject(ctx context.Context, project Project, now time.Time) error {
-	ctx = forge.WithChargeKey(ctx, "reconcile:"+project.ID)
+	ctx = forge.WithChargeKey(ctx, "reconcile:tick:"+now.Format(time.RFC3339Nano)+":"+project.ID)
 	candidates, err := r.DB.ReverseSyncCandidates(ctx, project.ID)
 	if err != nil {
 		return err

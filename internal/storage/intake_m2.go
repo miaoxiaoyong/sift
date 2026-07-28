@@ -111,6 +111,24 @@ type PendingIntake struct {
 	ForceHITLBeforeStart                                                       bool
 }
 
+// AwaitingIntakes returns the current reply targets for one project.
+func (d *DB) AwaitingIntakes(ctx context.Context, projectID string) ([]PendingIntake, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT id,project_id,forge_kind,normalized_host,forge_project_key,issue_id,issue_url,issue_digest,version,clarification_generation,state,force_hitl_before_start FROM intake_items WHERE project_id=? AND state IN ('awaiting_clarification','awaiting_duplicate_confirmation')`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingIntake
+	for rows.Next() {
+		var x PendingIntake
+		if err := rows.Scan(&x.ID, &x.ProjectID, &x.ForgeKind, &x.Host, &x.ProjectKey, &x.IssueID, &x.IssueURL, &x.IssueDigest, &x.Version, &x.Generation, &x.State, &x.ForceHITLBeforeStart); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
 func (d *DB) FindPendingIntake(ctx context.Context, projectID, issueID string) (PendingIntake, error) {
 	var x PendingIntake
 	err := d.db.QueryRowContext(ctx, `SELECT id,project_id,forge_kind,normalized_host,forge_project_key,issue_id,issue_url,issue_digest,version,clarification_generation,state,force_hitl_before_start FROM intake_items WHERE project_id=? AND issue_id=? AND state='pending_evaluation'`, projectID, issueID).Scan(&x.ID, &x.ProjectID, &x.ForgeKind, &x.Host, &x.ProjectKey, &x.IssueID, &x.IssueURL, &x.IssueDigest, &x.Version, &x.Generation, &x.State, &x.ForceHITLBeforeStart)

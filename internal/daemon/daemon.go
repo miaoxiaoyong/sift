@@ -25,6 +25,7 @@ type Daemon struct {
 	Evaluators  []*intake.T1Evaluator
 	Reconcilers []*intake.Reconciler
 	Comments    []*forgeworker.CommentWorker
+	Replies     []*intake.ReplyConsumer
 	Now         func() time.Time
 	mu          sync.Mutex
 }
@@ -82,7 +83,8 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 		d.Pollers = append(d.Pollers, poller)
 		d.Evaluators = append(d.Evaluators, evaluator)
 		d.Reconcilers = append(d.Reconcilers, &intake.Reconciler{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now})
-		d.Comments = append(d.Comments, &forgeworker.CommentWorker{DB: db, Client: adapter, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:comment:" + p.ID})
+		d.Comments = append(d.Comments, &forgeworker.CommentWorker{DB: db, Client: adapter, ProjectID: p.ID, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:comment:" + p.ID})
+		d.Replies = append(d.Replies, &intake.ReplyConsumer{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now})
 	}
 	return d, nil
 }
@@ -108,6 +110,11 @@ func (d *Daemon) Tick(ctx context.Context) error {
 	for i, r := range d.Reconcilers {
 		if err := r.ReconcileOnce(ctx); err != nil {
 			return fmt.Errorf("reconciler[%d]: %w", i, err)
+		}
+	}
+	for i, r := range d.Replies {
+		if err := r.RunOnce(ctx); err != nil {
+			return fmt.Errorf("reply[%d]: %w", i, err)
 		}
 	}
 	for i, w := range d.Comments {

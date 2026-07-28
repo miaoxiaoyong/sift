@@ -153,20 +153,26 @@ func insertOperation(ctx context.Context, tx *sql.Tx, op Operation, runID, _ str
 // reclaimed in the same transaction, with an immutable lease_expired result
 // written for the old attempt first.
 func (d *DB) ClaimOutboxOperation(ctx context.Context, workerID string, nowMS, leaseMS int64) (*ClaimedOperation, error) {
-	return d.claimOutboxOperation(ctx, workerID, nowMS, leaseMS, "")
+	return d.claimOutboxOperation(ctx, workerID, nowMS, leaseMS, "", "")
 }
 
 // ClaimOutboxOperationKind leases only operations consumed by one worker kind.
 // A worker must never claim another worker's operation and turn it into a
 // contract failure.
 func (d *DB) ClaimOutboxOperationKind(ctx context.Context, workerID string, kind OperationKind, nowMS, leaseMS int64) (*ClaimedOperation, error) {
+	return d.ClaimOutboxOperationKindProject(ctx, workerID, kind, "", nowMS, leaseMS)
+}
+
+// ClaimOutboxOperationKindProject limits a worker to the project encoded in
+// the operation payload, keeping per-project Forge adapters isolated.
+func (d *DB) ClaimOutboxOperationKindProject(ctx context.Context, workerID string, kind OperationKind, projectID string, nowMS, leaseMS int64) (*ClaimedOperation, error) {
 	if !validOperationKind(kind) {
 		return nil, errors.New("storage: invalid outbox operation kind")
 	}
-	return d.claimOutboxOperation(ctx, workerID, nowMS, leaseMS, kind)
+	return d.claimOutboxOperation(ctx, workerID, nowMS, leaseMS, kind, projectID)
 }
 
-func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, leaseMS int64, filterKind OperationKind) (*ClaimedOperation, error) {
+func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, leaseMS int64, filterKind OperationKind, projectID string) (*ClaimedOperation, error) {
 	if workerID == "" || leaseMS <= 0 {
 		return nil, errors.New("storage: worker id and positive lease required")
 	}
@@ -182,6 +188,10 @@ func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, l
 	if filterKind != "" {
 		query += ` AND kind=?`
 		args = append(args, filterKind)
+	}
+	if projectID != "" {
+		query += ` AND json_extract(payload_json, '$.project_id')=?`
+		args = append(args, projectID)
 	}
 	query += ` ORDER BY next_attempt_at_ms, id LIMIT 1`
 	row := tx.QueryRowContext(ctx, query, args...)
