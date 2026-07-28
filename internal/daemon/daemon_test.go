@@ -193,13 +193,13 @@ func TestAssembleProbesAndRecordsAutoMergeCapabilityOnEveryStartup(t *testing.T)
 		probes++
 		return []byte("--input file"), nil, nil
 	})
-	if _, err := assemble(db, cfg, func() time.Time { return now }, factory); err != nil {
+	if _, err := assemble(db, cfg, func() time.Time { return now }, nil, factory); err != nil {
 		t.Fatal(err)
 	}
 	if enabled, err := db.AutoMergeEnabled(ctx, ref); err != nil || !enabled {
 		t.Fatalf("first startup capability = %v, %v; want true, nil", enabled, err)
 	}
-	if _, err := assemble(db, cfg, func() time.Time { return now.Add(time.Second) }, factory); err != nil {
+	if _, err := assemble(db, cfg, func() time.Time { return now.Add(time.Second) }, nil, factory); err != nil {
 		t.Fatal(err)
 	}
 	if probes != 2 {
@@ -223,7 +223,7 @@ func TestAssembleRecordsAmbiguousCapabilityAndFailsOnStorageError(t *testing.T) 
 		if err := db.SeedProjectForTest(ctx, "cfg-project", "project", now.UnixMilli()); err != nil {
 			t.Fatal(err)
 		}
-		workers, err := assemble(db, daemonTestConfig("project"), func() time.Time { return now }, ambiguousFactory)
+		workers, err := assemble(db, daemonTestConfig("project"), func() time.Time { return now }, nil, ambiguousFactory)
 		if err != nil || len(workers.Pollers) != 1 {
 			t.Fatalf("ambiguous startup workers=%v err=%v", workers, err)
 		}
@@ -239,7 +239,7 @@ func TestAssembleRecordsAmbiguousCapabilityAndFailsOnStorageError(t *testing.T) 
 			t.Fatal(err)
 		}
 		defer db.Close()
-		if _, err := assemble(db, daemonTestConfig("missing"), func() time.Time { return now }, ambiguousFactory); err == nil {
+		if _, err := assemble(db, daemonTestConfig("missing"), func() time.Time { return now }, nil, ambiguousFactory); err == nil {
 			t.Fatal("Assemble succeeded despite capability storage failure")
 		}
 	})
