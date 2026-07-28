@@ -518,8 +518,10 @@ func TestIsolationIndependentOfRunTerminal(t *testing.T) {
 	if iso != "frozen" {
 		t.Fatalf("isolation_state = %q after Run terminal, want frozen", iso)
 	}
-	// Explicit release records the release timestamp.
-	mustExec(t, db, `UPDATE attempts SET isolation_state = 'none', isolation_released_at_ms = 2
+	// Explicit release records the evidence event and retains the frozen facts.
+	insertEvent(t, db, "isolation-released")
+	mustExec(t, db, `UPDATE attempts SET isolation_state = 'none', isolation_released_at_ms = 2,
+		isolation_release_event_id = 'isolation-released'
 		WHERE run_id = 'r1' AND attempt_no = 1`)
 }
 

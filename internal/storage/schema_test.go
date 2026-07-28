@@ -56,8 +56,10 @@ func insertManualRun(t *testing.T, db *DB, id, projID, cfgID string) {
 	t.Helper()
 	mustExec(t, db, `INSERT INTO runs
 		(id, source_kind, project_id, config_snapshot_id, forge_kind, forge_host, forge_project_key,
+		 discussion_target_kind, discussion_target_id, discussion_target_url,
 		 status, max_attempts, created_at_ms, updated_at_ms)
-		VALUES (?, 'manual', ?, ?, 'github', 'github.com', ?, 'queued', 3, ?, ?)`,
+		VALUES (?, 'manual', ?, ?, 'github', 'github.com', ?, 'issue', 'manual-target',
+		 'https://github.com/org/repo/issues/1', 'queued', 3, ?, ?)`,
 		id, projID, cfgID, "org/repo-"+projID, testNow, testNow)
 }
 
