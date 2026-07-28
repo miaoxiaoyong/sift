@@ -8,7 +8,7 @@ summary: SQLite 表、事务、迁移与审计存储契约
 
 本文定义 `sift.db` 的表、字段、约束、事务边界与迁移行为，是状态机、恢复、outbox、回放和审计的共同存储契约。
 
-结构来源：[DESIGN §6.2–§7、§8.4–§8.7、§10](../DESIGN.md)，[ADR-002](../decisions/002-reconciler-and-single-transition-entry.md)、[ADR-003](../decisions/003-transactional-outbox.md)、[ADR-004](../decisions/004-gate-as-pure-function.md)、[ADR-009](../decisions/009-tech-stack-go.md)、[ADR-010](../decisions/010-attempt-spawn-handoff.md)、[ADR-013](../decisions/013-startup-stall-retry-convergence.md)，[WBS M1 §1.2–§1.3](../WBS.md)。
+结构来源：[DESIGN §6.2–§7、§8.4–§8.7、§10](../DESIGN.md)，[ADR-002](../decisions/002-reconciler-and-single-transition-entry.md)、[ADR-003](../decisions/003-transactional-outbox.md)、[ADR-004](../decisions/004-gate-as-pure-function.md)、[ADR-009](../decisions/009-tech-stack-go.md)、[ADR-010](../decisions/010-attempt-spawn-handoff.md)、[ADR-013](../decisions/013-startup-stall-retry-convergence.md)，[WBS M1 §1.2–§1.3、M3 §3.4–§3.5](../WBS.md)。
 
 ## 评审处置
 
@@ -38,6 +38,11 @@ Brain 字段级评审 [2026-07-28-brain-review-pi-gpt-5.6-sol.md](../reviews/202
 8. 所有 JSON 列使用 [`config.md`](config.md) §4 定义的 canonical JSON；写入前必须经过对应 schema。
 9. 审计与回放数据 V0 不做业务删除。worktree/日志清理不得删除 Run、事件、Gate、Ledger 或 outbox 历史。
 10. `attempt_resolution` 是唯一规范名称；V0 枚举仅 `reject | retry_after_absence`。
+11. attempt 隔离是独立于 Run 状态和 attempt phase 的当前投影：Run 终态、attempt 终结、Interrupt 关闭均不隐含解除隔离；冻结 worktree 不得清理或分配给任何 attempt。
+12. 只有持久化的执行体消失证据，或显式的 operator 强制清理安全事件，才能解除隔离；仅凭 lease/heartbeat/等待超时、PID 不存在或 Run 终态均不够。
+13. 合法启动/结果事实与 `attempt_resolution` 只在 `ResolveAttemptRace` 内仲裁；四个调用入口不得各自实现近似事务。
+14. 每次 daemon boot 都有存储内恢复屏障。该 boot 的恢复扫描完成前，任何 worker 都不得 claim 或 reclaim `launch_agent` operation；非启动 operation 不受此屏障阻塞。
+15. 恢复扫描覆盖全部非终态 attempt 与全部未完成 `launch_agent` operation，不以 Run 状态过滤；外部文件/进程观测在事务外完成，只有确定性恢复动作进入写事务。
 
 ## 2. SQLite 打开契约
 
@@ -116,10 +121,11 @@ PRAGMA wal_autocheckpoint = 1000;
 | `binary_version` | TEXT | NOT NULL |
 | `protocol_major` | INTEGER | NOT NULL |
 | `started_at_ms` | INTEGER | NOT NULL |
+| `recovery_completed_at_ms` | INTEGER | NULL；本 boot 完成启动恢复扫描后只写一次 |
 | `stopped_at_ms` | INTEGER | NULL；只允许专用“正常停止”一次性补写 |
 | `stop_reason` | TEXT | NULL |
 
-`stopped_at_ms/stop_reason` 是 append record 的唯一例外补全字段；不得修改其他列。非正常退出保持 NULL。
+新 boot 行的 `recovery_completed_at_ms` 必须为空；它是 `launch_agent` claim/reclaim 的持久恢复屏障，不得沿用前一 boot 的完成标记。`CompleteStartupRecovery` 只能在全部恢复候选已收敛为确定动作（包括保持冻结并转人工）后一次性补写。`recovery_completed_at_ms` 与 `stopped_at_ms/stop_reason` 是 append record 的仅有补全字段；不得修改其他列。非正常退出保持 stop 字段为 NULL。
 
 ### 4.3 `projects`
 
@@ -258,6 +264,7 @@ PRAGMA wal_autocheckpoint = 1000;
 | `isolation_reason` | TEXT | NULL 或 `startup_stall \| process_identity_unknown \| termination_unconfirmed \| process_group_unverified \| late_execution_fact` |
 | `isolated_at_ms` | INTEGER | NULL |
 | `isolation_released_at_ms` | INTEGER | NULL；仅 frozen→none 时写入 |
+| `isolation_release_event_id` | TEXT | NULL FK events；解除时指向消失证据或 operator 强制清理安全事件 |
 | `created_at_ms` | INTEGER | NOT NULL |
 | `updated_at_ms` | INTEGER | NOT NULL |
 | `finished_at_ms` | INTEGER | NULL |
@@ -267,8 +274,10 @@ PRAGMA wal_autocheckpoint = 1000;
 - wrapper 身份字段必须全空或 `pid/started/executable/pgid/instance` 全具备；Agent 身份三元组必须全空或全具备。
 - `task_spec_snapshot_id` 以 `(run_id, task_spec_snapshot_id)` 组合外键保证属于本 Run。
 - `running` 必须有 Agent 身份；`finished` 必须有 result，且 `result_exit_code/result_signal` 恰有一个非空；`orphaned` 不要求 result。
-- resolution 与 `resolution_at_ms` 同空同非空，写入后不可修改。
-- `isolation_state=frozen` 时 `isolated_at_ms` 非空且 `isolation_released_at_ms` 为空；解除时必须已有执行体消失证据并写 release 时间。Run 终态不得自动解除隔离。
+- resolution 与 `resolution_at_ms` 同空同非空，写入后不可修改。`reject` 只能来自人的终局拒绝；`retry_after_absence` 只能与执行体消失证据在 ADR-013 结果事务中同时写入。retry 请求、hold、escalate、超时或封顶 hold 均不得写 resolution。
+- 隔离列共同构成 attempt 的独立当前投影，生命周期为 `none → frozen → none`；不得把 phase 或 Run status 作为其替代。初始 `none` 的 reason/三个隔离时间或事件字段全空；`frozen` 时 `isolation_reason/isolated_at_ms` 必填且两个 release 字段为空；解除后的 `none` 保留 reason/isolated 时间，并令 `isolation_released_at_ms/isolation_release_event_id` 同为非空，后者指向同事务写入的消失证据或强制清理安全事件。重复冻结/解除按 expected generation 与当前 isolation state 做 CAS。
+- 仅 `process-group-verified` 的 Agent/version 可用“已登记 wrapper 与进程组均消失”作为自动解除证据。未验证或身份含糊时保持 `frozen` 并发 `startup_stall`；不得因 `phase=finished|orphaned` 或 Run `done|failed` 自动解除。
+- `frozen` worktree 不得删除、移动、复用或作为新 attempt 的 `worktree_path`。新 attempt 创建事务必须断言目标路径没有 frozen 投影；operator 强制清理是唯一无消失证明的例外，必须先写高严重度安全事件，并明确标记不再提供单 writer 保证。
 - partial unique index：每个 Run 最多一个 phase 属于 `pending/starting/spawning/running` 的 attempt。
 
 ### 5.4 `attempt_claims`
@@ -361,6 +370,18 @@ PRAGMA wal_autocheckpoint = 1000;
 - escalation 重推不新增 budget charge；关闭不退款。
 - 每次 escalation 轮换 nonce 并递增 version。
 - `probe_in_progress` 时拒绝新指令，但合法迟到事实仍可经仲裁入口提交。
+
+`close_reason` 只说明该 Interrupt 为何不再待决，不替代 attempt resolution 或 RPC disposition：
+
+| close reason | 使用条件 |
+|--------------|----------|
+| `responded` | 当前合法指令本身完成关闭；包括显式 reject，或 retry probe 成功结果事务 |
+| `expired_auto_reject` | 非 `startup_stall` 的超时策略合法自动拒绝 |
+| `superseded_by_fact` | resolution 尚空时合法 started/result 事实先胜出并恢复监督 |
+| `superseded_by_decision` | 另一已提交终局决定使本 Interrupt 失效；迟到 started/result 返回同名 disposition，但不得为了改 close reason 重写已关闭 Interrupt |
+| `external_fact` | 已摄入 forge 等外部权威事实使问题失效 |
+
+关闭原因与 `closed_at_ms` 在同一 CAS 中一次写入、之后不可改。关闭不退款；尤其 `superseded_by_fact` 仍代表真实发生过一次打扰。
 
 ### 6.2 `interrupt_deliveries`
 
@@ -553,7 +574,9 @@ M1 冻结上述表与约束，并仅实现 fake 骨架链所需的 Forge Run/rec
 | `error_summary` | TEXT | NULL |
 | `evidence_digest` | TEXT | NULL |
 
-每个 attempt 最多一个结果。operation claim 用 CAS：pending/retryable 且到期，或 executing 且 lease 已过期的行可被认领；后者先为旧 attempt 插入 `outcome=retry,error_class=transient,error_summary=lease_expired` result，再替换 lease owner并创建新 attempt，旧 owner 的 complete 随即 CAS 失败。恢复扫描完成前禁止 claim/reclaim `launch_agent`。外部动作结束后，同一事务插入 result 并 CAS 更新 operation；旧 lease owner 的结果整笔拒绝。
+每个 attempt 最多一个结果。operation claim 用 CAS：pending/retryable 且到期，或 executing 且 lease 已过期的行可被认领；后者先为旧 attempt 插入 `outcome=retry,error_class=transient,error_summary=lease_expired` result，再替换 lease owner并创建新 attempt，旧 owner 的 complete 随即 CAS 失败。
+
+`launch_agent` 是特殊 claim：`ClaimOutboxOperation(current_boot_id, ...)` 必须在同一 SQL 语句/事务中证明 `daemon_boots.id=current_boot_id AND recovery_completed_at_ms IS NOT NULL`；先在应用内检查再 claim 不成立。恢复扫描可把旧启动 operation 收敛为 pending/retryable/succeeded/stale/conflict，但在屏障落定前同样不得取得执行 lease。daemon 在 `CompleteStartupRecovery` 提交后才启动 launch worker；崩溃产生的新 boot 因新行屏障为空而重新关闭该入口。外部动作结束后，同一事务插入 result 并 CAS 更新 operation；旧 lease owner 的结果整笔拒绝。
 
 ## 9. 预算
 
@@ -813,6 +836,9 @@ Gate record 来自同一 snapshot/evaluation；Brain record 一条 logical recor
 | `ApplyMigration` | schema，仅启动期 |
 | `ActivateConfig` | config snapshot、daemon boot、projects 当前投影 |
 | `FinishDaemonBoot` | daemon boot 的一次性停止补全 |
+| `ApplyStartupRecoveryAction(expectedGeneration, observationDigest, action)` | 恢复矩阵单行的确定性收敛：attempt/claim、启动 operation、隔离、Run transition、Interrupt/预算/outbox 与事件；不执行进程/文件 IO |
+| `CompleteStartupRecovery(bootID)` | 仅在本 boot 全部恢复候选已处理后一次性写恢复屏障；不得与 launch claim 合并或倒序 |
+| `RecordTerminationObservation(expectedGeneration, command)` | 受控终止的身份/信号/复核事件；确认消失后按来源原子终结/换代/解除隔离，未确认时原子冻结并发唯一 `startup_stall` |
 | `UpdateProjectRuntime` / `UpdateProjectAutoMergeCapability` | project health/isolation/capabilities + event + 可选唯一告警 outbox；供启动期和持续能力探测 |
 | `RecordHookBaseline(expectedDigest)` | hook baseline CAS + 漂移安全事件 + 可选 Run transition/Interrupt/预算/outbox |
 | `TransitionRun(expectedVersion, command)` | runs + events + 可选 outbox/幂等记录 |
@@ -827,11 +853,11 @@ Gate record 来自同一 snapshot/evaluation；Brain record 一条 logical recor
 | `AcquireLaunchClaim` | wrapper/session CAS + pending→starting + launch outbox attempt/result/succeeded + event |
 | `AdvanceAttempt` | attempt/claim + events；不得旁路 Run transition |
 | `StartOrAdvanceProbe` | attempt probe + 受控终止观测事件 |
-| `ResolveAttemptRace` | resolution、迟到事实、Run transition、Interrupt、outbox 的统一 CAS 仲裁 |
+| `ResolveAttemptRace(expectedRunVersion, expectedGeneration, factKey, command)` | claim:started、恢复补 started、迟到 result、Interrupt 指令共用的唯一 CAS 仲裁；resolution/身份/结果、隔离、Run transition、Interrupt close、回执 outbox 与事件同事务 |
 | `EmitInterrupt` | Run transition + Interrupt + attention budget/fuse + event + publish outbox |
 | `AdvanceInterrupt` | Supervisor 的 hold/escalate/auto_reject：Interrupt CAS + 可选 Run transition/outbox/event |
 | `ApplyInterruptCommand` | 通用指令：Interrupt CAS + 可选 Task Spec/Ledger/calibration/certification + Run transition/outbox/event |
-| `ApplyRetryProbeResult` | ADR-013 全部结果字段的一笔 CAS 事务 |
+| `ApplyRetryProbeResult` | ADR-013 全部结果字段的一笔 CAS 事务；内部必须调用与 `ResolveAttemptRace` 相同的仲裁原语，不得先关闭 Interrupt |
 | `RecordReport` | token bucket + report receipt + event；必要时原子发唯一异常 Interrupt |
 | `ReserveBrainCall` | brain_call_counters CAS 递增 + 插入 `status=running` 的 brain_calls（冻结身份/输入），同一事务 |
 | `RecordBrainAttempt` | immutable brain_attempts + token post-charge（budget entry/counter，唯一 operation key 幂等，允许单次越界） |
@@ -839,7 +865,7 @@ Gate record 来自同一 snapshot/evaluation；Brain record 一条 logical recor
 | `RecordGateEvaluation` | snapshot/cache/evaluation/calibration + 必要 Interrupt |
 | `RecordExternalHumanDecision` | 手工 merge/close 的 calibration + ledger + certification + Run/Interrupt/outbox |
 
-任何新增可变表必须在本表有完整、显式的写入族归属；新增端口必须证明不能由上述端口表达，并同步本规格与崩溃注入测试。
+任何新增可变表必须在本表有完整、显式的写入族归属；新增端口必须证明不能由上述端口表达，并同步本规格与崩溃注入测试。恢复端口接收的是已验证观测及其 digest，不持有数据库事务做 OS 探测；`ApplyStartupRecoveryAction`、`RecordTerminationObservation`、`ResolveAttemptRace` 与 `ApplyRetryProbeResult` 共享内部 transition/isolation/仲裁原语，不形成四套可漂移规则。
 
 ## 12. 关键事务配方
 
@@ -889,6 +915,64 @@ CAS 认领到期的 pending/retryable，或接管 lease 已过期的 executing o
 
 Gate 首次判定：snapshot、evaluation、预判 calibration 同事务；需要 HITL 时同事务执行 §12.2。人的决定到达时，calibration 一次性补全、ledger entry、certification 增量与 Run/outbox 结果同事务。`/sift ask` 还须在该事务插入新 Task Spec snapshot 并更新 `runs.current_task_spec_id`；不得原地覆盖旧 snapshot。
 
+### 12.7 启动事实与 resolution 仲裁
+
+四个入口先把输入规范化为 `AttemptRaceCommand`，再调用同一事务函数。`fact_key` 对 wrapper 请求取稳定 request identity，对恢复/result 取身份与文件 digest，对 Interrupt 指令取 interrupt id/version/nonce；events 的 idempotency key 与回执 operation key 均由它派生。
+
+```text
+BEGIN IMMEDIATE
+  load Run version + attempt generation/phase/resolution/isolation
+       + claim session/permit + current startup_stall Interrupt/probe
+  assert command identity, expected versions and generation
+  if fact_key receipt/event already exists:
+      return its persisted disposition
+
+  if legal started/result fact AND attempt_resolution IS NULL:
+      persist complete Agent identity and/or result
+      advance attempt (result may continue through finished)
+      transition Run waiting_human -> running when applicable
+      close open startup_stall as superseded_by_fact
+      supersede any in-flight probe and create command ack when required
+      retain attention charge; append one event
+      return superseded_by_fact (or normal running/finished disposition)
+
+  if legal started/result fact AND attempt_resolution IS NOT NULL:
+      persist the late identity/result and security event
+      do not advance the old Run path or release its isolation
+      schedule/continue controlled termination of that old identity
+      create ack when required
+      return superseded_by_decision
+
+  if terminal reject command AND attempt_resolution IS NULL:
+      set resolution=reject once; transition Run -> failed
+      close Interrupt as responded; keep isolation frozen
+      schedule controlled termination; append Ledger/event/ack
+      return decision_applied
+
+  otherwise apply only a legal non-terminal retry/hold/escalate action;
+      never write attempt_resolution
+COMMIT
+```
+
+CAS 失败整笔回滚并重读后重算，不得把“事实已持久化但 Interrupt 未关”当部分成功。已落定分支必须**吸收**迟到身份而非简单拒绝 RPC；这份身份是后续安全终止的证据。`retry_after_absence` 只能由 §12.5 写，不能由该事实分支猜测。
+
+### 12.8 恢复屏障与恢复动作
+
+创建 `daemon_boots` 行即建立关闭的恢复屏障。恢复协调器在不持事务时读取候选、观测控制文件与进程，再逐项调用 `ApplyStartupRecoveryAction`；每次动作以 generation/operation version CAS，记录 observation digest 和事件。观察变化导致 CAS 失败时重观测，不凭旧快照收敛。
+
+仅当“全部非终态 attempt + 全部未完成 `launch_agent` operation”的新一轮候选查询为空，或每项已被确定性收敛为正常监督、终态、可安全重派、或 frozen + 可见 Interrupt，才调用：
+
+```text
+BEGIN IMMEDIATE
+  assert daemon_boots.id = current boot
+  assert recovery_completed_at_ms IS NULL
+  assert no unclassified startup recovery candidate remains
+  UPDATE daemon_boots SET recovery_completed_at_ms=? WHERE id=? AND ...
+COMMIT
+```
+
+`ClaimOutboxOperation` 对 `launch_agent` 在其 claim CAS 内再次验证同一 boot 的非空屏障，因此“完成检查”与 worker 启动间即使并发或崩溃也不能绕过恢复顺序。不得先回收过期 launch lease、再补做 attempt 扫描。
+
 ## 13. Append-only 执行保障
 
 对以下表创建 `BEFORE UPDATE` 与 `BEFORE DELETE` trigger，业务写入触发 `RAISE(ABORT, 'append-only table')`：
@@ -908,11 +992,11 @@ Gate 首次判定：snapshot、evaluation、预判 calibration 同事务；需�
 - `gate_cache`
 - `ledger_entries`
 
-`calibration_entries` 只允许专用语句把 human decision 的 NULL 字段一次性补全；其余 UPDATE 与全部 DELETE 被 trigger 拒绝。`daemon_boots` 同理只允许一次性补全 stop 字段。
+`calibration_entries` 只允许专用语句把 human decision 的 NULL 字段一次性补全；其余 UPDATE 与全部 DELETE 被 trigger 拒绝。`daemon_boots` 同理只允许分别一次性补全 recovery completion 与 stop 字段；两类补全不得修改身份、配置或启动时间。
 
 `brain_calls` 禁止 DELETE；UPDATE trigger 只允许一次 `running → valid | fallback` 终结（补全终结字段），身份、输入与 `call_seq` 列任何修改都 abort。`brain_call_counters` 与 `intake_items` 是可变投影，以 `version` CAS 并发控制，不加 append-only trigger。
 
-对可变投影另设列级 trigger：`outbox_operations.payload_schema_version/payload_json/payload_digest` 创建后不可改；`attempts.attempt_resolution` 只能从 NULL 写一次；同 generation 的 claim permit 不可替换；Interrupt 的 `charged_budget_entry_id/generation_key` 不可改。违反时 abort，而不是只靠存储接口纪律。
+对可变投影另设列级 trigger：`outbox_operations.payload_schema_version/payload_json/payload_digest` 创建后不可改；`attempts.attempt_resolution` 只能从 NULL 与同事务 NULL resolution 时间写为一组非空值；隔离不得由 `frozen` 直接覆盖为另一原因，且解除必须同时写 `isolation_released_at_ms/isolation_release_event_id`；同 generation 的 claim permit 不可替换；Interrupt 的 `charged_budget_entry_id/generation_key` 与关闭字段一旦非空不可改。违反时 abort，而不是只靠存储接口纪律。
 
 迁移连接可在迁移事务中替换 trigger；运行时存储接口无关闭 trigger 的能力。
 
@@ -967,6 +1051,16 @@ Gate 首次判定：snapshot、evaluation、预判 calibration 同事务；需�
 15. 遗留 `running` call 只按已有 attempts 收敛为 valid/fallback，不重放无法证明未执行的 provider attempt。
 16. intake 状态约束生效：`consumed` 必有 `linked_run_id`，awaiting 必有 assessment 与 generation；token post-charge 允许单次越界而 attention/forge 仍被通用 CAS 拒绝。
 
+### 16.1 M3 增补验收
+
+1. 新 daemon boot 的 recovery completion 为空；完成扫描前 `launch_agent` 的首次 claim 与过期 lease reclaim 都被存储 CAS 拒绝，完成后才可认领；重启创建的新 boot 重新关闭屏障。
+2. 恢复候选查询不按 Run 状态漏掉非终态 attempt，也不漏掉未完成启动 operation；每项恢复动作带 expected generation/operation version 与 observation digest。
+3. `none → frozen → none` 与 Run/phase 正交；Run `failed` 后 frozen 仍可查询，worktree 仍不可回收/复用。无消失证据解除失败；未验证 Agent 的进程组消失不能自动解除。
+4. `claim:started`、恢复补 started、迟到 result 与 Interrupt 指令走同一仲裁事务；事实先到只产生一次 `superseded_by_fact` 关闭，决定先到吸收身份并稳定返回 `superseded_by_decision`，两种交错均不出现第二 owner。
+5. retry/hold/escalate/封顶 hold 均不写 resolution；reject 只写一次 `reject`，retry 探测成功只写一次 `retry_after_absence`，重放返回既有结果。
+6. Interrupt close 字段同空同非空且写后不可变；每个 close reason 的映射有约束测试，关闭从不回退 attention charge。
+7. 受控终止的确认消失与未确认分支分别原子收敛；后者保持冻结并只有一条可见 `startup_stall` Interrupt，前者按 recovery/retry/kill 来源决定是否创建新 attempt。
+
 ## 17. 自查结果
 
 - [x] S1：T1 无 Run、T2 无 attempt、T7 聚合三种调用均有合法且唯一的 trace 身份。
@@ -975,6 +1069,7 @@ Gate 首次判定：snapshot、evaluation、预判 calibration 同事务；需�
 - [x] S4：Report 使用持久整数令牌桶；critical fuse 使用 append-only entry 的滑动窗口。
 - [x] S5：schema version、FK、隔离释放、原因枚举、probe、manual Run、close reason、回放格式、索引和 payload trigger 均已处置。
 - [x] `attempt_resolution` 旧名未进入 spec，V0 枚举保持 `reject | retry_after_absence`。
+- [x] M3 §3.4–§3.5：恢复屏障、恢复/终止写端口、独立隔离投影、四入口唯一仲裁与关闭原因映射已落 §1/§4.2/§5.3/§6.1/§8.3/§11/§12/§13/§16.1。
 - [x] Brain 评审交叉补丁：call/attempt 拆表、intake 投影、token post-charge 例外与新写端口已同步落 §7/§9/§10/§11/§12/§13/§15/§16。
 - [x] 所有 markdown 相对链接存在、代码围栏闭合、无尾随空白。
 
