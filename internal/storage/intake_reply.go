@@ -30,13 +30,13 @@ func (d *DB) ApplyIntakeReply(ctx context.Context, cmd IntakeReplyCmd) error {
 	defer tx.Rollback()
 	var projectID, state string
 	var generation, version int
-	var existingReceipt string
-	if err = tx.QueryRowContext(ctx, `SELECT id FROM forge_event_receipts WHERE forge_event_id=?`, cmd.EventID).Scan(&existingReceipt); err == nil {
-		return tx.Commit()
-	} else if !errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRowContext(ctx, `SELECT project_id,state,version,clarification_generation FROM intake_items WHERE id=?`, cmd.IntakeID).Scan(&projectID, &state, &version, &generation); err != nil {
 		return err
 	}
-	if err = tx.QueryRowContext(ctx, `SELECT project_id,state,version,clarification_generation FROM intake_items WHERE id=?`, cmd.IntakeID).Scan(&projectID, &state, &version, &generation); err != nil {
+	var existingReceipt string
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM forge_event_receipts WHERE project_id=? AND forge_event_id=?`, projectID, cmd.EventID).Scan(&existingReceipt); err == nil {
+		return tx.Commit()
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	payload, _ := json.Marshal(map[string]any{"intake_id": cmd.IntakeID, "generation": cmd.Generation, "accepted": cmd.Accept, "forge_event_id": cmd.EventID})

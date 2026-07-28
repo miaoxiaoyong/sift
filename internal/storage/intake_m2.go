@@ -56,6 +56,47 @@ type IntakeCursor struct {
 	NextPollAtMS int64
 }
 
+type ReplyState struct {
+	ProjectID  string
+	IssueID    string
+	Cursor     string
+	Generation int
+	MarkerAtMS int64
+}
+
+func (d *DB) ReplyState(ctx context.Context, projectID, issueID string) (ReplyState, error) {
+	state := ReplyState{ProjectID: projectID, IssueID: issueID}
+	var cursor sql.NullString
+	err := d.db.QueryRowContext(ctx, `SELECT cursor,generation,marker_at_ms FROM forge_reply_state WHERE project_id=? AND issue_id=?`, projectID, issueID).Scan(&cursor, &state.Generation, &state.MarkerAtMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return state, nil
+	}
+	if err != nil {
+		return ReplyState{}, err
+	}
+	state.Cursor = cursor.String
+	return state, nil
+}
+
+// SaveReplyGenerationContext records the last marker independently of the
+// observation cursor. This makes a marker durable before a crash can advance
+// the cursor past the page containing it.
+func (d *DB) SaveReplyGenerationContext(ctx context.Context, projectID, issueID string, generation int, markerAtMS, nowMS int64) error {
+	if projectID == "" || issueID == "" || generation < 1 || markerAtMS < 0 || nowMS <= 0 {
+		return errors.New("storage: incomplete reply generation context")
+	}
+	_, err := d.db.ExecContext(ctx, `INSERT INTO forge_reply_state(project_id,issue_id,generation,marker_at_ms,updated_at_ms) VALUES(?,?,?, ?,?) ON CONFLICT(project_id,issue_id) DO UPDATE SET generation=CASE WHEN excluded.generation > forge_reply_state.generation OR (excluded.generation = forge_reply_state.generation AND excluded.marker_at_ms >= forge_reply_state.marker_at_ms) THEN excluded.generation ELSE forge_reply_state.generation END, marker_at_ms=CASE WHEN excluded.generation > forge_reply_state.generation OR (excluded.generation = forge_reply_state.generation AND excluded.marker_at_ms >= forge_reply_state.marker_at_ms) THEN excluded.marker_at_ms ELSE forge_reply_state.marker_at_ms END, updated_at_ms=excluded.updated_at_ms`, projectID, issueID, generation, markerAtMS, nowMS)
+	return err
+}
+
+func (d *DB) SaveReplyCursor(ctx context.Context, projectID, issueID, cursor string, nowMS int64) error {
+	if projectID == "" || issueID == "" || cursor == "" || nowMS <= 0 {
+		return errors.New("storage: incomplete reply cursor")
+	}
+	_, err := d.db.ExecContext(ctx, `INSERT INTO forge_reply_state(project_id,issue_id,cursor,updated_at_ms) VALUES(?,?,?,?) ON CONFLICT(project_id,issue_id) DO UPDATE SET cursor=excluded.cursor,updated_at_ms=excluded.updated_at_ms`, projectID, issueID, cursor, nowMS)
+	return err
+}
+
 func (d *DB) IntakeReplyOperations(ctx context.Context, intakeID string) ([]IntakeReplyOperation, error) {
 	if intakeID == "" {
 		return nil, errors.New("storage: invalid intake id")

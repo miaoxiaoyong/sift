@@ -292,7 +292,7 @@ func TestSchemaInventory(t *testing.T) {
 		"config_snapshots", "daemon_boots", "projects", "project_hook_baselines",
 		"task_spec_snapshots", "runs", "attempts", "attempt_claims", "attempt_probes",
 		"interrupts", "interrupt_deliveries",
-		"events", "forge_cursors", "forge_event_receipts", "report_receipts",
+		"events", "forge_cursors", "forge_reply_state", "forge_event_receipts", "report_receipts",
 		"intake_items", "intake_assessments",
 		"outbox_operations", "outbox_attempts", "outbox_attempt_results",
 		"budget_counters", "rate_limit_buckets", "budget_entries",
@@ -312,7 +312,7 @@ func TestSchemaInventory(t *testing.T) {
 		"attempts_run_attempt_desc", "interrupts_status_expires", "interrupts_run_status",
 		"events_run_seq", "events_project_seq", "outbox_operations_state_next",
 		"outbox_operations_lease_expiry", "budget_entries_kind_created_run",
-		"forge_cursors_next_poll", "brain_calls_run_attempt_touchpoint",
+		"forge_cursors_next_poll", "forge_reply_state_updated", "brain_calls_run_attempt_touchpoint",
 		"intake_items_state_updated", "gate_evaluations_run_created", "ledger_entries_run_created",
 	}
 	assertObjectsExist(t, db, "index", wantIndexes)

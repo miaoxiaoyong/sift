@@ -37,8 +37,7 @@ func (c *ReplyConsumer) RunOnce(ctx context.Context) error {
 			return err
 		}
 		for _, item := range items {
-			stream := "issue_comments"
-			cursor, err := c.DB.IntakeCursor(ctx, project.ID, stream)
+			state, err := c.DB.ReplyState(ctx, project.ID, item.IssueID)
 			if err != nil {
 				return err
 			}
@@ -46,8 +45,8 @@ func (c *ReplyConsumer) RunOnce(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			ctxCall := forge.WithChargeKey(ctx, "reply:"+project.ID+":"+item.IssueID+":"+cursor.Cursor)
-			comments, next, err := c.Forge.ListIssueComments(ctxCall, project.Ref, item.IssueID, forge.Cursor(cursor.Cursor))
+			ctxCall := forge.WithChargeKey(ctx, "reply:"+project.ID+":"+item.IssueID+":"+state.Cursor)
+			comments, next, err := c.Forge.ListIssueComments(ctxCall, project.Ref, item.IssueID, forge.Cursor(state.Cursor))
 			if err != nil {
 				return err
 			}
@@ -55,8 +54,11 @@ func (c *ReplyConsumer) RunOnce(ctx context.Context) error {
 			// Markers belong to Sift-authored clarification comments. Walk the
 			// page in forge order and retain the latest marker seen so replies
 			// from different generations in one page are arbitrated correctly.
-			latestGeneration := 0
-			var latestMarkerAt time.Time
+			latestGeneration := state.Generation
+			latestMarkerAt := time.UnixMilli(state.MarkerAtMS)
+			if state.MarkerAtMS == 0 {
+				latestMarkerAt = time.Time{}
+			}
 			for _, comment := range comments {
 				isMarker := false
 				for _, op := range operations {
@@ -67,8 +69,12 @@ func (c *ReplyConsumer) RunOnce(ctx context.Context) error {
 						Generation int `json:"generation"`
 					}
 					if json.Unmarshal(op.Payload, &markerPayload) == nil && markerPayload.Generation >= 1 {
-						latestGeneration = markerPayload.Generation
-						latestMarkerAt = comment.CreatedAt
+						markerAt := comment.CreatedAt
+						markerAtMS := markerAt.UnixMilli()
+						if markerPayload.Generation > latestGeneration || (markerPayload.Generation == latestGeneration && markerAtMS >= latestMarkerAt.UnixMilli()) {
+							latestGeneration = markerPayload.Generation
+							latestMarkerAt = markerAt
+						}
 					}
 					isMarker = true
 					break
@@ -90,8 +96,13 @@ func (c *ReplyConsumer) RunOnce(ctx context.Context) error {
 					return err
 				}
 			}
+			if latestGeneration > state.Generation || (latestGeneration == state.Generation && latestGeneration > 0 && latestMarkerAt.UnixMilli() > state.MarkerAtMS) {
+				if err := c.DB.SaveReplyGenerationContext(ctx, project.ID, item.IssueID, latestGeneration, latestMarkerAt.UnixMilli(), now.UnixMilli()); err != nil {
+					return err
+				}
+			}
 			if next != "" {
-				if err := c.DB.SaveForgeCursor(ctx, project.ID, stream, string(next), now.UnixMilli()); err != nil {
+				if err := c.DB.SaveReplyCursor(ctx, project.ID, item.IssueID, string(next), now.UnixMilli()); err != nil {
 					return err
 				}
 			}
