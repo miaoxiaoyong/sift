@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,120 @@ func TestV3AllVerbsDualPlatformMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestV3RecordedMutationAndCommentMatrix keeps the three mutation/comment
+// verbs on real CLI adapters backed by checked-in CLI response fixtures. In
+// particular, all failure cases below must stop at the Forge boundary.
+func TestV3RecordedMutationAndCommentMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		kind          Kind
+		project       ProjectRef
+		newAdapter    func(string, Runner) *Adapter
+		commentID     string
+		create        []byte
+		reread        []byte
+		comments      []byte
+		missingActors []byte
+	}{
+		{
+			name:          "github",
+			kind:          KindGitHub,
+			project:       ProjectRef{Kind: KindGitHub, Host: "github.com", ProjectKey: "owner/repo"},
+			newAdapter:    NewGitHub,
+			commentID:     "9001",
+			create:        v3Fixture(t, "github", "change_created.json"),
+			comments:      v3Fixture(t, "github", "change_comments.json"),
+			missingActors: v3Fixture(t, "github", "comments_missing_actor.json"),
+		},
+		{
+			name:          "gitlab",
+			kind:          KindGitLab,
+			project:       ProjectRef{Kind: KindGitLab, Host: "gitlab.example", ProjectKey: "owner/repo"},
+			newAdapter:    NewGitLab,
+			commentID:     "9002",
+			create:        v3Fixture(t, "gitlab", "change_created_missing_head.json"),
+			reread:        v3Fixture(t, "gitlab", "change_created_reread.json"),
+			comments:      v3Fixture(t, "gitlab", "change_comments.json"),
+			missingActors: v3Fixture(t, "gitlab", "notes_missing_actor.json"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			t.Run("CommentTarget_recorded_response_and_missing_id_fail_closed", func(t *testing.T) {
+				a := tc.newAdapter("forge", func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
+					if !strings.Contains(args[1], "/merge_requests/7/notes") && !strings.Contains(args[1], "/issues/7/comments") {
+						t.Fatalf("comment path=%q", args[1])
+					}
+					return v3Fixture(t, tc.name, "comment_created.json"), nil, nil
+				})
+				id, err := a.CommentTarget(ctx, tc.project, TargetRef{Kind: TargetChange, ID: "7"}, "Sift decision")
+				if err != nil || id != tc.commentID {
+					t.Fatalf("comment id=%q err=%v", id, err)
+				}
+
+				a = tc.newAdapter("forge", constRunner(v3Fixture(t, tc.name, "comment_created_missing_id.json")))
+				if _, err := a.CommentTarget(ctx, tc.project, TargetRef{Kind: TargetChange, ID: "7"}, "Sift decision"); !errors.Is(err, ErrContractViolation) {
+					t.Fatalf("missing comment id err=%v, want ErrContractViolation", err)
+				}
+			})
+
+			t.Run("CreateChange_recorded_response", func(t *testing.T) {
+				calls := 0
+				a := tc.newAdapter("forge", func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
+					calls++
+					if calls == 1 {
+						return tc.create, nil, nil
+					}
+					if tc.reread == nil || !strings.HasSuffix(args[1], "/73") {
+						t.Fatalf("unexpected create follow-up path=%q", args[1])
+					}
+					return tc.reread, nil, nil
+				})
+				change, err := a.CreateChange(ctx, tc.project, "sift/79", "main", "Sift change", "body")
+				if err != nil || change.ID != "73" || change.HeadSHA != "created-head-73" {
+					t.Fatalf("change=%+v err=%v", change, err)
+				}
+				if tc.kind == KindGitLab && calls != 2 {
+					t.Fatalf("GitLab missing-head create calls=%d, want reread", calls)
+				}
+			})
+
+			t.Run("ListChangeComments_recorded_response_and_actor_fail_closed", func(t *testing.T) {
+				a := tc.newAdapter("forge", constRunner(tc.comments))
+				comments, _, err := a.ListChangeComments(ctx, tc.project, "7", "")
+				if err != nil || len(comments) != 1 || comments[0].Author != "maintainer" {
+					t.Fatalf("comments=%+v err=%v", comments, err)
+				}
+
+				a = tc.newAdapter("forge", constRunner(tc.missingActors))
+				comments, _, err = a.ListChangeComments(ctx, tc.project, "7", "")
+				if err != nil || len(comments) != 1 || comments[0].Author == "" {
+					t.Fatalf("missing actor must be discarded: comments=%+v err=%v", comments, err)
+				}
+			})
+		})
+	}
+
+	t.Run("gitlab_create_reread_still_missing_head_fails_closed", func(t *testing.T) {
+		project := ProjectRef{Kind: KindGitLab, Host: "gitlab.example", ProjectKey: "owner/repo"}
+		calls := 0
+		a := NewGitLab("glab", func(_ context.Context, _ string, _ []string, _ []byte) ([]byte, []byte, error) {
+			calls++
+			if calls == 1 {
+				return v3Fixture(t, "gitlab", "change_created_missing_head.json"), nil, nil
+			}
+			return v3Fixture(t, "gitlab", "change_created_reread_missing_head.json"), nil, nil
+		})
+		if _, err := a.CreateChange(context.Background(), project, "sift/79", "main", "Sift change", "body"); !errors.Is(err, ErrContractViolation) {
+			t.Fatalf("missing head after reread err=%v, want ErrContractViolation", err)
+		}
+		if calls != 2 {
+			t.Fatalf("calls=%d, want create plus reread", calls)
+		}
+	})
 }
 
 func matrixRunner(kind Kind) Runner {
