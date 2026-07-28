@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 created: 2026-07-29
 summary: Interrupt 的确定性字段、发射、去重与 startup_stall 契约
 ---
