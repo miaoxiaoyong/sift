@@ -397,14 +397,22 @@ type rawComment struct {
 	} `json:"author"`
 }
 
-func (a *Adapter) listComments(ctx context.Context, p ProjectRef, id string, since Cursor) ([]Comment, Cursor, error) {
+func (a *Adapter) listComments(ctx context.Context, p ProjectRef, target TargetRef, since Cursor) ([]Comment, Cursor, error) {
+	if target.ID == "" || (target.Kind != TargetIssue && target.Kind != TargetChange) {
+		return nil, "", &ClassifiedError{Class: ErrContractViolation, Summary: "invalid target"}
+	}
+	id := target.ID
 	tracker, err := newCursorTracker(since)
 	if err != nil {
 		return nil, "", err
 	}
 	path := a.base(p) + "/issues/" + pathPart(id) + "/comments"
 	if a.Kind == KindGitLab {
-		path = a.base(p) + "/issues/" + pathPart(id) + "/notes"
+		resource := "issues"
+		if target.Kind == TargetChange {
+			resource = "merge_requests"
+		}
+		path = a.base(p) + "/" + resource + "/" + pathPart(id) + "/notes"
 	}
 	if tracker.queryTime() != "" {
 		key := "since"
@@ -438,10 +446,10 @@ func (a *Adapter) listComments(ctx context.Context, p ProjectRef, id string, sin
 	return out, tracker.next(), e
 }
 func (a *Adapter) ListIssueComments(c context.Context, p ProjectRef, id string, s Cursor) ([]Comment, Cursor, error) {
-	return a.listComments(c, p, id, s)
+	return a.listComments(c, p, TargetRef{Kind: TargetIssue, ID: id}, s)
 }
 func (a *Adapter) ListChangeComments(c context.Context, p ProjectRef, id string, s Cursor) ([]Comment, Cursor, error) {
-	return a.listComments(c, p, id, s)
+	return a.listComments(c, p, TargetRef{Kind: TargetChange, ID: id}, s)
 }
 
 type rawChange struct {
@@ -591,24 +599,29 @@ func (a *Adapter) getChange(ctx context.Context, p ProjectRef, id string, fetchR
 }
 func (a *Adapter) CreateChange(ctx context.Context, p ProjectRef, branch, base, title, body string) (Change, error) {
 	path := a.base(p) + "/pulls"
-	payload := map[string]string{"head": branch, "base": base, "title": title, "body": body}
+	payload := map[string]any{"head": branch, "base": base, "title": title, "body": body, "draft": false}
 	if a.Kind == KindGitLab {
 		path = a.base(p) + "/merge_requests"
-		payload = map[string]string{"source_branch": branch, "target_branch": base, "title": title, "description": body}
+		payload = map[string]any{"source_branch": branch, "target_branch": base, "title": title, "description": body}
 	}
 	in, _ := json.Marshal(payload)
 	var x rawChange
 	if e := a.call(ctx, p, path, "POST", in, &x); e != nil {
 		return Change{}, e
 	}
-	c, e := a.change(x)
-	if e != nil {
-		return c, e
+	// GitLab can acknowledge before diff_refs.head_sha is populated.
+	sha := x.Head.SHA
+	id := x.Number
+	if a.Kind == KindGitLab {
+		sha, id = x.DiffRefs.HeadSHA, x.IID
 	}
-	if c.HeadSHA == "" {
-		return Change{}, &ClassifiedError{Class: ErrContractViolation, Summary: "created change missing head sha"}
+	if id == 0 {
+		return Change{}, &ClassifiedError{Class: ErrContractViolation, Summary: "created change missing id"}
 	}
-	return c, nil
+	if sha == "" {
+		return a.getChange(ctx, p, strconv.Itoa(id), false)
+	}
+	return a.change(x)
 }
 func (a *Adapter) FindChangeForCreateOperation(ctx context.Context, p ProjectRef, opKey, branch, base string) (*Change, FindResult, error) {
 	if opKey == "" || branch == "" || base == "" {
@@ -743,49 +756,80 @@ func (a *Adapter) GetChecks(ctx context.Context, p ProjectRef, sha string) (Chec
 	if e := a.call(ctx, p, a.base(p)+"/commits/"+pathPart(sha)+"/check-runs", "GET", nil, &checks); e != nil {
 		return CheckSuite{}, e
 	}
-	var statuses []struct {
-		State     string `json:"state"`
-		Context   string `json:"context"`
-		TargetURL string `json:"target_url"`
+	// /status returns a combined-status object, not a bare array.
+	var statuses struct {
+		State    string `json:"state"`
+		Statuses []struct {
+			State     string `json:"state"`
+			Context   string `json:"context"`
+			TargetURL string `json:"target_url"`
+		} `json:"statuses"`
 	}
 	if e := a.call(ctx, p, a.base(p)+"/commits/"+pathPart(sha)+"/status", "GET", nil, &statuses); e != nil {
 		return CheckSuite{}, e
 	}
-	suite := CheckSuite{Conclusion: "success"}
+	suite := CheckSuite{Conclusion: "unknown"}
+	seen := false
+	add := func(conclusion string) {
+		if conclusion == "" {
+			conclusion = "pending"
+		}
+		if !seen || ciWorse(conclusion, suite.Conclusion) {
+			suite.Conclusion = conclusion
+		}
+		seen = true
+	}
 	for _, r := range checks.CheckRuns {
 		if r.DetailsURL != "" && suite.ExternalURL == "" {
 			suite.ExternalURL = r.DetailsURL
 		}
 		switch r.Conclusion {
-		case "failure", "cancelled", "timed_out":
-			suite.Conclusion = "failure"
+		case "failure", "cancelled", "timed_out", "action_required":
+			add("failure")
 			suite.FailedJobs = append(suite.FailedJobs, CheckJob{Name: r.Name, WebURL: r.HTMLURL})
-		case "":
-			if suite.Conclusion != "failure" {
-				suite.Conclusion = "pending"
-			}
-		case "success":
+		case "", "queued", "in_progress", "pending":
+			add("pending")
+		case "success", "neutral", "skipped":
+			add("success")
 		default:
-			suite.Conclusion = "unknown"
+			add("unknown")
 		}
 	}
-	for _, s := range statuses {
+	for _, s := range statuses.Statuses {
 		if suite.ExternalURL == "" {
 			suite.ExternalURL = s.TargetURL
 		}
 		switch s.State {
 		case "failure", "error":
-			suite.Conclusion = "failure"
+			add("failure")
 		case "pending":
-			if suite.Conclusion == "success" {
-				suite.Conclusion = "pending"
-			}
+			add("pending")
 		case "success":
+			add("success")
 		default:
-			suite.Conclusion = "unknown"
+			add("unknown")
 		}
 	}
+	add(normalizeGitHubStatus(statuses.State))
 	return suite, nil
+}
+
+func normalizeGitHubStatus(s string) string {
+	switch s {
+	case "failure", "error":
+		return "failure"
+	case "pending":
+		return "pending"
+	case "success":
+		return "success"
+	default:
+		return "unknown"
+	}
+}
+
+func ciWorse(candidate, current string) bool {
+	rank := map[string]int{"success": 0, "pending": 1, "unknown": 2, "failure": 3}
+	return rank[candidate] > rank[current]
 }
 func normalizeCI(s string) string {
 	switch s {

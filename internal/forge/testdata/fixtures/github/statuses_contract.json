@@ -1,1 +1,6 @@
-[{"state":"failure","context":"unit","target_url":"https://github/status/unit"}]
+{
+  "state": "failure",
+  "statuses": [
+    {"state":"failure","context":"unit","target_url":"https://github/status/unit"}
+  ]
+}

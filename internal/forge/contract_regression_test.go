@@ -66,7 +66,7 @@ func TestContractRegressionSuite(t *testing.T) {
 					baseRun := run
 					run = func(ctx context.Context, cli string, args []string, input []byte) ([]byte, []byte, error) {
 						if strings.HasSuffix(args[1], "/status") {
-							return []byte(`[]`), nil, nil
+							return []byte(`{"state":"success","statuses":[]}`), nil, nil
 						}
 						return baseRun(ctx, cli, args, input)
 					}

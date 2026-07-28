@@ -48,6 +48,41 @@ func TestAdapterRateLimitMapping(t *testing.T) {
 	}
 }
 
+func TestGitLabCreateChangeRereadsMissingHeadSHA(t *testing.T) {
+	project := ProjectRef{Kind: KindGitLab, Host: "gitlab.example", ProjectKey: "o/r"}
+	calls := 0
+	a := NewGitLab("glab", func(_ context.Context, _ string, args []string, input []byte) ([]byte, []byte, error) {
+		calls++
+		if calls == 1 {
+			if !strings.HasSuffix(args[1], "/merge_requests") {
+				t.Fatalf("create path=%q", args[1])
+			}
+			return []byte(`{"iid":7,"web_url":"https://gitlab/x/7","state":"opened","title":"change"}`), nil, nil
+		}
+		if !strings.HasSuffix(args[1], "/merge_requests/7") {
+			t.Fatalf("reread path=%q", args[1])
+		}
+		return []byte(`{"iid":7,"web_url":"https://gitlab/x/7","state":"opened","diff_refs":{"head_sha":"head-7"},"title":"change"}`), nil, nil
+	})
+	change, err := a.CreateChange(context.Background(), project, "branch", "main", "change", "body")
+	if err != nil || change.ID != "7" || change.HeadSHA != "head-7" || calls != 2 {
+		t.Fatalf("change=%+v calls=%d err=%v", change, calls, err)
+	}
+}
+
+func TestGitLabChangeCommentsUseMergeRequestNotes(t *testing.T) {
+	a := NewGitLab("glab", func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
+		if !strings.Contains(args[1], "/merge_requests/7/notes") {
+			t.Fatalf("change comments path=%q", args[1])
+		}
+		return []byte(`[]`), nil, nil
+	})
+	_, _, err := a.ListChangeComments(context.Background(), ProjectRef{Kind: KindGitLab, Host: "gitlab.example", ProjectKey: "o/r"}, "7", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGitLabNormalization(t *testing.T) {
 	a := NewGitLab("glab", func(context.Context, string, []string, []byte) ([]byte, []byte, error) {
 		return []byte(`{"iid":7,"web_url":"https://gitlab/x/7","state":"opened","diff_refs":{"head_sha":"abc"},"title":"Draft: test","detailed_merge_status":"conflict"}`), nil, nil
