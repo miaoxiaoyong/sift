@@ -47,6 +47,37 @@ type IntakeCursor struct {
 	NextPollAtMS int64
 }
 
+func (d *DB) IntakeReplyOperations(ctx context.Context, intakeID string) ([]IntakeReplyOperation, error) {
+	if intakeID == "" {
+		return nil, errors.New("storage: invalid intake id")
+	}
+	rows, err := d.db.QueryContext(ctx, `SELECT operation_key,payload_json FROM outbox_operations WHERE operation_key LIKE 'comment:intake-%:' || ? || ':%' ORDER BY operation_key`, intakeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IntakeReplyOperation
+	for rows.Next() {
+		var op IntakeReplyOperation
+		if err := rows.Scan(&op.Key, &op.Payload); err != nil {
+			return nil, err
+		}
+		out = append(out, op)
+	}
+	return out, rows.Err()
+}
+
+// SaveForgeCursor advances a per-target observation cursor. It is deliberately
+// separate from PersistIntakeBatch because comment receipts are committed one
+// at a time and a crash must replay them safely.
+func (d *DB) SaveForgeCursor(ctx context.Context, projectID, stream, cursor string, nowMS int64) error {
+	if projectID == "" || stream == "" || cursor == "" || nowMS <= 0 {
+		return errors.New("storage: incomplete forge cursor")
+	}
+	_, err := d.db.ExecContext(ctx, `INSERT INTO forge_cursors(project_id,stream,cursor,poll_mode,next_poll_at_ms,updated_at_ms) VALUES(?,?,?,'active',?,?) ON CONFLICT(project_id,stream) DO UPDATE SET cursor=excluded.cursor,updated_at_ms=excluded.updated_at_ms`, projectID, stream, cursor, nowMS, nowMS)
+	return err
+}
+
 func (d *DB) IntakeCursor(ctx context.Context, projectID, stream string) (IntakeCursor, error) {
 	var c IntakeCursor
 	c.ProjectID, c.Stream = projectID, stream
