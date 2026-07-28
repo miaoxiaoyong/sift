@@ -302,7 +302,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 - [ ] 在 M3 建立此后唯一的 Interrupt 发射入口；M4/M5 只能调用或扩展渲染/调度，不能新建第二入口
 - [ ] 入口从第一天支持 PRD 全部 reason 的最小确定性契约：reason/min_modality、互斥 options（≤4）、fallback headline/brief/links、expires/on_expire 与 severity 映射；T4 不可用时也能生成合法对象
-- [ ] 每类故障有稳定生成键并受唯一约束；`startup_stall` 使用 `(run_id, attempt_no, generation, cause)`
+- [ ] 每类故障有带 domain/version/reason 的稳定生成键并受唯一约束；`startup_stall` 使用 `(run_id, attempt_no, generation, cause=startup_stall)`，诊断分类不拆键
 - [ ] Run 转移、Interrupt、注意力记账、事件、发布 operation 五件事同事务
 - [ ] M3 使用已有 forge 评论与确定性 fallback 作为可见发布面；T4/T6、Channel、critical 熔断在 M5 增补
 - [ ] 受控终止无法证明消失时生成一条 `startup_stall`、Run 转 `waiting_human`、attempt 保持隔离；不得静默停在 queued

@@ -345,7 +345,7 @@ D0.2 写的「按 `(base, head branch)` 查是否已存在**开启的** Change�
 | Gate 判定缓存 | `(gate_input_hash, gate_version)`——`gate_input_hash` 是**整份冻结输入快照**的规范化序列化摘要，不是维度枚举；理由见 §8.5 |
 | 外部副作用 | operation key（§6.4），逐类另有远端证据或本地互斥 |
 | **agent 启动互斥** | operation lease + `attempt_claim(run_id, attempt_no)` 唯一约束 + wrapper session + 一次性 spawn permit + **fencing 代次**；`spawning` handoff 未收敛前禁止换代（§8.4） |
-| **Interrupt 生成**（不是指令去重） | 每类故障一个稳定生成键 + 唯一约束；`startup_stall` 为 `(run_id, attempt_no, generation, cause)`。防的是并发发现者各建一条打扰（§8.7） |
+| **Interrupt 生成**（不是指令去重） | 每类故障一个带 domain/version/reason 的稳定生成键 + 唯一约束；`startup_stall` 为 `(run_id, attempt_no, generation, cause=startup_stall)`，诊断分类不拆键。防的是并发发现者各建一条打扰（§8.7） |
 | **人工态与迟到事实的仲裁** | `attempt_resolution` marker 的 CAS：启动事实先到则事实生效；`reject` 或 retry 成功结果先落定则吸收旧 attempt 的后续事实（§10.1） |
 
 ---
@@ -611,7 +611,7 @@ PRD §5.6 要求预判写在人做决定**之前**。实现约束：**当 reconc
 - 超时与升级由 Supervisor tick 扫描驱动，升级次数与终态按 PRD §4.2；`escalate` 不重复计配额。升级投递使用当前 Channel 的强提醒档位；Channel 不支持优先级时在同一通道重推，V0 不假设存在第二 Channel。
 - **推送故障可见且有兜底**：Channel 推送连续失败 N 次即走 §6.4 的 forge 告警评论路径，并在 `sift ps` / `sift doctor` 标记。Interrupt 的「已生成」与「已送达」是两个字段，不许混为一谈——混了就会出现「系统认为已通知、人从未收到」。
 - **恢复流程是发射器的合法调用方之一。** attempt 启动交接卡住、进程身份无法确认这类停滞（§10.1 的受控终止流程人工分支）必须以 Interrupt 呈现，走同一道配额、同一个 severity 纯函数，不得另开一条「运维告警」旁路——否则系统里就有了两种「需要人」的表达，而其中一种不计配额也不会超时升级。
-- **「单一入口」不等于「同一故障只生成一条」，生成必须有稳定键。** 入口唯一只防「有第二个地方能发打扰」，防不住同一故障被多个发现者并发发现：启动超时扫描、恢复扫描、并发的 `kill` / `retry`、进程观测回调都能同时看见同一个停滞。因此发射器对每类故障要求一个**生成去重键**并加唯一约束，`startup_stall` 的键是 `(run_id, attempt_no, generation, cause)`；键已存在时返回既有 Interrupt，不新建、不重复扣配额。注意区分三个键的职责：生成键防重复生成，`run_id + nonce`（PRD §7.1）防指令重放，`interrupt:{id}:publish`（§6.4）防重复推送——后两者都以「已经选定了同一个 Interrupt」为前提，替代不了第一个。
+- **「单一入口」不等于「同一故障只生成一条」，生成必须有稳定键。** 入口唯一只防「有第二个地方能发打扰」，防不住同一故障被多个发现者并发发现：启动超时扫描、恢复扫描、并发的 `kill` / `retry`、进程观测回调都能同时看见同一个停滞。因此发射器对每类故障要求一个带 domain/version/reason 的**生成去重键**并加唯一约束；`startup_stall` 的键是 `(run_id, attempt_no, generation, cause=startup_stall)`，`process_identity_unknown` 等仅为诊断分类，不得拆成多条。键已存在时返回既有 Interrupt，不新建、不重复扣配额。注意区分三个键的职责：生成键防重复生成，`run_id + nonce`（PRD §7.1）防指令重放，M3 `comment:interrupt:<interrupt_id>:1` 防 forge 评论重试；M5 `interrupt:{id}:publish:<escalation_no>` 才防 Channel 推送——后两者都以「已经选定了同一个 Interrupt」为前提，替代不了第一个。
 - **一次打扰的五件事同事务提交**：Run 转移、Interrupt 行（含生成键）、注意力配额记账、事件、发布 operation。这是 §6.3 那四件事的一个实例，写在这里是因为它最容易被拆开——拆开就会留下「有状态无 Interrupt」「重复扣费」「有 Interrupt 无推送」三种崩溃窗口，而它们各自都能让人永远收不到这条打扰。
 
 → `specs/interrupt.md`
@@ -1147,7 +1147,7 @@ D0.5 关闭了 review-09～12 的全部条目，但**新协议自己产生了四
 |----|------|------|------|
 | R14-F1：Run 转 `waiting_human` 后，旧执行体醒来提交的**合法** `claim:started`（或迟到 `result.json`）没有线性化规则——步骤 8 与恢复矩阵只定义 `queued → running`，而 `queued` 已不存在；三种可能实现各自违反一条承诺 | **P1** | 仲裁点定为单一 `attempt_decision` marker（CAS，不可逆）：决定未提交前**事实优先**（同一事务推进 attempt + Run `waiting_human → running` + Interrupt 标 `superseded_by_fact` + 接管监督）；决定已提交则**由决定吸收事实**（不推进 Run，但登记可终止身份并回 `superseded_by_decision`，继续执行该决定的终止）。四个入口共享同一套 CAS 前置与幂等结果 | §8.4 步骤 8、§10.1、§6.5、V2/V4、ADR-010 决策 6、PRD §4.1 |
 | R14-F2：这条 Interrupt 是在「证明不了」之后才发出的，再给 `kill`/`retry` 不带来新证据只会循环；`failure_review` 的默认 `auto_reject` 会把 Run 推进终态而执行体可能还活着；通用 `approve` 能落到这条 Interrupt 上 | P2 | 新增 PRD reason **`startup_stall`**（`text`，禁用 `auto_reject`，达升级上限落 `hold` 不进终态）；动作集收窄为 `retry`（人已在系统外处置后重新探测）/ `reject`（放弃并**保持隔离**）/ `hold`，`approve` 不在 options 内；PRD §7.1 增加「指令必须属于当前 Interrupt 的 `options[]`」这一道校验 | PRD §4.2/§4.3/§4.4/§7.1、§10.1、V10a |
-| R14-F3：「只发一次 Interrupt」没有可跨并发与崩溃成立的身份——`run_id + nonce` 与 `publish` operation key 都以「已选定同一个 Interrupt」为前提 | P2 | 发射器对每类故障要求**生成去重键** + 唯一约束（`startup_stall` 为 `(run_id, attempt_no, generation, cause)`）；打扰的五件事（Run 转移 / Interrupt / 配额 / 事件 / 发布 operation）同事务提交 | §8.7、§6.5、V2、V4 |
+| R14-F3：「只发一次 Interrupt」没有可跨并发与崩溃成立的身份——`run_id + nonce` 与 `publish` operation key 都以「已选定同一个 Interrupt」为前提 | P2 | 发射器对每类故障要求带 domain/version/reason 的**生成去重键** + 唯一约束（`startup_stall` 为 `(run_id, attempt_no, generation, cause=startup_stall)`，诊断分类不拆键）；打扰的五件事（Run 转移 / Interrupt / 配额 / 事件 / 发布 operation）同事务提交 | §8.7、§6.5、V2、V4 |
 | R14-F4：D0.6 把 Q7 改成「无法经**任何**本地 RPC 改变 Run」，与 §8.9/§9.1 已承认的 operator token 暴露面直接矛盾，V10 一个编号同时要求「不可能」与「预期成功」 | P2 | 拆为 **Q7a**（端点与凭据性质，V0 必须成立）与 **Q7b**（agent 进程整体能力，V0 明确不成立、攻击复现必须成功且 `doctor` 必须报告），V10 相应拆 V10a / V10b | §2.2、§12、§9.1 |
 
 F4 记一句：D0.6 修 Q7 时把一个「窄而真」的断言换成了「宽而假」的断言——为了读起来更强，反而与同一份文档里已承认的暴露面冲突。**Q6 要求的是不把某条路径上的缺口说成系统没有这个缺口，这次犯的正是它。**
