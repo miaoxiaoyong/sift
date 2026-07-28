@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/forge"
+	"github.com/miaoxiaoyong/sift/internal/forgeworker"
 	"github.com/miaoxiaoyong/sift/internal/intake"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
@@ -63,6 +65,57 @@ func TestDaemonTickExecutesDueGitHubAndGitLabRepliesWhileSkippingNotDuePoll(t *t
 		if len(awaiting) != 0 {
 			t.Fatalf("%s awaiting=%+v, reply path did not execute", project.ID, awaiting)
 		}
+	}
+}
+
+func TestDaemonTickCommentWorkersClaimOnlyTheirPayloadProject(t *testing.T) {
+	ctx := context.Background()
+	now := time.UnixMilli(3_500_000)
+	db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(t.TempDir(), "sift.db"), BinaryVersion: "test", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	github := intake.Project{ID: "github", Ref: forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "acme/gh"}}
+	gitlab := intake.Project{ID: "gitlab", Ref: forge.ProjectRef{Kind: forge.KindGitLab, Host: "gitlab.com", ProjectKey: "acme/gl"}}
+	for _, p := range []intake.Project{github, gitlab} {
+		if err := db.SeedProjectForTest(ctx, "cfg-"+p.ID, p.ID, now.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gh, gl := forge.NewFake(), forge.NewFake()
+	ghRef, glRef := github.Ref, gitlab.Ref
+	for _, p := range []struct {
+		id      string
+		project intake.Project
+	}{{"gh-issue", github}, {"gl-issue", gitlab}} {
+		body, _ := json.Marshal(map[string]any{"project_id": p.project.ID, "forge_kind": string(p.project.Ref.Kind), "forge_host": p.project.Ref.Host, "forge_project_key": p.project.Ref.ProjectKey, "target_kind": "issue", "target_id": p.id, "purpose": "intake-clarification", "intake_id": p.id, "generation": 1, "markdown": "clarify"})
+		if _, err := db.EnqueueOperation(ctx, storage.Operation{Key: storage.CommentOperationKey("intake-clarification", p.id, 1), Kind: storage.OperationForgeComment, Payload: body}, now.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := &Daemon{DB: db, Now: func() time.Time { return now }, Comments: []*forgeworker.CommentWorker{
+		{DB: db, Client: gh, ProjectID: github.ID, WorkerID: "comment:github", Lease: time.Minute, Now: func() time.Time { return now }},
+		{DB: db, Client: gl, ProjectID: gitlab.ID, WorkerID: "comment:gitlab", Lease: time.Minute, Now: func() time.Time { return now }},
+	}}
+	if err := d.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ghComments, _, err := gh.ListIssueComments(ctx, ghRef, "gh-issue", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	glComments, _, err := gl.ListIssueComments(ctx, glRef, "gl-issue", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ghComments) != 1 || len(glComments) != 1 {
+		t.Fatalf("project comment sends github=%d gitlab=%d, want 1/1", len(ghComments), len(glComments))
+	}
+	wrongGH, _, _ := gh.ListIssueComments(ctx, ghRef, "gl-issue", "")
+	wrongGL, _, _ := gl.ListIssueComments(ctx, glRef, "gh-issue", "")
+	if len(wrongGH) != 0 || len(wrongGL) != 0 {
+		t.Fatalf("workers claimed cross-project payloads: github=%d gitlab=%d", len(wrongGH), len(wrongGL))
 	}
 }
 

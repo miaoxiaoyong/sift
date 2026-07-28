@@ -57,6 +57,36 @@ func countEvents(t *testing.T, db *DB, eventType string) int {
 	return n
 }
 
+func TestV7ReplyCursorIsolatedByIssue(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	if err := db.SeedProjectForTest(ctx, "cfg-p1", "p1", testNow); err != nil {
+		t.Fatal(err)
+	}
+	// Both targets belong to the same project; their reply cursors must still
+	// be independent because each issue has its own comment stream.
+	if err := db.SaveReplyCursor(ctx, "p1", "issue-a", "a-1", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveReplyCursor(ctx, "p1", "issue-b", "b-1", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveReplyCursor(ctx, "p1", "issue-a", "a-2", testNow+1); err != nil {
+		t.Fatal(err)
+	}
+	a, err := db.ReplyState(ctx, "p1", "issue-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := db.ReplyState(ctx, "p1", "issue-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Cursor != "a-2" || b.Cursor != "b-1" {
+		t.Fatalf("reply cursors A=%q B=%q, want a-2/b-1", a.Cursor, b.Cursor)
+	}
+}
+
 func TestV7StaleGenerationReplyIsAuditOnly(t *testing.T) {
 	db, _ := openTestDB(t)
 	ctx := context.Background()
