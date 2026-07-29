@@ -235,7 +235,7 @@ CreateChange(ctx, project, branch, base, title, body string) → (Change, error)
 
 ### 4.8 `FindChangeForCreateOperation`
 ```
-FindChangeForCreateOperation(ctx, project, opKey, branch, base string) → (*Change, FindResult, error)
+FindChangeForCreateOperation(ctx, project, opKey, payloadDigest, branch, base string) → (*Change, FindResult, error)
 ```
 **用途**：为创建操作做崩溃对账——跨开启 / 关闭 / 已合并状态查找 operation marker，并返回同 base/head 的无 marker 冲突。**这是端口能力，outbox worker 不得绕过**（DESIGN §6.4）。
 
@@ -247,10 +247,10 @@ FindChangeForCreateOperation(ctx, project, opKey, branch, base string) → (*Cha
 ```
 
 **归一要点**：
-- marker 搜索：对开启 / 关闭 / 已合并的 Change 列表按 body 搜索 `op_key`。GitHub 用 `/pulls?state=all&head={owner}:{branch}&base={base}`；GitLab 用 `/merge_requests?state=all&source_branch={branch}&target_branch={base}`。所有页必须穷尽后才能判 `no_match`。
+- marker 搜索：对开启 / 关闭 / 已合并的 Change 列表按 body 精确搜索由 `op_key` 和 `payload_digest` 共同生成的 marker。GitHub 用 `/pulls?state=all&head={owner}:{branch}&base={base}`；GitLab 用 `/merge_requests?state=all&source_branch={branch}&target_branch={base}`。所有页必须穷尽后才能判 `no_match`。
 - marker 唯一命中才返回 `marker_hit`；命中多个对象为 `ErrSemanticConflict`，不得任选一个。
 - 同 base/head 冲突：任何状态下的 Change，若 body 不含本次 `op_key` marker，即判 `semantic_conflict`（DESIGN §6.4「绝不接管他人对象」）。**适配器只返回结果，不裁决——裁判规则在上层**。
-- marker 命中但 Change 已关闭或已合并：仍返回该 Change（不创建新的），上层按 PRD §4.5 收敛为 forge 外部事实。
+- marker 命中但 Change 已关闭或已合并：仍返回该 Change（不创建新的），上层按 PRD §4.5 收敛为 forge 外部事实；同 key 而 digest 不符不命中，不能接管。
 
 ### 4.9 `GetChange`
 ```

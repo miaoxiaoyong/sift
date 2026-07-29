@@ -24,6 +24,8 @@ import (
 //go:embed testdata/fixtures/github/*.json testdata/fixtures/gitlab/*.json
 var v3Fixtures embed.FS
 
+const fixtureMarkerDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 func v3Fixture(t *testing.T, platform, name string) []byte {
 	t.Helper()
 	b, err := v3Fixtures.ReadFile("testdata/fixtures/" + platform + "/" + name)
@@ -49,6 +51,7 @@ type v3Platform struct {
 	wantID           string
 	wantDraft        bool
 	wantMerge        Mergeability
+	wantMergeSHA     string
 	eventsTargetID   string
 	commentsTargetID string
 }
@@ -68,6 +71,7 @@ func TestV3ContractSuiteGitHub(t *testing.T) {
 		wantID:           "7",
 		wantDraft:        false,
 		wantMerge:        Mergeable,
+		wantMergeSHA:     "1111111111111111111111111111111111111111",
 		eventsTargetID:   "42",
 		commentsTargetID: "42",
 	})
@@ -88,6 +92,7 @@ func TestV3ContractSuiteGitLab(t *testing.T) {
 		wantID:           "7",
 		wantDraft:        true, // Draft: prefix normalization
 		wantMerge:        Mergeable,
+		wantMergeSHA:     "2222222222222222222222222222222222222222",
 		eventsTargetID:   "42",
 		commentsTargetID: "42",
 	})
@@ -211,7 +216,7 @@ func runV3Suite(t *testing.T, p v3Platform) {
 	// is still returned (the operation is converged on the existing object).
 	t.Run("marker_hit_across_closed", func(t *testing.T) {
 		a := p.newAdapter("", matchRunner("state=all", p.findMarker))
-		ch, got, err := a.FindChangeForCreateOperation(ctx, p.project, "run:demo:create-change:head-9", "branch", "main")
+		ch, got, err := a.FindChangeForCreateOperation(ctx, p.project, "run:demo:create-change:head-9", fixtureMarkerDigest, "branch", "main")
 		if err != nil {
 			t.Fatalf("err=%v", err)
 		}
@@ -227,7 +232,7 @@ func runV3Suite(t *testing.T, p v3Platform) {
 	// never takes over someone else's object (forge.md §4.8 / DESIGN §6.4).
 	t.Run("marker_missing_is_semantic_conflict", func(t *testing.T) {
 		a := p.newAdapter("", matchRunner("state=all", p.findConflict))
-		_, got, err := a.FindChangeForCreateOperation(ctx, p.project, "run:demo:create-change:head-9", "branch", "main")
+		_, got, err := a.FindChangeForCreateOperation(ctx, p.project, "run:demo:create-change:head-9", fixtureMarkerDigest, "branch", "main")
 		if err != nil || got != SemanticConflict {
 			t.Fatalf("result=%q err=%v, want semantic_conflict", got, err)
 		}
@@ -235,7 +240,7 @@ func runV3Suite(t *testing.T, p v3Platform) {
 
 	t.Run("marker_no_match", func(t *testing.T) {
 		a := p.newAdapter("", matchRunner("state=all", []byte("[]")))
-		_, got, err := a.FindChangeForCreateOperation(ctx, p.project, "run:demo:create-change:head-9", "branch", "main")
+		_, got, err := a.FindChangeForCreateOperation(ctx, p.project, "run:demo:create-change:head-9", fixtureMarkerDigest, "branch", "main")
 		if err != nil || got != NoMatch {
 			t.Fatalf("result=%q err=%v, want no_match", got, err)
 		}
@@ -256,6 +261,9 @@ func runV3Suite(t *testing.T, p v3Platform) {
 		}
 		if c.MergedAt.IsZero() {
 			t.Fatal("merged change must carry MergedAt")
+		}
+		if c.MergeSHA != p.wantMergeSHA {
+			t.Fatalf("merge SHA=%q, want checked-in fixture value %q", c.MergeSHA, p.wantMergeSHA)
 		}
 	})
 

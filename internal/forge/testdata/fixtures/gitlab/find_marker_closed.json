@@ -5,6 +5,6 @@
     "state": "closed",
     "diff_refs": { "head_sha": "head-9" },
     "title": "stale sift change",
-    "body": "<!-- sift-op:run:demo:create-change:head-9 -->"
+    "body": "<!-- sift-op:v1:cnVuOmRlbW86Y3JlYXRlLWNoYW5nZTpoZWFkLTk:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"
   }
 ]

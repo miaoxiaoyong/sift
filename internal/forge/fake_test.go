@@ -92,8 +92,9 @@ func TestFakeChangeMarkerConflictAndExpectedHeadCAS(t *testing.T) {
 	ctx := context.Background()
 	f := NewFake()
 	p := ProjectRef{Kind: KindGitHub, Host: "github.com", ProjectKey: "org/repo"}
-	f.AddChangeWithBody(p, "7", "head-a", "<!-- sift-op:run:1 -->")
-	change, result, err := f.FindChangeForCreateOperation(ctx, p, "run:1", "branch", "main")
+	digest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	f.AddChangeWithBody(p, "7", "head-a", OperationMarker("run:1", digest))
+	change, result, err := f.FindChangeForCreateOperation(ctx, p, "run:1", digest, "branch", "main")
 	if err != nil || result != MarkerHit || change == nil || change.ID != "7" {
 		t.Fatalf("marker lookup: change=%+v result=%q err=%v", change, result, err)
 	}
@@ -103,7 +104,7 @@ func TestFakeChangeMarkerConflictAndExpectedHeadCAS(t *testing.T) {
 
 	f = NewFake()
 	f.AddChangeWithBody(p, "8", "head-a", "human change")
-	_, result, err = f.FindChangeForCreateOperation(ctx, p, "run:1", "branch", "main")
+	_, result, err = f.FindChangeForCreateOperation(ctx, p, "run:1", digest, "branch", "main")
 	if err != nil || result != SemanticConflict {
 		t.Fatalf("unmarked change result=%q err=%v", result, err)
 	}

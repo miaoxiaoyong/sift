@@ -37,7 +37,7 @@ func TestV3AllVerbsDualPlatformMatrix(t *testing.T) {
 			if got, err := a.CreateChange(ctx, project, "branch", "main", "title", "body"); err != nil || got.HeadSHA != "head-7" {
 				t.Fatalf("CreateChange: %#v %v", got, err)
 			}
-			if got, result, err := a.FindChangeForCreateOperation(ctx, project, "sift-op", "branch", "main"); err != nil || result != MarkerHit || got == nil {
+			if got, result, err := a.FindChangeForCreateOperation(ctx, project, "sift-op", fixtureMarkerDigest, "branch", "main"); err != nil || result != MarkerHit || got == nil {
 				t.Fatalf("FindChangeForCreateOperation: %#v %q %v", got, result, err)
 			}
 			if got, err := a.GetChange(ctx, project, "7"); err != nil || got.ID != "7" {
@@ -55,8 +55,8 @@ func TestV3AllVerbsDualPlatformMatrix(t *testing.T) {
 			if proven, evidence := a.ProbeAutoMergeCapability(ctx, project); !proven {
 				t.Fatalf("ProbeAutoMergeCapability: %s", evidence)
 			}
-			if got, err := a.MergeChange(ctx, project, "7", "head-7", "merge"); err != nil || got.State != ChangeMerged || got.MergeSHA == "" {
-				t.Fatalf("MergeChange: %#v %v", got, err)
+			if got, err := a.MergeChange(ctx, project, "7", "head-7", "merge"); err != nil || got.State != ChangeMerged || got.MergeSHA != matrixMergeSHA(kind) {
+				t.Fatalf("MergeChange: %#v %v, want merge SHA %q", got, err, matrixMergeSHA(kind))
 			}
 		})
 	}
@@ -216,7 +216,7 @@ func matrixRunner(kind Kind) Runner {
 			return []byte(`[{"id":9,"body":"body","created_at":"2026-01-01T00:00:00Z","user":{"login":"operator"},"author":{"username":"operator"}}]`), nil, nil
 		}
 		if strings.Contains(path, "state=all") {
-			return []byte(`[` + matrixChange(kind, "sift-op") + `]`), nil, nil
+			return []byte(`[` + matrixChange(kind, OperationMarker("sift-op", fixtureMarkerDigest)) + `]`), nil, nil
 		}
 		if strings.HasSuffix(path, "/merge") {
 			return []byte(matrixChange(kind, "")), nil, nil
@@ -245,9 +245,16 @@ func matrixIssue(kind Kind) string {
 	return `{"number":7,"title":"title","body":"body","html_url":"https://forge/7","state":"open","updated_at":"2026-01-01T00:00:00Z","user":{"login":"author"},"labels":[{"name":"sift"},{"name":"ready"}]}`
 }
 
+func matrixMergeSHA(kind Kind) string {
+	if kind == KindGitLab {
+		return "2222222222222222222222222222222222222222"
+	}
+	return "1111111111111111111111111111111111111111"
+}
+
 func matrixChange(kind Kind, body string) string {
 	if kind == KindGitLab {
-		return `{"iid":7,"web_url":"https://forge/7","state":"merged","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"merge-commit-gitlab-7","diff_refs":{"head_sha":"head-7"},"title":"title","body":"` + body + `","labels":[{"name":"ready"}]}`
+		return `{"iid":7,"web_url":"https://forge/7","state":"merged","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"` + matrixMergeSHA(kind) + `","diff_refs":{"head_sha":"head-7"},"title":"title","body":"` + body + `","labels":[{"name":"ready"}]}`
 	}
-	return `{"number":7,"html_url":"https://forge/7","state":"closed","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"merge-commit-github-7","head":{"sha":"head-7"},"body":"` + body + `"}`
+	return `{"number":7,"html_url":"https://forge/7","state":"closed","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"` + matrixMergeSHA(kind) + `","head":{"sha":"head-7"},"body":"` + body + `"}`
 }

@@ -125,26 +125,26 @@ func (r *Reconciler) reconcileProject(ctx context.Context, project Project, now 
 	return nil
 }
 
-// recordExternalMerge settles only the exact Gate prediction atomically bound
-// to the currently displayed waiting-human Interrupt. It never infers a
-// calibration from mutable Forge facts or Gate history.
+// recordExternalMerge records the authoritative Forge observation before any
+// optional Ledger settlement. A missing or ambiguous binding is deliberately
+// not guessed and cannot prevent the caller from converging the Run.
 func (r *Reconciler) recordExternalMerge(ctx context.Context, c storage.ReverseSyncCandidate, change forge.Change, now time.Time) error {
-	gateEvaluationID, calibrationID, err := r.DB.WaitingHumanGateBinding(ctx, c.RunID)
-	if err != nil {
-		return err
-	}
+	gateEvaluationID, calibrationID, bindingErr := r.DB.WaitingHumanGateBinding(ctx, c.RunID)
 	payload, err := json.Marshal(map[string]string{"change_id": change.ID, "head_sha": change.HeadSHA, "merge_sha": change.MergeSHA, "state": string(change.State)})
 	if err != nil {
 		return err
 	}
-	factID, err := r.DB.AppendExternalMergeFact(ctx, storage.EventCmd{RunID: c.RunID, ProjectID: c.ProjectID, Type: "forge_change_merged", Source: storage.SourceForge, PayloadJSON: payload, IdempotencyKey: "forge-change-merged:" + c.RunID + ":" + change.ID + ":" + change.HeadSHA, OccurredAtMS: now.UnixMilli(), RecordedAtMS: now.UnixMilli()}, change.HeadSHA, gateEvaluationID, calibrationID)
+	factID, err := r.DB.AppendExternalMergeFact(ctx, storage.EventCmd{RunID: c.RunID, ProjectID: c.ProjectID, Type: "forge_change_merged", Source: storage.SourceForge, PayloadJSON: payload, IdempotencyKey: "forge-change-merged:" + c.RunID + ":" + change.ID + ":" + change.HeadSHA, OccurredAtMS: now.UnixMilli(), RecordedAtMS: now.UnixMilli()}, change.HeadSHA)
 	if err != nil {
 		return err
 	}
-	_, err = r.DB.RecordHumanDecision(ctx, storage.RecordHumanDecisionCmd{Action: storage.DecisionManualMerge, ForgeFactEventID: factID, NowMS: now.UnixMilli(), Certification: r.Certification})
-	if err != nil {
-		return err
+	if bindingErr != nil {
+		return nil
 	}
+	if err := r.DB.BindExternalMergeFact(ctx, factID, gateEvaluationID, calibrationID, now.UnixMilli()); err != nil {
+		return nil
+	}
+	_, _ = r.DB.RecordHumanDecision(ctx, storage.RecordHumanDecisionCmd{Action: storage.DecisionManualMerge, ForgeFactEventID: factID, NowMS: now.UnixMilli(), Certification: r.Certification})
 	return nil
 }
 

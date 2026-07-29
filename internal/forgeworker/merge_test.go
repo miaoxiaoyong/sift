@@ -109,8 +109,8 @@ func testMergeWorkerProductionReplacementHead(t *testing.T, mergedB bool) {
 		t.Fatal(err)
 	}
 	var got map[string]string
-	if err := json.Unmarshal([]byte(evidence), &got); err != nil || got["state"] != "merged" || got["head_sha"] != headB || got["merge_sha"] == "" {
-		t.Fatalf("Gate(B) merge evidence=%#v err=%v", got, err)
+	if err := json.Unmarshal([]byte(evidence), &got); err != nil || got["state"] != "merged" || got["head_sha"] != headB || got["merge_sha"] != "merge-"+headB {
+		t.Fatalf("Gate(B) merge evidence=%#v err=%v, want merge SHA %q", got, err, "merge-"+headB)
 	}
 }
 
@@ -219,7 +219,7 @@ func TestMergeWorkerUsesGateHeadCASAndStalesOldOperation(t *testing.T) {
 	if err := json.Unmarshal([]byte(evidence), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["state"] != "merged" || got["head_sha"] != "head-b" || got["merge_sha"] == "" {
-		t.Fatalf("merge evidence = %#v, want merged expected head and merge SHA", got)
+	if got["state"] != "merged" || got["head_sha"] != "head-b" || got["merge_sha"] != "merge-head-b" {
+		t.Fatalf("merge evidence = %#v, want merged expected head and merge SHA %q", got, "merge-head-b")
 	}
 }

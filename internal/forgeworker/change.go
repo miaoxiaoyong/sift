@@ -54,7 +54,7 @@ func (w *ChangeWorker) RunOnce(ctx context.Context) error {
 	}
 	ref := forge.ProjectRef{Kind: forge.Kind(kind), Host: host, ProjectKey: key}
 	ctx = forge.WithChargeKey(ctx, "forge-call:"+c.AttemptID)
-	change, result, err := w.Client.FindChangeForCreateOperation(ctx, ref, c.Key, p.HeadRef, p.BaseRef)
+	change, result, err := w.Client.FindChangeForCreateOperation(ctx, ref, c.Key, forge.PayloadDigest(c.Payload), p.HeadRef, p.BaseRef)
 	if err != nil {
 		return w.classified(ctx, *c, err, now)
 	}

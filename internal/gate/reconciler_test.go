@@ -194,14 +194,14 @@ func TestM4VerticalVerifiedSuccessToExternalMerge(t *testing.T) {
 	}
 
 	ref := forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo-p"}
-	client := &verticalForge{Fake: forge.NewFake(), head: head}
+	client := &verticalForge{Fake: forge.NewFake(), head: head, createReturnsTransient: true}
 	client.AddIssue(ref, forge.Issue{ID: "issue-1", Title: "issue", Body: "body", Author: "author", URL: "https://forge.example/issues/1", State: forge.IssueOpen})
 	if err := (&forgeworker.ChangeWorker{DB: db, Client: client, ProjectID: "p", WorkerID: "create", Lease: time.Minute, Now: func() time.Time { return now }}).RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	run, err := db.Run(ctx, "r")
-	if err != nil || run.ChangeID == "" {
-		t.Fatalf("create worker run=%+v err=%v", run, err)
+	if err != nil || run.ChangeID != "" {
+		t.Fatalf("crash-window create run=%+v err=%v, want no locally persisted Change ID", run, err)
 	}
 	var createKey string
 	var createPayload []byte
@@ -212,12 +212,24 @@ func TestM4VerticalVerifiedSuccessToExternalMerge(t *testing.T) {
 	if !strings.Contains(client.createdBody, marker) {
 		t.Fatalf("create body missing operation marker %q: %q", marker, client.createdBody)
 	}
-	if err := (&forgeworker.ChangeWorker{DB: db, Client: client, ProjectID: "p", WorkerID: "create-replay", Lease: time.Minute, Now: func() time.Time { return now }}).RunOnce(ctx); err != nil {
+	var createState string
+	var nextAttemptAt int64
+	if err := q.QueryRow(`SELECT state,next_attempt_at_ms FROM outbox_operations WHERE operation_key=?`, createKey).Scan(&createState, &nextAttemptAt); err != nil {
+		t.Fatal(err)
+	}
+	if createState != string(storage.OperationRetryable) || nextAttemptAt > now.Add(2*time.Second).UnixMilli() {
+		t.Fatalf("crash-window operation=%s due=%d", createState, nextAttemptAt)
+	}
+	if err := (&forgeworker.ChangeWorker{DB: db, Client: client, ProjectID: "p", WorkerID: "create-replay", Lease: time.Minute, Now: func() time.Time { return now.Add(2 * time.Second) }}).RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	run, err = db.Run(ctx, "r")
-	if err != nil || run.ChangeID == "" {
-		t.Fatalf("create replay run=%+v err=%v", run, err)
+	if err != nil || run.ChangeID != client.createdID || run.ChangeID == "" || client.createCalls != 1 || client.markerHits != 1 {
+		var replayState string
+		if queryErr := q.QueryRow(`SELECT state FROM outbox_operations WHERE operation_key=?`, createKey).Scan(&replayState); queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		t.Fatalf("marker recovery run=%+v err=%v, operation=%s, want Change ID %q, one CreateChange call, and one marker hit (calls/hits=%d/%d)", run, err, replayState, client.createdID, client.createCalls, client.markerHits)
 	}
 
 	provider := &brain.FakeProvider{Responses: []brain.FakeResponse{{ResultText: `{"risk_score":1,"risk_points":["small"],"rationale":"bounded"}`}, {ResultText: `{"classification":"real_failure","rationale":"real failure"}`}}}
@@ -292,17 +304,34 @@ func TestM4VerticalVerifiedSuccessToExternalMerge(t *testing.T) {
 
 type verticalForge struct {
 	*forge.Fake
-	head        string
-	createdBody string
+	head                    string
+	createdBody, createdID  string
+	createCalls, markerHits int
+	createReturnsTransient  bool
 }
 
 func (f *verticalForge) CreateChange(ctx context.Context, p forge.ProjectRef, branch, base, title, body string) (forge.Change, error) {
 	f.createdBody = body
-	if _, err := f.Fake.CreateChange(ctx, p, branch, base, title, body); err != nil {
+	f.createCalls++
+	created, err := f.Fake.CreateChange(ctx, p, branch, base, title, body)
+	if err != nil {
 		return forge.Change{}, err
 	}
-	return f.GetChange(ctx, p, "1")
+	f.createdID = created.ID
+	if f.createReturnsTransient {
+		f.createReturnsTransient = false
+		return forge.Change{}, &forge.ClassifiedError{Class: forge.ErrTransient, Summary: "remote CreateChange succeeded before local crash"}
+	}
+	return f.GetChange(ctx, p, created.ID)
 }
+func (f *verticalForge) FindChangeForCreateOperation(ctx context.Context, p forge.ProjectRef, opKey, payloadDigest, branch, base string) (*forge.Change, forge.FindResult, error) {
+	change, result, err := f.Fake.FindChangeForCreateOperation(ctx, p, opKey, payloadDigest, branch, base)
+	if result == forge.MarkerHit {
+		f.markerHits++
+	}
+	return change, result, err
+}
+
 func (f *verticalForge) GetChange(ctx context.Context, p forge.ProjectRef, id string) (forge.Change, error) {
 	c, err := f.Fake.GetChange(ctx, p, id)
 	if err != nil {
@@ -524,7 +553,7 @@ func (f *phaseForge) SetLabels(context.Context, forge.ProjectRef, forge.TargetRe
 func (f *phaseForge) CreateChange(context.Context, forge.ProjectRef, string, string, string, string) (forge.Change, error) {
 	return forge.Change{}, nil
 }
-func (f *phaseForge) FindChangeForCreateOperation(context.Context, forge.ProjectRef, string, string, string) (*forge.Change, forge.FindResult, error) {
+func (f *phaseForge) FindChangeForCreateOperation(context.Context, forge.ProjectRef, string, string, string, string) (*forge.Change, forge.FindResult, error) {
 	return nil, forge.NoMatch, nil
 }
 func (f *phaseForge) GetChange(context.Context, forge.ProjectRef, string) (forge.Change, error) {

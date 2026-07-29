@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -194,16 +193,16 @@ func (f *Fake) CreateChange(_ context.Context, p ProjectRef, branch, base, title
 	id := fakeNumber(len(f.changes[projectKey(p)]) + 1)
 	return f.AddChangeWithBody(p, id, branch, body), nil
 }
-func (f *Fake) FindChangeForCreateOperation(_ context.Context, p ProjectRef, op, branch, base string) (*Change, FindResult, error) {
-	if op == "" || branch == "" || base == "" {
-		return nil, "", &ClassifiedError{Class: ErrContractViolation, Summary: "operation key, branch, and base are required"}
+func (f *Fake) FindChangeForCreateOperation(_ context.Context, p ProjectRef, op, payloadDigest, branch, base string) (*Change, FindResult, error) {
+	if op == "" || len(payloadDigest) != 64 || branch == "" || base == "" {
+		return nil, "", &ClassifiedError{Class: ErrContractViolation, Summary: "operation key, payload digest, branch, and base are required"}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	changes := f.changes[projectKey(p)]
 	var marked []Change
 	for id, c := range changes {
-		if strings.Contains(f.changeBodies[projectKey(p)][id], op) {
+		if FindOperationMarker(f.changeBodies[projectKey(p)][id], op, payloadDigest) {
 			marked = append(marked, c)
 		}
 	}

@@ -67,8 +67,11 @@ func TestExternalMergeFactBindsExactGateAndSettlesIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := []byte(`{"change_id":"42","head_sha":"` + strings.Repeat("b", 40) + `","state":"merged"}`)
-	fact, err := db.AppendExternalMergeFact(ctx, EventCmd{RunID: "run", ProjectID: "project", Type: "forge_change_merged", Source: SourceForge, PayloadJSON: payload, IdempotencyKey: "fact", OccurredAtMS: testNow + 1, RecordedAtMS: testNow + 1}, strings.Repeat("b", 40), recorded.EvaluationID, recorded.CalibrationID)
+	fact, err := db.AppendExternalMergeFact(ctx, EventCmd{RunID: "run", ProjectID: "project", Type: "forge_change_merged", Source: SourceForge, PayloadJSON: payload, IdempotencyKey: "fact", OccurredAtMS: testNow + 1, RecordedAtMS: testNow + 1}, strings.Repeat("b", 40))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.BindExternalMergeFact(ctx, fact, recorded.EvaluationID, recorded.CalibrationID, testNow+1); err != nil {
 		t.Fatal(err)
 	}
 	cert := config.DefaultConfig().Certification
@@ -83,7 +86,7 @@ func TestExternalMergeFactBindsExactGateAndSettlesIdempotently(t *testing.T) {
 	}
 }
 
-func TestAppendExternalMergeFactRejectsPartialOrMismatchedBinding(t *testing.T) {
+func TestExternalMergeFactAllowsNoBindingButRejectsInvalidBinding(t *testing.T) {
 	db, _ := openTestDB(t)
 	ctx := context.Background()
 	if err := db.SeedProjectForTest(ctx, "cfg", "project", testNow); err != nil {
@@ -96,16 +99,15 @@ func TestAppendExternalMergeFactRejectsPartialOrMismatchedBinding(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := EventCmd{RunID: "run", ProjectID: "project", Type: "forge_change_merged", Source: SourceForge, PayloadJSON: []byte(`{}`), IdempotencyKey: "empty", OccurredAtMS: testNow + 1, RecordedAtMS: testNow + 1}
-	if _, err := db.AppendExternalMergeFact(ctx, cmd, strings.Repeat("b", 40), "", ""); err == nil {
-		t.Fatal("empty external binding accepted")
+	cmd := EventCmd{RunID: "run", ProjectID: "project", Type: "forge_change_merged", Source: SourceForge, PayloadJSON: []byte(`{}`), IdempotencyKey: "unbound", OccurredAtMS: testNow + 1, RecordedAtMS: testNow + 1}
+	fact, err := db.AppendExternalMergeFact(ctx, cmd, strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatalf("unbound fact: %v", err)
 	}
-	cmd.IdempotencyKey = "partial"
-	if _, err := db.AppendExternalMergeFact(ctx, cmd, strings.Repeat("b", 40), "", recorded.CalibrationID); err == nil {
+	if err := db.BindExternalMergeFact(ctx, fact, "", recorded.CalibrationID, testNow+1); err == nil {
 		t.Fatal("partial external binding accepted")
 	}
-	cmd.IdempotencyKey = "mismatch"
-	if _, err := db.AppendExternalMergeFact(ctx, cmd, strings.Repeat("b", 40), "wrong-evaluation", recorded.CalibrationID); err == nil {
+	if err := db.BindExternalMergeFact(ctx, fact, "wrong-evaluation", recorded.CalibrationID, testNow+1); err == nil {
 		t.Fatal("mismatched external binding accepted")
 	}
 }

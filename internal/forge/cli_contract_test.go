@@ -100,7 +100,7 @@ func TestFindChangeForCreateOperationMarkerAndConflict(t *testing.T) {
 		body string
 		want FindResult
 	}{
-		{"marker hit across closed state", `<!-- sift-op:run:1 -->`, MarkerHit},
+		{"marker hit across closed state", OperationMarker("run:1", fixtureMarkerDigest), MarkerHit},
 		{"unmarked same head conflicts", "human change", SemanticConflict},
 		{"no change", "", NoMatch},
 	} {
@@ -114,7 +114,7 @@ func TestFindChangeForCreateOperationMarkerAndConflict(t *testing.T) {
 				}
 				return []byte(`[{"number":7,"html_url":"https://x/7","state":"closed","head":{"sha":"head"},"body":` + strconv.Quote(test.body) + `}]`), nil, nil
 			})
-			change, got, err := a.FindChangeForCreateOperation(context.Background(), project, "run:1", "branch", "main")
+			change, got, err := a.FindChangeForCreateOperation(context.Background(), project, "run:1", fixtureMarkerDigest, "branch", "main")
 			if err != nil || got != test.want {
 				t.Fatalf("result=%q change=%+v err=%v", got, change, err)
 			}

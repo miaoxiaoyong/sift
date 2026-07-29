@@ -134,7 +134,7 @@ type Client interface {
 	CommentTarget(context.Context, ProjectRef, TargetRef, string) (string, error)
 	SetLabels(context.Context, ProjectRef, TargetRef, []string, []string) error
 	CreateChange(context.Context, ProjectRef, string, string, string, string) (Change, error)
-	FindChangeForCreateOperation(context.Context, ProjectRef, string, string, string) (*Change, FindResult, error)
+	FindChangeForCreateOperation(context.Context, ProjectRef, string, string, string, string) (*Change, FindResult, error)
 	GetChange(context.Context, ProjectRef, string) (Change, error)
 	GetChangeDiff(context.Context, ProjectRef, string) (string, error)
 	ListChangeComments(context.Context, ProjectRef, string, Cursor) ([]Comment, Cursor, error)

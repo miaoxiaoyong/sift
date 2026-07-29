@@ -124,6 +124,6 @@ V0 使用配置的固定 `false_block_rate_max`；注意力配额/吞吐只能�
 
 ## 5. 手工合并、用途与验收
 
-Forge 是合并事实权威。手工 merge 始终收敛 Run 为 `done` 并标 `gate_bypassed=true`；它不进入 Sift 发起合并的误放行率分母。外部事实必须携带当前 waiting-human Interrupt 的 immutable binding：精确 binary binding 随后由 `recordHumanDecision` 记录 `manual_merge/allow` 并结算校准；精确 `inconclusive` binding 同样保留事实与人类动作审计，但不补全校准、不重算认证。没有 binding 或 binding 歧义才拒绝，绝不伪造样本。manual close 同理映射 `block`。
+Forge 是合并事实权威。观察到手工 merge 时，先持久化 Forge fact，并使任何 `queued`、`running` 或 `waiting_human` Run 收敛为 `done + gate_bypassed=true`；此收敛不得被 Ledger binding、审计或结算失败阻断。它不进入 Sift 发起合并的误放行率分母。随后才可尝试消费当前 waiting-human Interrupt 的 immutable binding：精确 binary binding 由 `recordHumanDecision` 记录 `manual_merge/allow` 并结算校准；精确 `inconclusive` binding 同样保留事实与人类动作审计，但不补全校准、不重算认证。没有 binding 或 binding 歧义只保留未绑定 Forge fact，绝不伪造样本或猜测 calibration。manual close 同理映射 `block`。
 
 验收：closed schema/fixtures 与大小限制可生成并拒绝未知字段；每次 Gate 都有一条 calibration 和唯一 gate-sample FK；所有 verdict 均有上表 shadow 值；Interrupt/external binding 不可变且命令不能猜选；同一 Gate 事务原子写 snapshot/evaluation/calibration/gate sample/必要 Interrupt；认证公式、边界 fixtures、revision 和 Gate cache 失效均可重放验证；响应间隔不进入注意力成本。

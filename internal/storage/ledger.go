@@ -34,13 +34,11 @@ type RecordHumanDecisionCmd struct {
 
 type HumanDecisionResult struct{ LedgerEntryID, CalibrationID, CertificationVersion string }
 
-// AppendExternalMergeFact atomically records a Forge merge fact with the exact
-// immutable Gate identity already bound to the waiting-human Interrupt. This
-// port never derives it from a Run, head, time, or candidate set. Both binary
-// and inconclusive predictions are valid audit bindings; only binary ones can
-// subsequently settle a calibration.
-func (d *DB) AppendExternalMergeFact(ctx context.Context, cmd EventCmd, headSHA, gateEvaluationID, calibrationID string) (string, error) {
-	if cmd.Type != "forge_change_merged" || cmd.RunID == "" || cmd.ProjectID == "" || headSHA == "" || gateEvaluationID == "" || calibrationID == "" || !validSource(cmd.Source) || !json.Valid(cmd.PayloadJSON) || cmd.OccurredAtMS <= 0 || cmd.RecordedAtMS < cmd.OccurredAtMS {
+// AppendExternalMergeFact records the authoritative Forge merge observation.
+// Its fact must not depend on a Gate or Ledger binding: pre-Gate, missing, and
+// ambiguous bindings remain auditable facts but cannot settle a calibration.
+func (d *DB) AppendExternalMergeFact(ctx context.Context, cmd EventCmd, headSHA string) (string, error) {
+	if cmd.Type != "forge_change_merged" || cmd.RunID == "" || cmd.ProjectID == "" || headSHA == "" || !validSource(cmd.Source) || !json.Valid(cmd.PayloadJSON) || cmd.OccurredAtMS <= 0 || cmd.RecordedAtMS < cmd.OccurredAtMS {
 		return "", errors.New("storage: invalid external merge fact")
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -62,17 +60,47 @@ func (d *DB) AppendExternalMergeFact(ctx context.Context, cmd EventCmd, headSHA,
 	if _, err = tx.ExecContext(ctx, `INSERT INTO events (id,run_id,project_id,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES (?,?,?,? ,?,1,?,?,?,?)`, id, cmd.RunID, cmd.ProjectID, cmd.Type, cmd.Source, string(cmd.PayloadJSON), nullable(cmd.IdempotencyKey), cmd.OccurredAtMS, cmd.RecordedAtMS); err != nil {
 		return "", err
 	}
-	var valid bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM calibration_entries WHERE id=? AND gate_evaluation_id=? AND run_id=? AND predicted_decision IN ('allow','block','inconclusive'))`, calibrationID, gateEvaluationID, cmd.RunID).Scan(&valid); err != nil {
-		return "", err
-	}
-	if !valid {
-		return "", errors.New("storage: external merge binding is not an exact Gate calibration for this run")
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO external_decision_bindings (forge_fact_event_id,calibration_id,created_at_ms) VALUES (?,?,?)`, id, calibrationID, cmd.RecordedAtMS); err != nil {
-		return "", err
-	}
 	return id, tx.Commit()
+}
+
+// BindExternalMergeFact attaches a previously observed fact to the exact Gate
+// identity that was frozen with a waiting-human Interrupt. Callers must not
+// infer this identity from mutable Run or Forge state.
+func (d *DB) BindExternalMergeFact(ctx context.Context, forgeFactEventID, gateEvaluationID, calibrationID string, nowMS int64) error {
+	if forgeFactEventID == "" || gateEvaluationID == "" || calibrationID == "" || nowMS <= 0 {
+		return errors.New("storage: invalid external merge binding")
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var factRunID, calibrationRunID string
+	var valid bool
+	if err := tx.QueryRowContext(ctx, `SELECT run_id FROM events WHERE id=? AND type='forge_change_merged'`, forgeFactEventID).Scan(&factRunID); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT run_id, predicted_decision IN ('allow','block','inconclusive') FROM calibration_entries WHERE id=? AND gate_evaluation_id=?`, calibrationID, gateEvaluationID).Scan(&calibrationRunID, &valid); err != nil {
+		return err
+	}
+	if !valid || factRunID != calibrationRunID {
+		return errors.New("storage: external merge binding is not an exact Gate calibration for this run")
+	}
+	var existing string
+	err = tx.QueryRowContext(ctx, `SELECT calibration_id FROM external_decision_bindings WHERE forge_fact_event_id=?`, forgeFactEventID).Scan(&existing)
+	if err == nil {
+		if existing != calibrationID {
+			return errors.New("storage: external decision binding conflict")
+		}
+		return tx.Commit()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO external_decision_bindings (forge_fact_event_id,calibration_id,created_at_ms) VALUES (?,?,?)`, forgeFactEventID, calibrationID, nowMS); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // WaitingHumanGateBinding returns the one Gate identity that was atomically

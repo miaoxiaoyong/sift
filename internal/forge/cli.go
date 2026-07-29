@@ -624,9 +624,9 @@ func (a *Adapter) CreateChange(ctx context.Context, p ProjectRef, branch, base, 
 	}
 	return a.change(x)
 }
-func (a *Adapter) FindChangeForCreateOperation(ctx context.Context, p ProjectRef, opKey, branch, base string) (*Change, FindResult, error) {
-	if opKey == "" || branch == "" || base == "" {
-		return nil, "", &ClassifiedError{Class: ErrContractViolation, Summary: "operation key, branch, and base are required"}
+func (a *Adapter) FindChangeForCreateOperation(ctx context.Context, p ProjectRef, opKey, payloadDigest, branch, base string) (*Change, FindResult, error) {
+	if opKey == "" || len(payloadDigest) != 64 || branch == "" || base == "" {
+		return nil, "", &ClassifiedError{Class: ErrContractViolation, Summary: "operation key, payload digest, branch, and base are required"}
 	}
 	path := a.base(p) + "/pulls?state=all"
 	if a.Kind == KindGitLab {
@@ -666,7 +666,7 @@ func (a *Adapter) FindChangeForCreateOperation(ctx context.Context, p ProjectRef
 	}
 	var marked []Change
 	for _, c := range candidates {
-		if strings.Contains(c.body, opKey) {
+		if FindOperationMarker(c.body, opKey, payloadDigest) {
 			marked = append(marked, c.change)
 		}
 	}

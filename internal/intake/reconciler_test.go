@@ -200,6 +200,95 @@ func TestReconcilerExternalInconclusiveMergeConvergesWithoutSettlement(t *testin
 	}
 }
 
+func TestReconcilerExternalMergeFactsFirstWithoutExactBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name, status, shadow        string
+		ambiguous                   bool
+		wantBindings, wantDecisions int
+	}{
+		{name: "queued", status: "queued"},
+		{name: "running", status: "running"},
+		{name: "exact_binary", status: "waiting_human", shadow: "block", wantBindings: 1, wantDecisions: 1},
+		{name: "exact_inconclusive", status: "waiting_human", shadow: "inconclusive", wantBindings: 1, wantDecisions: 1},
+		{name: "missing", status: "waiting_human"},
+		{name: "ambiguous", status: "waiting_human", shadow: "block", ambiguous: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, project := reconcilerDB(t, "facts-"+tc.name)
+			fc := forge.NewFake()
+			addIssue(fc, project.Ref, "1", forge.IssueOpen)
+			fc.AddChange(project.Ref, "c1", "head1")
+			if _, err := fc.InjectMerged(project.Ref, "c1", time.UnixMilli(reconcilerNow)); err != nil {
+				t.Fatal(err)
+			}
+			if tc.shadow == "" {
+				if err := db.SeedReverseSyncRunForTest(context.Background(), "run", project.ID, "cfg-"+project.ID, "1", "c1", tc.status, reconcilerNow); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := db.SeedForgeRunForTest(context.Background(), "run", project.ID, "cfg-"+project.ID, "1", reconcilerNow); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.RecordCreatedChange(context.Background(), "run", "c1", reconcilerNow); err != nil {
+					t.Fatal(err)
+				}
+				q, err := sql.Open("sqlite", db.Path())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := q.Exec(`UPDATE runs SET kind='feature' WHERE id='run'`); err != nil {
+					q.Close()
+					t.Fatal(err)
+				}
+				q.Close()
+				if _, _, err := db.RecordGateEvaluationAndEmitInterrupt(context.Background(), intakeGateRecordWithShadow("run", tc.shadow), intakeGateInterrupt("run")); err != nil {
+					t.Fatal(err)
+				}
+				if tc.ambiguous {
+					second := intakeGateInterrupt("run")
+					second.ExpectedRunVersion = 3
+					second.Generation.ChangeID = "c2"
+					if _, _, err := db.RecordGateEvaluationAndEmitInterrupt(context.Background(), intakeGateRecordWithShadow("run", tc.shadow), second); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+
+			reconcile(t, db, fc, project)
+			run, err := db.Run(context.Background(), "run")
+			if err != nil || run.Status != storage.RunDone || !run.GateBypassed {
+				t.Fatalf("run=%+v err=%v, want done + gate_bypassed", run, err)
+			}
+			q, err := sql.Open("sqlite", db.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer q.Close()
+			var facts, bindings, decisions int
+			if err := q.QueryRow(`SELECT COUNT(*) FROM events WHERE run_id='run' AND type='forge_change_merged'`).Scan(&facts); err != nil {
+				t.Fatal(err)
+			}
+			if err := q.QueryRow(`SELECT COUNT(*) FROM external_decision_bindings`).Scan(&bindings); err != nil {
+				t.Fatal(err)
+			}
+			if err := q.QueryRow(`SELECT COUNT(*) FROM ledger_entries WHERE run_id='run' AND entry_kind='human_decision'`).Scan(&decisions); err != nil {
+				t.Fatal(err)
+			}
+			if facts != 1 || bindings != tc.wantBindings || decisions != tc.wantDecisions {
+				t.Fatalf("facts/bindings/decisions=%d/%d/%d, want 1/%d/%d", facts, bindings, decisions, tc.wantBindings, tc.wantDecisions)
+			}
+			reconcile(t, db, fc, project)
+			var factsAfter int
+			if err := q.QueryRow(`SELECT COUNT(*) FROM events WHERE run_id='run' AND type='forge_change_merged'`).Scan(&factsAfter); err != nil {
+				t.Fatal(err)
+			}
+			if factsAfter != 1 {
+				t.Fatalf("recovery facts=%d, want 1", factsAfter)
+			}
+		})
+	}
+}
+
 func TestReconcilerClassifiesSucceededGateMergeWithoutBypass(t *testing.T) {
 	db, project := reconcilerDB(t, "sift-merge")
 	fc := forge.NewFake()

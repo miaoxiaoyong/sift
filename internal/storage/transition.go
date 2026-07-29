@@ -206,7 +206,7 @@ func (d *DB) auditIllegalTransition(ctx context.Context, runID string, cmd Domai
 func legalTransition(from, to RunStatus) bool {
 	switch from {
 	case RunQueued:
-		return to == RunRunning || to == RunWaitingHuman || to == RunFailed
+		return to == RunRunning || to == RunWaitingHuman || to == RunDone || to == RunFailed
 	case RunRunning:
 		return to == RunWaitingHuman || to == RunDone || to == RunFailed
 	case RunWaitingHuman:

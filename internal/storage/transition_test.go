@@ -15,7 +15,7 @@ func TestV1RunTransitionGraphAndCAS(t *testing.T) {
 		{RunQueued, RunRunning, true}, {RunQueued, RunWaitingHuman, true}, {RunQueued, RunFailed, true},
 		{RunRunning, RunWaitingHuman, true}, {RunRunning, RunDone, true}, {RunRunning, RunFailed, true},
 		{RunWaitingHuman, RunRunning, true}, {RunWaitingHuman, RunQueued, true}, {RunWaitingHuman, RunDone, true}, {RunWaitingHuman, RunFailed, true},
-		{RunFailed, RunQueued, true}, {RunDone, RunQueued, false}, {RunQueued, RunDone, false}, {RunFailed, RunRunning, false},
+		{RunFailed, RunQueued, true}, {RunDone, RunQueued, false}, {RunQueued, RunDone, true}, {RunFailed, RunRunning, false},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.from)+"-"+string(tc.to), func(t *testing.T) {
@@ -57,7 +57,7 @@ func TestV1IllegalTransitionIsAudited(t *testing.T) {
 	insertConfigSnapshot(t, db, "cfg1")
 	insertProject(t, db, "p1", "cfg1")
 	insertManualRun(t, db, "r1", "p1", "cfg1")
-	_, err := db.TransitionRun(context.Background(), "r1", 1, DomainCommand{To: RunDone, ChangeID: "c", Source: SourceOperator, OccurredAtMS: testNow})
+	_, err := db.TransitionRun(context.Background(), "r1", 1, DomainCommand{To: RunQueued, Source: SourceOperator, OccurredAtMS: testNow})
 	if !errors.Is(err, ErrIllegalTransition) {
 		t.Fatal(err)
 	}

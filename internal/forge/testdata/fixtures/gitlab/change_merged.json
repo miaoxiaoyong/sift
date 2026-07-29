@@ -4,7 +4,7 @@
   "state": "merged",
   "diff_refs": { "head_sha": "head-7" },
   "merged_at": "2026-01-01T00:00:00Z",
-  "merge_commit_sha": "merge-commit-gitlab-7",
+  "merge_commit_sha": "2222222222222222222222222222222222222222",
   "title": "Add feature",
   "body": "real change body"
 }
