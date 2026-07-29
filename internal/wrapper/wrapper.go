@@ -91,12 +91,7 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	}
 	var in = stdin
 	launch := runtime.AgentLaunch{Executable: b.Agent.Executable, Args: args, Worktree: b.WorktreePath, RunDir: b.RunDir, Stdin: in, Stdout: log, Stderr: log}
-	// SpawnOnce does not return the command, so invoke the guarded primitive here
-	// to retain the identity needed by claim.started.
-	if err := gate.Enter(); err != nil {
-		return err
-	}
-	cmd, err := runtime.DirectLauncher{}.Start(ctx, launch)
+	cmd, err := gate.StartOnce(ctx, runtime.DirectLauncher{}, launch)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"sync"
 )
 
@@ -29,13 +30,18 @@ func (g *PermitGate) Enter() error {
 	return nil
 }
 
-// SpawnOnce is the only wrapper path that invokes the Agent launcher. Keeping
+// StartOnce is the only wrapper path that invokes the Agent launcher. Keeping
 // the guard immediately adjacent to the call prevents a delayed/replayed
 // permit response from becoming a second process.
-func (g *PermitGate) SpawnOnce(ctx context.Context, launcher Launcher, launch AgentLaunch) error {
+func (g *PermitGate) StartOnce(ctx context.Context, launcher Launcher, launch AgentLaunch) (*exec.Cmd, error) {
 	if err := g.Enter(); err != nil {
-		return err
+		return nil, err
 	}
-	_, err := launcher.Start(ctx, launch)
+	return launcher.Start(ctx, launch)
+}
+
+// SpawnOnce is the error-only compatibility form of StartOnce.
+func (g *PermitGate) SpawnOnce(ctx context.Context, launcher Launcher, launch AgentLaunch) error {
+	_, err := g.StartOnce(ctx, launcher, launch)
 	return err
 }
