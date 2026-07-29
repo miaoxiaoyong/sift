@@ -50,6 +50,7 @@ const (
 	startupRecoverySupervise  = "supervise"
 	startupRecoveryRedispatch = "redispatch"
 	startupRecoveryFreeze     = "frozen"
+	startupRecoveryReuse      = "reuse_dispatch"
 	startupRecoveryOperation  = "converge_operation"
 )
 
@@ -65,7 +66,7 @@ func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecovery
 	if attemptTarget == operationTarget || (attemptTarget && (cmd.AttemptNo < 1 || cmd.ExpectedGeneration < 1)) || (operationTarget && (cmd.OperationID == "" || cmd.ExpectedOperationVersion < 1)) {
 		return errors.New("storage: invalid startup recovery action target")
 	}
-	if attemptTarget && cmd.Action != startupRecoverySupervise && cmd.Action != startupRecoveryRedispatch && cmd.Action != startupRecoveryFreeze || operationTarget && cmd.Action != startupRecoveryOperation {
+	if attemptTarget && cmd.Action != startupRecoverySupervise && cmd.Action != startupRecoveryRedispatch && cmd.Action != startupRecoveryFreeze && cmd.Action != startupRecoveryReuse || operationTarget && cmd.Action != startupRecoveryOperation {
 		return errors.New("storage: unknown startup recovery action")
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -118,11 +119,12 @@ func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecovery
 			}
 		}
 		if cmd.Action == startupRecoveryFreeze {
-			if isolation != "frozen" {
+			if phase == "pending" && isolation == "none" {
+				if _, err := tx.ExecContext(ctx, `UPDATE attempts SET isolation_state='frozen',updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND phase='pending' AND isolation_state='none'`, cmd.NowMS, cmd.RunID, cmd.AttemptNo, generation); err != nil {
+					return err
+				}
+			} else if isolation != "frozen" {
 				return ErrRejectedStale
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE attempts SET isolation_state='frozen',updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND isolation_state='frozen'`, cmd.NowMS, cmd.RunID, cmd.AttemptNo, generation); err != nil {
-				return err
 			}
 		}
 	} else {

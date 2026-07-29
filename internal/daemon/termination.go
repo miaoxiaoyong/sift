@@ -61,7 +61,7 @@ func (c *TerminationCoordinator) RecoverStartup(ctx context.Context, bootID stri
 		for _, attempt := range attempts {
 			observation, action := "", ""
 			if attempt.Phase == "pending" {
-				observation, action = "no_execution_body", "redispatch"
+				observation, action = c.recoverPreparedDispatch(ctx, attempt)
 			} else {
 				observation, err = c.recoverAttempt(ctx, attempt)
 				if err != nil {
@@ -85,6 +85,47 @@ func (c *TerminationCoordinator) RecoverStartup(ctx context.Context, bootID stri
 			}
 		}
 	}
+}
+
+// recoverPreparedDispatch distinguishes the only pending-state crash windows.
+// A verified bootstrap can be reused by a new lease owner. Without one, a
+// missing control file proves no wrapper reached the handoff, so fencing and
+// redispatch are safe. Any ambiguous file evidence freezes rather than racing
+// an unknown wrapper.
+func (c *TerminationCoordinator) recoverPreparedDispatch(ctx context.Context, attempt storage.RecoveryAttempt) (string, string) {
+	bootstrapPath := filepath.Join(c.ControlRoot, "runs", attempt.RunID, "attempts", strconv.Itoa(attempt.AttemptNo), "bootstrap.json")
+	controlPath := c.controlPath(attempt)
+	data, err := safeRecoveryFile(bootstrapPath)
+	if err == nil {
+		var bootstrap runtimepkg.Bootstrap
+		if json.Unmarshal(data, &bootstrap) == nil {
+			sum := sha256.Sum256(data)
+			if c.DB.ValidatePreparedBootstrap(ctx, attempt.RunID, attempt.AttemptNo, attempt.Generation, bootstrap.DispatchID, bootstrap.BootstrapNonce, bootstrap.RunToken, hex.EncodeToString(sum[:])) == nil {
+				return "validated_bootstrap", "reuse_dispatch"
+			}
+		}
+		return "invalid_bootstrap", "frozen"
+	}
+	if !os.IsNotExist(err) || recoveryFileExists(controlPath) {
+		return "ambiguous_file_evidence", "frozen"
+	}
+	return "no_bootstrap_or_control", "redispatch"
+}
+
+func safeRecoveryFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+		return nil, fmt.Errorf("unsafe recovery file")
+	}
+	return os.ReadFile(path)
+}
+
+func recoveryFileExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 func (c *TerminationCoordinator) recoverAttempt(ctx context.Context, attempt storage.RecoveryAttempt) (string, error) {

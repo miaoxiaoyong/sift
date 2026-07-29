@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strconv"
 	"syscall"
@@ -12,6 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/miaoxiaoyong/sift/internal/controlplane"
 	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
@@ -117,6 +122,50 @@ func TestRecoverStartupRedispatchesPendingAttemptBeforeOpeningBarrier(t *testing
 	}
 	if err := raw.QueryRow(`SELECT count(*) FROM outbox_operations WHERE run_id='run' AND attempt_no=1 AND kind='launch_agent' AND state='pending'`).Scan(&operations); err != nil || operations != 1 {
 		t.Fatalf("pending dispatches = %d, %v", operations, err)
+	}
+	if err := db.CompleteStartupRecovery(context.Background(), boot, now.UnixMilli()+1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecoverStartupReusesValidatedPreparedBootstrap(t *testing.T) {
+	db, raw, attempt, now := seedRecoveryCoordinator(t, "pending", 0)
+	key := storage.LaunchOperationKey(attempt.RunID, attempt.AttemptNo, attempt.Generation)
+	nonce, token, dispatch := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "cccccccccccccccccccccccccccccccc"
+	if _, err := raw.Exec(`INSERT INTO outbox_operations(id,operation_key,kind,run_id,attempt_no,state,payload_schema_version,payload_json,payload_digest,next_attempt_at_ms,created_at_ms,updated_at_ms) VALUES ('op',?,'launch_agent','run',1,'pending',1,'{}','digest',10000,10000,10000)`, key); err != nil {
+		t.Fatal(err)
+	}
+	hash := func(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
+	if _, err := raw.Exec(`UPDATE attempt_claims SET launch_operation_key=?,dispatch_id=?,bootstrap_nonce_hash=?,run_token_hash=? WHERE run_id='run' AND attempt_no=1`, key, dispatch, hash(nonce), hash(token)); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	runDir := filepath.Join(root, "runs", "run", "attempts", "1")
+	if err := os.MkdirAll(runDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := json.Marshal(runtimepkg.Bootstrap{SchemaVersion: 2, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor, DaemonVersion: controlplane.Version, WrapperVersion: controlplane.Version, RunID: "run", AttemptNo: 1, Generation: 1, DispatchID: dispatch, BootstrapNonce: nonce, RunToken: token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "bootstrap.json"), bootstrap, 0600); err != nil {
+		t.Fatal(err)
+	}
+	boot, err := db.StartDaemonBoot(context.Background(), "hash-cfg", "test", 1, 123, now.UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := &TerminationCoordinator{DB: db, ControlRoot: root, Now: func() time.Time { return now }}
+	if err := coordinator.RecoverStartup(context.Background(), boot); err != nil {
+		t.Fatal(err)
+	}
+	var generation int
+	var state, gotDispatch string
+	if err := raw.QueryRow(`SELECT a.generation,o.state,c.dispatch_id FROM attempts a JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no JOIN outbox_operations o ON o.id='op' WHERE a.run_id='run'`).Scan(&generation, &state, &gotDispatch); err != nil {
+		t.Fatal(err)
+	}
+	if generation != 1 || state != "pending" || gotDispatch != dispatch {
+		t.Fatalf("prepared recovery changed generation/state/dispatch = %d/%s/%s", generation, state, gotDispatch)
 	}
 	if err := db.CompleteStartupRecovery(context.Background(), boot, now.UnixMilli()+1); err != nil {
 		t.Fatal(err)
