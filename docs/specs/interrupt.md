@@ -14,7 +14,7 @@ summary: Interrupt 的发射、调度、投递与升级契约
 
 1. `EmitInterrupt` 是**唯一**创建 Interrupt 的领域入口。恢复、Runtime、Gate、Report 与后续 Attention/Command 都只能调用它；不得直接插入 `interrupts`、扣注意力预算或创建发布 operation。
 2. 发射器只接受确定性事实、确定性 fallback 模板和确定性 severity 输入；M3 不接受 LLM/T4 severity 输入。M5 的 T6 建议可作为唯一算法的 `suggested_downgrade` 输入，且至多降低一级；它不能改变 `reason`、`min_modality`、options 的领域效果、链接最低事实、expires/on-expire 或使对象更紧急。T4 只能提出渲染候选，T6 只能提出投递建议；两者均不是状态、预算或副作用的写入口。
-3. 发射器在同一事务内完成 Run 转移（或确认已在合法人工态）、生成键去重、首次注意力记账、Interrupt、事件和首发 forge comment operation。已有生成键时返回既有记录，不重复扣费或创建 operation；M5 的调度器只能消费该既有记录，不能以 reason、T4、T6、Channel 或熔断为名另建 Interrupt。
+3. 发射器在同一事务内完成 reason 契约要求的 Run 转移（或确认其不得转移）、生成键去重、首次注意力记账、Interrupt、事件和首发 forge comment operation。Report 直接 `agent_blocked` 与 Report 子配额专用 `failure_review` 只能确认 Run 保持原状态；Report 不能借发射器间接推进或裁定 Run。已有生成键时返回既有记录，不重复扣费或创建 operation；M5 的调度器只能消费该既有记录，不能以 reason、T4、T6、Channel 或熔断为名另建 Interrupt。
 4. 任一 Interrupt 必须有 1–4 个互斥 options、独立可朗读且不超过 40 Unicode code points 的 headline、非空 brief、存在的 `links` 数组、`expires_at` 和 `on_expire`。`links` 可在 §3.3 所限情形为空；表达不出所需字段时拒绝发射并记录确定性诊断，而不是发出含糊问题。
 5. forge comment 是每条 Interrupt 的确定性首发决策面。M5 的 T4/T6、Channel、智能简报、超时 tick、升级投递和 critical 熔断均在本文定义为**既有 Interrupt 的渲染或推进**；它们不预支为已实现能力，也不改变 M3 的首发、生成键和五件事事务。Command 的执行语义仍以 M5 `command.md` 为准。
 
@@ -34,7 +34,7 @@ Link { label, target }
 
 `id` 是服务端校验的稳定动作 ID；`label` 可朗读；`effect` 和 `risk` 是给 renderer 的确定性说明。options 是互斥的终端选择或互斥的下一步请求，不能把同一动作以不同措辞重复列出。指令必须匹配当前 nonce **且**对应一个 option；指令鉴权、语法和执行归 M5 Command。
 
-`EmitInterrupt` 至少接收：Run/attempt 身份、reason、稳定 cause/source facts、gate 阶段、护栏等级、已升级次数、当前时间和冻结后的 attention/config 快照。它从本规格的表生成其余字段；调用方不能传入任意 severity、options 或生成键覆盖结果。
+`EmitInterrupt` 至少接收：Run/attempt 身份、reason、稳定 cause/source facts、gate 阶段、护栏等级、已升级次数、当前时间和冻结后的 attention/config 快照。attempt 身份仅可在 Report 子配额专用 `failure_review` 中为空，且只能由 `RecordReport` 以 §5 的固定 facts 调用。它从本规格的表生成其余字段；调用方不能传入任意 severity、options 或 generation key 覆盖结果。
 
 ## 3. 全部 reason 的 fallback 契约
 
@@ -70,7 +70,7 @@ fallback（无 T4/T6）不得采用自然语言自由模板。其 `brief_markdow
 | `a\rb` | 拒绝：`interrupt_brief_cr_rejected` |
 | `a\nb` | 拒绝：`interrupt_brief_lf_rejected` |
 
-`links` 总是存在。每项是 `Link {label,target}`；`target` 必须是已验证可访问的 HTTPS forge URL 或绝对本地路径，`label` 是表中对应事实键。先按 `(target UTF-8 bytes, label UTF-8 bytes)` 升序排序，再对完全相同的 `(label,target)` 去重；renderer 依此顺序输出。链接不是从 `brief` 或 LLM 文本抽取的。
+`links` 总是存在。每项是 `Link {label,target}`；`target` 必须是已验证可访问的 HTTPS forge URL、绝对本地路径，或 daemon 写入的 `sift://event/<32 lowercase hex>` 安全事件引用；后者只允许 `failure_evidence_ref`，由服务端而非 Agent 生成。`label` 是表中对应事实键。先按 `(target UTF-8 bytes, label UTF-8 bytes)` 升序排序，再对完全相同的 `(label,target)` 去重；renderer 依此顺序输出。链接不是从 `brief` 或 LLM 文本抽取的。
 
 ### 3.3 链接与 manual Run
 
@@ -160,7 +160,7 @@ string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id
 | `code_review` | `string:change_id`, `git_oid:head_sha` |
 | `agent_blocked` | `uint:attempt_no`, `uint:generation`, `string:report_id` |
 | `merge_conflict` | `string:change_id`, `git_oid:head_sha`, `sha256:conflict_digest` |
-| `failure_review` | `uint:attempt_no`, `uint:generation`, `sha256:failure_digest` |
+| `failure_review` | `uint:attempt_no`, `uint:generation`, `sha256:failure_digest`；仅 attempt 失败来源 |
 | `startup_stall` | `uint:attempt_no`, `uint:generation`, `enum:cause`（值为 `startup_stall`） |
 
 下列完整 vectors 中 `\x00` 表示一个 NUL 字节；最后一列是整个 preimage 的 SHA-256 小写 hex。它们同时冻结字段名和值的编码。
@@ -174,6 +174,24 @@ string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id
 | `merge_conflict` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00merge_conflict\x00string:change_id\x00change-01\x00git_oid:head_sha\x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x00sha256:conflict_digest\x00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\x00` | `56378c8559b5f6bdcebb3e097ff7385c78c0eabdcb1a56ae5effac50f0cdf1a3` |
 | `failure_review` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00failure_review\x00uint:attempt_no\x001\x00uint:generation\x002\x00sha256:failure_digest\x00cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\x00` | `98da21cd0a751c6f54f043302d88fa93b08f15c98a406ecac4b09d51ad573cca` |
 | `startup_stall` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00startup_stall\x00uint:attempt_no\x001\x00uint:generation\x002\x00enum:cause\x00startup_stall\x00` | `18630f7c14d7526246fab89c1c99c6a47e80e38cca3efe9e54c1e54d149badae` |
+
+### 5.1 Report 子配额耗尽的 `failure_review`
+
+这是 `failure_review` 的唯一非 attempt 来源，且只允许 [`storage.md` §12.2.1](storage.md) 的 `RecordReport` 调用。它不使用上表的 attempt preimage，而是使用独立 domain，故不会与任一 `(run_id,attempt_no,generation,failure_digest)` 冲突：
+
+```text
+string:domain\x00sift.interrupt.report-quota.generation\x00uint:version\x001\x00string:run_id\x00<run_id>\x00enum:reason\x00failure_review\x00uint:day_bucket_start_ms\x00<daily_bucket_start_ms>\x00sha256:failure_digest\x00<failure_digest>\x00
+```
+
+`failure_digest` 是下列 canonical JSON 的 SHA-256 小写 hex，字段不可增删：
+
+```json
+{"daily_bucket_end_ms":<end>,"daily_bucket_start_ms":<start>,"failure_class":"report_interrupt_quota_exhausted","recommended_action":"review_report_interrupt_quota","run_id":"<run_id>"}
+```
+
+调用固定 `attempt_no=null`，并仅提供 `failure_class=report_interrupt_quota_exhausted`、`failure_evidence_ref=sift://event/<report_quota_exhaustions.security_event_id>`、`recommended_action=review_report_interrupt_quota`。因此它满足 §3 的 `failure_review` fallback 和最低 link，既不吸收 Agent 文本也不伪造 attempt。`report_quota_exhaustions` 的主键 `(run_id,daily_bucket_start_ms)` 是额外的直接数据库唯一约束；generation key 是第二道收敛，不得以预查询替代。
+
+Golden vector：若 `run_id=run-01`、`start=1754000000000`、`end=1754086400000`，上述 JSON 的 `failure_digest` 为 `bce8d4ba7b34a16327dbcc343676a86e31bf85deac133b77be3466baa0ea7d90`，完整 preimage 的 SHA-256 generation key 为 `8489d36f40fbd9c284a0de882915d975ef6c4bd6a039f6c6ae36504375cb9197`。
 
 `startup_stall` 的 generation key 始终语义为 **`(run_id, attempt_no, generation, cause=startup_stall)`**。`process_identity_unknown`、`termination_unconfirmed`、`process_group_unverified` 是 `diagnostic_cause` 事实/隔离诊断，不参与键。超时扫描、恢复扫描、`kill`、`retry` 的同一 attempt/generation 必须命中一条 open Interrupt，即使其诊断分类不同。
 
