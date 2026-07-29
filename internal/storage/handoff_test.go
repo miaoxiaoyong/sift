@@ -23,7 +23,7 @@ func TestHandoffPermitReplayAndStartedEvidence(t *testing.T) {
 	if err := db.AcquireLaunchClaim(ctx, AcquireLaunchClaim{RunID: "run", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", BootstrapNonce: secret('a'), InstanceID: "instance", Session: secret('c'), Wrapper: wrapper, NowMS: 1002}); err != nil {
 		t.Fatal(err)
 	}
-	permit := PermitSpawn{RunID: "run", AttemptNo: 1, Generation: 1, InstanceID: "instance", Session: secret('c'), Permit: secret('d'), ControlDigest: secret('e'), Wrapper: wrapper, NowMS: 1003}
+	permit := PermitSpawn{RunID: "run", AttemptNo: 1, Generation: 1, InstanceID: "instance", Session: secret('c'), Permit: secret('d'), ControlDigest: secret('e'), ControlNonceHash: secret('f'), Wrapper: wrapper, NowMS: 1003}
 	wrongWrapper := permit
 	wrongWrapper.Wrapper.PID = 99
 	if err := db.PermitSpawn(ctx, wrongWrapper); !errors.Is(err, ErrHandoffConflict) {
@@ -36,6 +36,10 @@ func TestHandoffPermitReplayAndStartedEvidence(t *testing.T) {
 	}
 	if err := db.PermitSpawn(ctx, permit); err != nil {
 		t.Fatal(err)
+	}
+	var storedNonceHash string
+	if err := db.db.QueryRowContext(ctx, `SELECT control_nonce_hash FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&storedNonceHash); err != nil || storedNonceHash != secret('f') {
+		t.Fatalf("stored control nonce hash = %q, %v", storedNonceHash, err)
 	}
 	if err := db.PermitSpawn(ctx, permit); err != nil {
 		t.Fatalf("same permit replay: %v", err)

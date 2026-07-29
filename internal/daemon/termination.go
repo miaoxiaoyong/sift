@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
@@ -22,6 +24,7 @@ type TerminationCoordinator struct {
 	Now                  func() time.Time
 	AttentionDailyQuota  map[storage.InterruptSeverity]int
 	DayTimezone          string
+	ControlRoot          string
 }
 
 func (c *TerminationCoordinator) Recover(ctx context.Context) error {
@@ -79,13 +82,20 @@ func (c *TerminationCoordinator) Operator(ctx context.Context, runID string, exp
 	return c.terminate(ctx, attempt, source, expectedVersion)
 }
 
+func (c *TerminationCoordinator) controlPath(attempt storage.RecoveryAttempt) string {
+	if c.ControlRoot == "" {
+		return ""
+	}
+	return filepath.Join(c.ControlRoot, "runs", attempt.RunID, "attempts", strconv.Itoa(attempt.AttemptNo), "control.json")
+}
+
 func (c *TerminationCoordinator) terminate(ctx context.Context, attempt storage.RecoveryAttempt, source storage.TerminationSource, expectedVersion int64) error {
 	now := time.Now
 	if c.Now != nil {
 		now = c.Now
 	}
 	cmd := storage.RecordTerminationObservationCmd{RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedRunVersion: expectedVersion, ExpectedGeneration: attempt.Generation, Source: source, NowMS: now().UnixMilli(), AttentionDailyQuota: c.AttentionDailyQuota, DayTimezone: c.DayTimezone}
-	identity := runtimepkg.ProcessIdentity{PID: attempt.WrapperPID, StartedAtMS: attempt.WrapperStartedAtMS, Executable: attempt.WrapperExecutable, PGID: attempt.WrapperPGID, ControlNonceHash: attempt.ControlNonceHash}
+	identity := runtimepkg.ProcessIdentity{PID: attempt.WrapperPID, StartedAtMS: attempt.WrapperStartedAtMS, Executable: attempt.WrapperExecutable, PGID: attempt.WrapperPGID, ControlNonceHash: attempt.ControlNonceHash, ControlPath: c.controlPath(attempt)}
 	if identity.PID <= 0 || identity.StartedAtMS <= 0 || identity.Executable == "" || identity.PGID <= 0 || identity.ControlNonceHash == "" {
 		cmd.DiagnosticCause = "process_identity_unknown"
 		_, err := c.DB.RecordTerminationObservation(ctx, cmd)

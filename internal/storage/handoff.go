@@ -36,10 +36,10 @@ type AcquireLaunchClaim struct {
 	NowMS                                                  int64
 }
 type PermitSpawn struct {
-	RunID, InstanceID, Session, Permit, ControlDigest string
-	AttemptNo, Generation                             int
-	Wrapper                                           WrapperIdentity
-	NowMS                                             int64
+	RunID, InstanceID, Session, Permit, ControlDigest, ControlNonceHash string
+	AttemptNo, Generation                                               int
+	Wrapper                                                             WrapperIdentity
+	NowMS                                                               int64
 }
 type StartedClaim struct {
 	RunID, InstanceID, Session, Permit, ControlDigest, ResultDigest string
@@ -119,7 +119,7 @@ func (d *DB) AcquireLaunchClaim(ctx context.Context, c AcquireLaunchClaim) error
 // PermitSpawn is the sole transition which grants the irrevocable one-shot
 // spawn permit. No later call can replace that permit or owner.
 func (d *DB) PermitSpawn(ctx context.Context, c PermitSpawn) error {
-	if c.RunID == "" || c.AttemptNo < 1 || c.Generation < 1 || !validHandoffSecret(c.Session) || !validHandoffSecret(c.Permit) || !validWrapper(c.Wrapper) || c.InstanceID == "" || !isLowerHex(c.ControlDigest) || len(c.ControlDigest) != 64 || c.NowMS <= 0 {
+	if c.RunID == "" || c.AttemptNo < 1 || c.Generation < 1 || !validHandoffSecret(c.Session) || !validHandoffSecret(c.Permit) || !validWrapper(c.Wrapper) || c.InstanceID == "" || !isLowerHex(c.ControlDigest) || len(c.ControlDigest) != 64 || !isLowerHex(c.ControlNonceHash) || len(c.ControlNonceHash) != 64 || c.NowMS <= 0 {
 		return ErrHandoffConflict
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -159,7 +159,7 @@ func (d *DB) PermitSpawn(ctx context.Context, c PermitSpawn) error {
 	if _, err = tx.ExecContext(ctx, `UPDATE attempt_claims SET spawn_permit_hash=?,permit_issued_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=?`, handoffHash(c.Permit), c.NowMS, c.NowMS, c.RunID, c.AttemptNo); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE attempts SET phase='spawning',updated_at_ms=? WHERE run_id=? AND attempt_no=? AND phase='starting'`, c.NowMS, c.RunID, c.AttemptNo); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE attempts SET phase='spawning',control_nonce_hash=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND phase='starting'`, c.ControlNonceHash, c.NowMS, c.RunID, c.AttemptNo); err != nil {
 		return err
 	}
 	if err := appendHandoffEvent(ctx, tx, c.RunID, c.AttemptNo, "attempt.spawn_permitted", c.NowMS); err != nil {

@@ -37,6 +37,7 @@ type permitParams struct {
 	WrapperInstanceID string                `json:"wrapper_instance_id"`
 	WrapperIdentity   wrapperIdentityParams `json:"wrapper_identity"`
 	ControlDigest     string                `json:"control_digest"`
+	ControlNonceHash  string                `json:"control_nonce_hash"`
 	PermitCandidate   string                `json:"permit_candidate"`
 }
 type startedParams struct {
@@ -83,10 +84,10 @@ func (s *Server) handoffRequest(req Request) Response {
 			return failure(req.RequestID, "unauthorized", "credential rejected", false)
 		}
 		var p permitParams
-		if !onlyKeys(req.Params, "run_id", "attempt_no", "generation", "wrapper_instance_id", "wrapper_identity", "control_digest", "permit_candidate") || !decodeParams(req.Params, &p) || !validToken(p.PermitCandidate) {
+		if !onlyKeys(req.Params, "run_id", "attempt_no", "generation", "wrapper_instance_id", "wrapper_identity", "control_digest", "control_nonce_hash", "permit_candidate") || !decodeParams(req.Params, &p) || !validToken(p.PermitCandidate) || !validToken(p.ControlNonceHash) {
 			return failure(req.RequestID, "invalid_request", "invalid params", false)
 		}
-		err := s.db.PermitSpawn(contextBackground(), storage.PermitSpawn{RunID: p.RunID, AttemptNo: p.AttemptNo, Generation: p.Generation, InstanceID: p.WrapperInstanceID, Session: req.Auth.Session, Permit: p.PermitCandidate, ControlDigest: p.ControlDigest, Wrapper: toWrapper(p.WrapperIdentity), NowMS: now})
+		err := s.db.PermitSpawn(contextBackground(), storage.PermitSpawn{RunID: p.RunID, AttemptNo: p.AttemptNo, Generation: p.Generation, InstanceID: p.WrapperInstanceID, Session: req.Auth.Session, Permit: p.PermitCandidate, ControlDigest: p.ControlDigest, ControlNonceHash: p.ControlNonceHash, Wrapper: toWrapper(p.WrapperIdentity), NowMS: now})
 		if err != nil {
 			return handoffFailure(req.RequestID, err)
 		}

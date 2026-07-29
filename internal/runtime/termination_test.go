@@ -10,7 +10,7 @@ import (
 
 type observations []ProcessObservation
 
-func (o *observations) Observe(context.Context, int) (ProcessObservation, error) {
+func (o *observations) Observe(context.Context, ProcessIdentity) (ProcessObservation, error) {
 	v := (*o)[0]
 	if len(*o) > 1 {
 		*o = (*o)[1:]

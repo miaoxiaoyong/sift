@@ -43,12 +43,13 @@ func main() {
 		fatal(err)
 	}
 	termination := &daemon.TerminationCoordinator{
-		DB: db, Terminator: runtime.Terminator{Inspector: runtime.UnknownProcessInspector{}, Signaler: runtime.UnixProcessSignaler{}}, Runtime: snapshot.Config.Runtime,
+		DB: db, Terminator: runtime.Terminator{Inspector: runtime.PlatformProcessInspector{}, Signaler: runtime.UnixProcessSignaler{}}, Runtime: snapshot.Config.Runtime,
+		ControlRoot:         home.Path,
 		AttentionDailyQuota: attentionQuota(snapshot.Config.Attention.DailyQuota), DayTimezone: snapshot.Config.Attention.DayTimezone, Now: time.Now,
 	}
-	// Recovery runs before Assemble starts any worker. Unknown process identity
-	// is deliberately fail-closed and becomes a visible startup_stall instead
-	// of allowing a launch lease to be reclaimed.
+	// Recovery runs before Assemble starts any worker. Incomplete process
+	// evidence deliberately fails closed and becomes a visible startup_stall
+	// instead of allowing a launch lease to be reclaimed.
 	if err := termination.Recover(ctx); err != nil {
 		fatal(err)
 	}

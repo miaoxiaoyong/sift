@@ -8,6 +8,6 @@ import "context"
 // consequently records process_identity_unknown and never sends a signal.
 type UnknownProcessInspector struct{}
 
-func (UnknownProcessInspector) Observe(context.Context, int) (ProcessObservation, error) {
+func (UnknownProcessInspector) Observe(context.Context, ProcessIdentity) (ProcessObservation, error) {
 	return ProcessObservation{Exists: true}, nil
 }

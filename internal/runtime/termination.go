@@ -18,6 +18,9 @@ type ProcessIdentity struct {
 	Executable       string
 	PGID             int
 	ControlNonceHash string
+	// ControlPath names the owner-only control.json that binds the persisted
+	// nonce hash to this process. It is evidence, not persisted identity.
+	ControlPath string
 }
 
 // ProcessObservation is a fresh OS/control-file observation. ControlNonceHash
@@ -31,7 +34,7 @@ type ProcessObservation struct {
 // signalling. Production implementations may use OS facilities; tests do not
 // need to signal real processes.
 type ProcessInspector interface {
-	Observe(context.Context, int) (ProcessObservation, error)
+	Observe(context.Context, ProcessIdentity) (ProcessObservation, error)
 }
 type ProcessSignaler interface {
 	SignalGroup(pgid int, signal syscall.Signal) error
@@ -91,7 +94,7 @@ func (t Terminator) Terminate(ctx context.Context, id ProcessIdentity, cfg Termi
 	if sleep == nil {
 		sleep = sleepContext
 	}
-	observation, err := t.Inspector.Observe(ctx, id.PID)
+	observation, err := t.Inspector.Observe(ctx, id)
 	if err != nil {
 		return TerminationResult{}, fmt.Errorf("runtime: observe process: %w", err)
 	}
@@ -134,7 +137,7 @@ func (t Terminator) Terminate(ctx context.Context, id ProcessIdentity, cfg Termi
 
 func (t Terminator) absent(ctx context.Context, id ProcessIdentity, cfg TerminationConfig, sleep func(context.Context, time.Duration) error) (bool, error) {
 	for i := 0; i < cfg.AbsenceRechecks; i++ {
-		observation, err := t.Inspector.Observe(ctx, id.PID)
+		observation, err := t.Inspector.Observe(ctx, id)
 		if err != nil {
 			return false, fmt.Errorf("runtime: recheck process: %w", err)
 		}
