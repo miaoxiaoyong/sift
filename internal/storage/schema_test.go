@@ -504,13 +504,13 @@ func TestCalibrationDecisionCompletion(t *testing.T) {
 
 	// One-time completion of the human decision group.
 	mustExec(t, db, `UPDATE calibration_entries
-		SET human_decision = 'reject', decision_source = 'command', decided_at_ms = ?
+		SET human_decision = 'block', decision_source = 'command', decided_at_ms = ?
 		WHERE id = 'ce1'`, testNow+1000)
 	// Completed entries cannot be revised.
-	mustFail(t, db, `UPDATE calibration_entries SET human_decision = 'approve' WHERE id = 'ce1'`)
+	mustFail(t, db, `UPDATE calibration_entries SET human_decision = 'allow' WHERE id = 'ce1'`)
 	// Predicted fields are frozen; partial completion is rejected by CHECK.
 	mustFail(t, db, `UPDATE calibration_entries SET predicted_decision = 'reject' WHERE id = 'ce2'`)
-	mustFail(t, db, `UPDATE calibration_entries SET human_decision = 'approve' WHERE id = 'ce2'`)
+	mustFail(t, db, `UPDATE calibration_entries SET human_decision = 'allow' WHERE id = 'ce2'`)
 	mustFail(t, db, `DELETE FROM calibration_entries WHERE id = 'ce2'`)
 }
 

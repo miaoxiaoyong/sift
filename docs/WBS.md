@@ -402,11 +402,11 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 #### 4.4 Ledger、人类结果接口与认证投影
 
 - [x] 编写 `specs/ledger.md`，覆盖 Gate 预判、人类决定、路径/文件类型、护栏、Issue 作者、打扰特征及自然语言原料
-- [ ] 提供确定性 `recordHumanDecision` 应用入口；M5 Command 只调用它，不另写账本
-- [ ] 人类结果、校准样本与认证投影增量在同事务提交
-- [ ] 认证按任务类别计算漏放、误拦、总样本与负样本绝对数；输出只有类别布尔与证据摘要
-- [ ] forge 手工合并在已有 Gate 预判时调用 `recordHumanDecision`：把手工合并记为人的实际决定、保留校准样本并附 `gate_bypassed`
-- [ ] `gate_bypassed` 不进入 Sift 自发合并的误放行率分母，但作为独立绕过样本保留
+- [x] 提供确定性 `recordHumanDecision` 应用入口；M5 Command 只调用它，不另写账本（`storage.RecordHumanDecision`）
+- [x] 人类结果、校准样本与认证投影增量在同事务提交（`storage.RecordHumanDecision`）
+- [x] 认证按任务类别计算漏放、误拦、总样本与负样本绝对数；输出只有类别布尔与证据摘要（`storage.Certification`）
+- [x] forge 手工合并在已有 Gate 预判时调用 `recordHumanDecision`：把手工合并记为人的实际决定、保留校准样本并附 `gate_bypassed`（`external_decision_bindings` + `storage.RecordHumanDecision`）
+- [x] `gate_bypassed` 不进入 Sift 自发合并的误放行率分母，但作为独立绕过样本保留（认证仅聚合 settled calibration）
 
 #### 4.5 回放集
 

@@ -2,10 +2,11 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 )
 
 // GateEvaluationRecord is the durable result of one invocation of the pure
@@ -116,18 +117,21 @@ func recordGateEvaluationTxWithIDs(ctx context.Context, tx *sql.Tx, r GateEvalua
 	if _, err := tx.ExecContext(ctx, `INSERT INTO gate_evaluations (id,run_id,snapshot_id,gate_version,verdict_json,verdict_digest,cache_hit,created_at_ms) VALUES (?,?,?,?,?,?,?,?)`, out.EvaluationID, r.RunID, out.SnapshotID, r.GateVersion, string(r.VerdictJSON), r.VerdictDigest, gateBoolInt(r.CacheHit), r.NowMS); err != nil {
 		return out, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO calibration_entries (id,run_id,gate_evaluation_id,predicted_decision,features_json,predicted_at_ms) VALUES (?,?,?,?,?,?)`, out.CalibrationID, r.RunID, out.EvaluationID, r.ShadowDecision, string(r.FeaturesJSON), r.NowMS); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO calibration_entries (id,run_id,gate_evaluation_id,predicted_decision,features_json,gate_sample_entry_id,predicted_at_ms) VALUES (?,?,?,?,?,?,?)`, out.CalibrationID, r.RunID, out.EvaluationID, r.ShadowDecision, string(r.FeaturesJSON), out.GateSampleEntryID, r.NowMS); err != nil {
 		return out, err
 	}
-	features, err := json.Marshal(map[string]string{"calibration_id": out.CalibrationID, "gate_evaluation_id": out.EvaluationID})
-	if err != nil {
-		return out, fmt.Errorf("storage: gate sample features: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries (id,run_id,entry_kind,features_schema_version,features_json,created_at_ms) VALUES (?,?,'gate_sample',1,?,?)`, out.GateSampleEntryID, r.RunID, string(features), r.NowMS); err != nil {
+	features := r.FeaturesJSON
+	digest := sha256Hex(features)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries (id,run_id,entry_kind,features_schema_version,features_json,features_digest,created_at_ms) VALUES (?,?,'gate_sample',1,?,?,?)`, out.GateSampleEntryID, r.RunID, string(features), digest, r.NowMS); err != nil {
 		return out, err
 	}
 	return out, nil
 }
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 func gateBoolInt(v bool) int {
 	if v {
 		return 1
