@@ -724,7 +724,7 @@ Interrupt 升级重推复用原 charge，不新增 entry；Interrupt 关闭不�
   - T1：`scope=intake`，subject 为规范化 forge Issue 摄入键；project 必填，run/attempt 为空。
   - T2：`scope=run`，run 必填、attempt 为空。
   - T3–T6：`scope=run`，run 必填；调用发生在具体 attempt 时 attempt 可填，否则为空。
-  - T7：`scope=aggregate`，subject 为 `global` 或 project/category/window 聚合键；run/attempt 为空。
+  - T7：`scope=aggregate`，subject 严格使用 [`brain.md` §3](brain.md) 的 `aggregate:v1:...` grammar；project subject 的 `project_id` 必填且 base64url component 解码后逐字节相等，global subject 的 `project_id` 为空；run/attempt 均为空。
 - `attempt_no` 非空时 `run_id` 必填且组合外键指向 attempts。Brain call 先于 Gate snapshot 终结且不可回写；输出实际参与 Gate 输入时通过 §10.2 的关联表连接。
 
 #### `brain_attempts`（不可变）

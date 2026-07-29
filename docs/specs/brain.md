@@ -6,7 +6,7 @@ summary: Brain T1–T7 调用壳、schema、版本与确定性兜底契约
 
 # Brain 规格
 
-本文冻结 Brain 统一调用壳、调用身份、提示词资产、T1–T7 输入输出、Task Spec 组装、token 记账与确定性兜底。§11–§13 是 M5 的字段级 **draft**：它们复用已生效的调用壳，但不声明 T4/T6/T7 已实现；T1/T2/T3/T5 的既有契约仍为 `active`。
+本文冻结 Brain 统一调用壳、调用身份、提示词资产、T1–T7 输入输出、Task Spec 组装、token 记账与确定性兜底。§11–§13 已通过 M5 字段级评审并转为 **active**；这只表示 T4/T6/T7 契约可实现，不声明对应 prompt asset、存储迁移或 M5 代码已经交付。T1/T2/T3/T5 的既有契约继续保持 `active`。
 
 来源：[PRD §5.3、§5.4、§5.5、§5.7、§5.9](../PRD.md)、[DESIGN §8.3、§8.5–§8.7](../DESIGN.md)、[`storage.md` §9–§10](storage.md)、[`config.md` §3.4](config.md)、[`interrupt.md` §1–§5](interrupt.md)、[`ledger.md`](ledger.md)、[`outbox.md` §2、§5](outbox.md)、[WBS M1 §1.7、M4 §4.2、M5 §5.1](../WBS.md)。
 
@@ -29,6 +29,10 @@ B1–B3 全部 P1 与 B4–B7 均已处置；P3 编辑项（版本独立 bump、
 ### T3/T5 字段级评审
 
 2026-07-29 独立字段级评审结论为 **PASS WITH NOTES**；报告见 [2026-07-29-brain-t3-t5-review-pi-gpt-5.6-sol.md](../reviews/2026-07-29-brain-t3-t5-review-pi-gpt-5.6-sol.md)。评审发现的 head/diff 竞态、T5 rerun 目标缺失、fallback 绕过 Gate 事务、嵌套字段未闭合和 Brain↔Gate 错误一对一关联均已在 §9–§10 及 storage/gate/DESIGN 接缝关闭；无遗留 P1，本文保持 `active`。非阻断注记仅涉及 T5 现有 Forge 元数据的分诊信息量，留待实现证据评估，不扩张 V0 Forge 日志读取面。
+
+### T4/T6/T7 字段级评审
+
+2026-07-29 M5 字段级评审结论为 **PASS WITH NOTES**；报告见 [2026-07-29-m5-brain-t4-t6-t7-field-review-pi-gpt-5.6-sol.md](../reviews/2026-07-29-m5-brain-t4-t6-t7-field-review-pi-gpt-5.6-sol.md)。评审关闭了 T4 canonical option 顺序与安全渲染、T6 冻结时间/阈值/Channel 候选、T7 aggregate identity/证据闭包/目标 scope，以及三触点来源 union 与 fallback reason 枚举；无遗留 P1，§11–§13 转为 `active`。非阻断注记仅涉及待独立评审的 Interrupt 接缝与 M5 尚未交付的 prompt/schema/storage 实现，不把规格通过描述为 M5 已完成。
 
 ## 1. 不变量
 
@@ -83,7 +87,9 @@ logical identity：
 
 - T1：`scope=intake`，`subject_key=forge:<kind>:<normalized_host>:<project_key>:issue:<issue_id>`。
 - T2：`scope=run`，`subject_key=run:<run_id>`。
-- T3–T6：`scope=run`；T7 为 `aggregate`，与 storage 规则一致。T7 的 `subject_key` 是由确定性聚合器生成的 `aggregate:<project_id|global>:<task_kind|all>:<window_start_ms>:<window_end_ms>`；不得以单条 Run、Interrupt 或 Ledger entry 作为 subject。
+- T3–T6：`scope=run`；T7 为 `scope=aggregate`，与 storage 规则一致。
+
+T7 的 `subject_key` 由确定性聚合器生成，使用可无歧义解析的版本化 grammar：全局聚合为 `aggregate:v1:global:<task_kind|all>:<window_start_ms>:<window_end_ms>`，项目聚合为 `aggregate:v1:project:<project_id_b64url>:<task_kind|all>:<window_start_ms>:<window_end_ms>`。`project_id_b64url` 是 project ID UTF-8 bytes 的 RFC 4648 base64url 无 padding 编码；两个时间是无前导零的非负十进制整数且 `start < end`。project 聚合的 call 必须填写对应 `project_id`，global 聚合必须为空；两者的 `run_id/attempt_no` 均为空。不得把单条 Run、Interrupt 或 Ledger entry 编进 subject。
 
 `call_seq` 是同 subject/touchpoint 的逻辑调用序号，从 1 递增；schema retry 不增加 call_seq，而增加 `provider_attempt=1|2`。
 
@@ -400,7 +406,7 @@ provider 禁用、token 阈值/输入上限、`input_incomplete`、schema/domain
 
 Check 失败参与 Gate 输入时，快照必须 canonical 化 T5 的分类结果、`retry_check_id` 及其确定性来源。正常来源 closed object 与 §9.3 的 brain 形态同源，并必须引用 terminal valid T5 call；兜底来源使用上段固定对象。来源版本规则与 §9.3 相同。完整分类/目标/来源进入 Gate 快照及其 hash，正常分类与兜底不得共用缓存输入；关联通过 [`storage.md` §10.2](storage.md) 的多对多表写入，不回写 terminal call。本节不把 T5 建议扩展为 Gate 决定。
 
-## 11. T4 决策简报（M5 draft）
+## 11. T4 决策简报
 
 T4 在已有的、确定性生成的 Interrupt 候选上调用；它不判断是否应当打扰，也不创建或更新 Interrupt。调用作用域为 `run`，`subject_key=run:<run_id>`；仅候选绑定具体 attempt 时填写 attempt。T4 的输入在调用前冻结，provider 调用结束后由唯一 `EmitInterrupt` 入口消费正常结果或兜底，见 [`interrupt.md` §1–§3](interrupt.md)。T4 call 不进入 Gate 输入，也不创建 `brain_gate_input_links`。
 
@@ -425,7 +431,9 @@ T4 在已有的、确定性生成的 Interrupt 候选上调用；它不判断是
 | `links` | array | 0..32 个 closed `{label,target}`，按 `(target,label)` UTF-8 bytes 排序去重；只含发射器已验证链接 |
 | `candidate_options` | array | 1..4 个 closed `{id,label,effect,risk}`；顺序和内容逐字段等于 [`interrupt.md` §3.1](interrupt.md) 对该 reason 的确定性候选集 |
 
-所有 facts、链接 label 和 fallback brief 都是不可信展示数据；T4 不跟随链接。整份 canonical JSON 超过 `brain.max_input_bytes` 时不调用 provider，按 §11.3 兜底。
+`links[]` 的 `label` 是 1..128 bytes string，`target` 是 1..4096 bytes string，并且必须逐字段等于发射器已验证的 HTTPS Forge URL 或绝对本地路径。`candidate_options[]` 的 `id` 是 1..64 bytes、匹配 `[a-z][a-z0-9_-]*` 的 ASCII string；`label` 为 1..256 bytes，`effect`/`risk` 各为 1..1000 bytes，三者均不得含 CR、LF 或 Unicode `Cc`。这些 bounds 只让 schema 可生成；领域层仍要求整个 option 与对应 reason 的 canonical literal 逐字节相等。
+
+所有 fallback brief、链接 label/target 与 option 文案都是 untrusted display data；T4 不跟随链接。输入先由发射器作领域校验；确定性骨架非法是调用方 contract violation，不 reserve Brain call，也不能让 T4 修复。合法输入的整份 canonical JSON 超过 `brain.max_input_bytes` 时不调用 provider，按 §11.3 兜底。
 
 ### 11.2 Output v1
 
@@ -437,19 +445,21 @@ closed object（`additionalProperties:false`）：
 | `conclusion` | string | trim 后 1..1000 bytes；不得含 Cc 控制码或换行 |
 | `key_points` | string[] | 1..3 项；每项 trim 后 1..1000 bytes、无 Cc/换行、去重；按输出顺序即简报中的阅读顺序 |
 | `recommended_option_id` | string | 必须精确命中 input `candidate_options[].id` |
-| `options` | string[] | 1..4 项，必须是 input `candidate_options[].id` 的**完整排列**，无重复；只允许重排，不得添加、删除或改写动作 |
+| `options` | string[] | 1..4 项；必须与 input `candidate_options[].id` **逐项、同序完全相等**，不得重排、添加、删除或重复 |
 
-确定性 renderer 以 `conclusion`、有序 `key_points` 和由 `recommended_option_id` 查得的候选 label 组装 Interrupt `brief`；以 `options` 的顺序组装完整 `Option{id,label,effect,risk}`。LLM 不能输出 `severity`、`reason`、`min_modality`、links、effect 或 risk，不能新增/删除人类动作，不能把 `visual` 改成可语音渲染。领域后校验失败（包括 option ID 不精确、集合不完整或 headline 不可朗读）与 closed decode failure 相同。
+T4 的自然语言输出只按**纯文本**接纳。确定性 renderer 对 trim 后的 `conclusion`、每个 `key_points` 和 canonical recommended option label 逐项执行 `EscapeT4Text`：按顺序把 `\\`、`` ` ``、`*`、`_`、`[`、`]`、`(`、`)`、`#`、`+`、`-`、`!`、`>`、`<`、`&` 替换为前置反斜杠的字面量，再以固定模板组装 brief。renderer 不解析模型给出的 Markdown、HTML、链接、nonce、outbox marker 或 `/sift` 命令；转义后不得出现可解释的 `<!-- sift-op:` marker。`headline` 以 trim 后纯文本存储，不拼进 brief；任何 Markdown/HTML sink 展示 headline 时同样先执行 `EscapeT4Text`，不得把存储文本当 markup。
 
-T4 的 prompt/schema 初始版本分别为 `T4/v1/<sha256前12位>`、`output_schema_version=1`，按 §2 的独立 bump 规则演进。正常结果和其版本只作为本次 Interrupt 的可审计展示来源；不得参与其 generation key、severity、Gate snapshot 或注意力 charge。
+确定性 renderer 以 `conclusion`、有序 `key_points` 和由 `recommended_option_id` 查得的 canonical label 组装 Interrupt `brief`；以 input 的同序完整候选组装 `Option{id,label,effect,risk}`。LLM 不能输出 `severity`、`reason`、`min_modality`、links、effect 或 risk，不能新增、删除或重排人类动作，不能把 `visual` 改成可语音渲染。领域后校验失败（包括 option ID 不精确、顺序/集合不完整、headline 不可朗读或转义后不满足 sink contract）与 closed decode failure 相同。
+
+T4 的 prompt/schema 初始版本分别为 `T4/v1/<sha256前12位>`、`output_schema_version=1`，按 §2 的独立 bump 规则演进。正常消费者来源是 closed `{kind:"brain",logical_call_id,prompt_version,output_schema_version}`：两个 ID/version string 各为 1..256 bytes，schema version 为正整数，并须逐字段等于 terminal valid T4 call。正常结果和来源只作为本次 Interrupt 的可审计展示来源；不得参与其 generation key、severity、Gate snapshot 或注意力 charge。
 
 ### 11.3 兜底与消费
 
 provider 禁用、token 阈值、输入超限、两次输出均无效、provider failure 或 recovery 收敛时，T4 不产生半份文案。确定性消费者直接以 `interrupt.md` §3 的 `fallback_brief`、原始状态 facts、已验证 links 与完整候选 options 调用 `EmitInterrupt`；这就是 PRD 所说的「裸链接 + 原始状态文本」。不提取有效 attempt 的片段，不以第二个 LLM 修补。
 
-该次 terminal fallback call 的消费者来源为 `{kind:"fallback",logical_call_id,version:"T4/fallback/v1",reason}`；正常来源为 `{kind:"brain",logical_call_id,prompt_version,output_schema_version}`。来源写入 Interrupt 展示审计/事件，不能替代 `EmitInterrupt` 的确定性 facts，也不建立 Gate link。无论正常或兜底，发射器仍独占结构校验、generation 去重、severity、critical 熔断和注意力配额；发射被拒绝时不得因 T4 重试另开旁路。
+该次 terminal fallback call 的消费者来源是 closed `{kind:"fallback",logical_call_id,version:"T4/fallback/v1",reason}`；`logical_call_id` 为 1..256 bytes 且引用 terminal fallback T4 call，`reason` 只能为 `provider_disabled | token_threshold | input_too_large | invalid_output | provider_error | recovery`，并须等于 call 的 `fallback_reason`。正常/兜底来源写入 Interrupt 展示关联审计，不能替代 `EmitInterrupt` 的确定性 facts，也不建立 Gate link。无论正常或兜底，发射器仍独占结构校验、generation 去重、severity、critical 熔断和注意力配额；发射被拒绝时不得因 T4 重试另开旁路。
 
-## 12. T6 打扰调度（M5 draft）
+## 12. T6 打扰调度
 
 T6 只对一条尚未发射的候选 Interrupt 建议时机和 Channel；它不创建、关闭、合并或抑制 Interrupt。调用作用域为 `run`，`subject_key=run:<run_id>`；与具体 attempt 相关时才填写 attempt。调度结果只是交给确定性 scheduler 的候选，最终发射始终经过 `EmitInterrupt` 和 Channel delivery；T6 call 不进入 Gate 输入。
 
@@ -461,9 +471,14 @@ T6 只对一条尚未发射的候选 Interrupt 建议时机和 Channel；它不�
 |------|------|------|
 | `run_id` | string | 1..256 bytes；等于 trace Run |
 | `attempt_no` | integer/null | 非空时为正整数，且等于 trace attempt |
+| `frozen_at_ms` | integer | 非负；本次调度快照的唯一时间 |
 | `candidate` | closed object | 仅含下表字段 |
-| `availability` | closed object | 仅含 `state`、`next_window_at_ms`；state 为 `available | unavailable | unknown`，时间为非负 integer/null；available 时 null，其余非空 |
-| `attention` | closed object | 仅含 `fallback_immediate_min_severity`、`remaining`；前者为 `low | normal | high | critical`，后者是按 severity 排序的 closed `{severity,remaining}` 数组，remaining 为非负整数 |
+| `availability` | closed object | 仅含 `state`、`next_window_at_ms`；state 为 `available | unavailable | unknown`，时间为非负 integer/null |
+| `attention` | closed object | 仅含 `fallback_immediate_min_severity`、`remaining`；前者在 v1 必须为常量 `high`，后者是 closed quota snapshot |
+
+`availability.state=available` 时 `next_window_at_ms` 必须为 null；`unavailable` 时必须为满足 `frozen_at_ms < next_window_at_ms` 的 integer；`unknown` 时可为 null，或为满足同一不等式的确定性下一窗口。时间为 null 时 T6 不得建议 `next_window`，不能让模型猜时间。
+
+`attention.remaining` 必须恰有三项、顺序固定为 `low, normal, high`，每项仅含 required `severity` 与 `remaining`（非负 integer）；不得放入 `critical`、缺项或重复 severity。它只是冻结的排序特征，不是扣费授权。v1 的 fallback threshold 固定为 `high`，与 PRD 的「按 severity 确定性阈值」及 Attention 基线一致；改变阈值必须 bump T6 input/schema 版本，不能由单次调用者任意传值。
 
 `candidate`：
 
@@ -472,11 +487,13 @@ T6 只对一条尚未发射的候选 Interrupt 建议时机和 Channel；它不�
 | `reason` | string | PRD 七种 Interrupt reason 之一 |
 | `severity` | string | `low | normal | high | critical`；确定性 `BaseSeverity` 结果 |
 | `min_modality` | string | `voice | text | visual` |
-| `expires_at_ms` | integer | 非负且晚于本次 scheduler 冻结时间 |
-| `channel_candidates` | string[] | 1..8 项，1..128 bytes，UTF-8 bytes 排序去重；仅含配置的、可用的 Channel ID |
-| `default_channel_id` | string | 必须精确命中 `channel_candidates`；由确定性配置选择 |
+| `expires_at_ms` | integer | 非负且严格大于 `frozen_at_ms` |
+| `channel_candidates` | string[] | 1..8 项，每项 1..128 bytes，按 UTF-8 bytes 排序去重；仅含配置中可用且与 `min_modality` 兼容的 Channel ID |
+| `default_channel_id` | string | 必须精确命中 `channel_candidates`；由确定性配置从同一兼容集合选择 |
 
-T6 只观察上述冻结快照，不能读取 Ledger、重新查 Forge、改变候选 facts 或自行计费。`remaining` 是建议排序的输入，不能作为发射额度的授权。
+若没有兼容 Channel，不 reserve T6 call：`EmitInterrupt` 的 Forge 首发仍有效，Channel delivery 由 Attention 契约进入可观测 `held`；不得伪造候选或把不兼容 Channel 交给模型。若 `availability.next_window_at_ms >= candidate.expires_at_ms`，仍可把该时间作为快照事实，但 `next_window` 输出必定领域校验失败。
+
+T6 只观察上述冻结快照，不能读取 Ledger、重新查 Forge、改变候选 facts 或自行计费。`remaining` 是建议排序的输入，不能作为发射额度的授权。整份 canonical JSON 超过 `brain.max_input_bytes` 时不调用 provider，按 §12.3 兜底。
 
 ### 12.2 Output v1
 
@@ -489,17 +506,17 @@ closed object：
 | `suggested_downgrade` | boolean | 只作为 [`interrupt.md` §4.2](interrupt.md) 的至多一级降级输入 |
 | `rationale` | string | trim 后 1..2000 bytes，无 Cc 控制码或换行 |
 
-领域后校验还要求：`severity=critical` 只能为 `immediate`；`delivery=next_window` 时 `availability.next_window_at_ms < candidate.expires_at_ms`；`delivery=batch` 与 `next_window` 都不等于取消或关闭。T6 不能输出 severity、quota、reason、options、expires、on-expire 或任何「不发出」指令。`channel_id` 是选择，不是 Channel 凭据或发布请求。
+领域后校验还要求：input `candidate.severity=critical` 时只能为 `immediate`；非 critical 的 `immediate` 在 `availability=unavailable` 时无效；`delivery=next_window` 要求非空 `availability.next_window_at_ms` 且 `frozen_at_ms < next_window_at_ms < candidate.expires_at_ms`；`delivery=batch` 与 `next_window` 都不等于取消、关闭或无限 defer。T6 不能输出 severity、quota、reason、options、expires、on-expire、绝对调度时间或任何「不发出」指令。`channel_id` 是选择，不是 Channel 凭据或发布请求。
 
-T6 初始版本为 `T6/v1/<sha256前12位>`，`output_schema_version=1`；版本规则同 §2。正常来源只进入调度审计，不能改变 Interrupt generation key、Gate snapshot 或 Ledger 记录。
+T6 初始版本为 `T6/v1/<sha256前12位>`，`output_schema_version=1`；版本规则同 §2。正常调度来源是 closed `{kind:"brain",logical_call_id,prompt_version,output_schema_version}`，字段类型、terminal-call 一致性与 §11.2 同源但 touchpoint 必须为 T6。正常来源只进入调度关联审计，不能改变 Interrupt generation key、Gate snapshot 或 Ledger 记录。
 
 ### 12.3 确定性兜底与配额
 
-provider 禁用、token 阈值、输入超限、schema/domain failure、provider failure 或 recovery 时，不产出 LLM 调度建议。确定性 scheduler 以冻结的 `fallback_immediate_min_severity` 比较候选 severity：达到或超过阈值则 `immediate + default_channel_id`，否则 `batch + default_channel_id`，且 `suggested_downgrade=false`。它不把 token 耗尽解释为所有候选立即打扰。
+provider 禁用、token 阈值、输入超限、schema/domain failure、provider failure 或 recovery 时，不产出 LLM 调度建议。确定性 scheduler 以 v1 常量 `fallback_immediate_min_severity=high` 比较 input candidate severity：`high | critical` 得到 `immediate + default_channel_id`，`low | normal` 得到 `batch + default_channel_id`，且 `suggested_downgrade=false`。它不把 token 耗尽解释为所有候选立即打扰。
 
-正常建议和该兜底均须依序经过：到期/availability 的确定性检查、`Severity(..., suggested_downgrade)`、`EmitInterrupt` 的 generation 去重、注意力收费、非 critical 合批及 critical 熔断，最后才创建 `channel_publish`。配额耗尽只能由发射器合批，不能由 T6、其兜底或 Channel 借支。terminal fallback 的调度审计来源固定为 `{kind:"fallback",logical_call_id,version:"T6/fallback/v1",reason}`；不建立 Gate link。
+正常建议和该兜底均须依序经过：到期/availability 的确定性检查、`Severity(..., suggested_downgrade)`、`EmitInterrupt` 的 generation 去重、注意力收费、非 critical 合批及 critical 熔断，最后才创建 `channel_publish`。配额耗尽只能由发射器合批，不能由 T6、其兜底或 Channel 借支。terminal fallback 的调度来源是 closed `{kind:"fallback",logical_call_id,version:"T6/fallback/v1",reason}`；logical call 一致性同 §11.3，`reason` 只能为 `provider_disabled | token_threshold | input_too_large | invalid_output | provider_error | recovery`。来源只进调度关联审计，不建立 Gate link。
 
-## 13. T7 校准提案与 A7 防火墙（M5 draft）
+## 13. T7 校准提案与 A7 防火墙
 
 T7 是 Ledger 的聚合读取面，不是学习后的判定器。它只能从确定性导出的 `AggregateLedgerEvidence` 生成待人审文本提案；调用作用域必须为 `aggregate`，`run_id/attempt_no` 必为空，subject 使用 §3 的 aggregate key。T7 不读取当前单条 Gate candidate、未冻结的 Forge 状态、open Interrupt 或可写 policy/context 文件，也不进入 Gate snapshot/link。
 
@@ -509,13 +526,29 @@ T7 是 Ledger 的聚合读取面，不是学习后的判定器。它只能从确
 
 | 字段 | 类型 | 约束 |
 |------|------|------|
-| `aggregate_key` | string | 必须精确等于 trace `subject_key`，符合 §3 格式 |
-| `window` | closed object | `{start_ms,end_ms}`；均为非负 integer，`start_ms < end_ms` |
-| `categories` | array | 1..16 项、按 `task_kind` 排序；每项是 closed `{evidence_id,task_kind,certification_version,certified,evidence_summary}`，evidence_id 为 1..256 bytes 的确定性聚合 ID，task_kind 为五种 Run kind，版本和摘要均为确定性聚合值 |
-| `replay_summary` | closed object | `{evidence_id,dataset_version,gate_version,total_samples,negative_samples,leak_count,false_block_count}`；evidence_id 为 1..256 bytes 的确定性聚合 ID，版本非空，计数为非负 integer |
-| `semantic_material` | array | 0..64 项，按 `entry_id` UTF-8 bytes 排序；每项是 closed `{entry_id,material_kind,text}`，kind 为 `reject_reason | ask_text`，text 1..16384 bytes |
+| `aggregate_key` | string | 必须精确等于 trace `subject_key`，并符合 §3 的 v1 grammar |
+| `window` | closed object | 仅含 `{start_ms,end_ms}`；均为非负 integer，且逐字段等于 aggregate key 的窗口 |
+| `categories` | array | 1..5 项；每项为下述 closed category evidence，按 `task_kind` UTF-8 bytes 排序去重 |
+| `replay_summary` | closed object | 下述 replay evidence，字段全部 required |
+| `semantic_material` | array | 0..64 项，按 `entry_id` UTF-8 bytes 排序去重；每项为下述 closed semantic evidence |
 
-输入只能由 [`ledger.md` §2–§4](ledger.md) 的 immutable records、类别认证投影和离线 replay 集确定性组装。`categories`/`replay_summary` 不含 Run ID、路径、作者或单条 verdict；semantic material 只保留其 immutable entry ID 和原文，禁止附带可用于消费当前 Run 的身份。文本均为 untrusted data。整份 canonical JSON 超过 `brain.max_input_bytes` 时不调用 provider，按 §13.3 兜底。
+category evidence：
+
+| 字段 | 类型与约束 |
+|------|------------|
+| `evidence_id` | 1..256 bytes string；确定性聚合 ID |
+| `task_kind` | `feature | bug | chore | docs | refactor` |
+| `certification_version` | 64 个小写十六进制字符；等于当前类别 certification revision |
+| `certified` | boolean |
+| `evidence_summary` | closed `{window_start_ms,window_end_ms,certification_rules_version,evidence_digest,total_samples,negative_samples,leak_count,false_block_count}` |
+
+`evidence_summary` 的两个时间为非负 integer 且 start < end；两个 version/digest 均为 64 个小写十六进制字符；四个 count 为非负 integer，并满足 `leak_count <= negative_samples <= total_samples` 与 `false_block_count <= total_samples - negative_samples`。summary 必须逐字段等于被 `certification_version` 引用的 immutable certification evidence，不能由 T7 重算或摘要。
+
+`replay_summary` 仅含 required `evidence_id`（1..256 bytes）、`dataset_version`（1..128 bytes）、`gate_version`（1..128 bytes）、`total_samples`、`negative_samples`、`leak_count`、`false_block_count`。四个 count 约束与 category summary 相同；它们是确定性离线 replay 聚合，不含单条 verdict。
+
+`semantic_material[]` 仅含 required `entry_id`（1..256 bytes）、`material_kind`（`reject_reason | ask_text`）与 `text`（1..16384 bytes UTF-8 string）。所有 category/replay `evidence_id` 与 semantic `entry_id` 在整份输入中必须全局唯一，避免 proposal citation 一 ID 多义。
+
+aggregate key 的 category component 为具体 task kind 时，`categories` 必须恰有一项且 kind 相等；为 `all` 时必须包含本窗口确定性聚合器产出的全部非空类别，至少一项、至多五项。key 为 global 时不得混入 project ID；key 为 project 时其 base64url 解码结果必须等于 trace `project_id`。输入只能由 [`ledger.md` §2–§4](ledger.md) 的 immutable records、类别认证投影和离线 replay 集确定性组装。`categories`/`replay_summary` 不含 Run ID、路径、作者或单条 verdict；semantic material 只保留 immutable entry ID 和原文，不附带可用于消费当前 Run 的身份。文本均为 untrusted data。整份 canonical JSON 超过 `brain.max_input_bytes` 时不调用 provider，按 §13.3 兜底。
 
 ### 13.2 Output v1
 
@@ -526,17 +559,19 @@ closed object：
 | `proposal_kind` | string | `policy | context` |
 | `target_scope` | string | `project | global`；仅为人审时的建议，不是写入目标 |
 | `title` | string | trim 后 1..160 bytes，无 Cc 控制码或换行 |
-| `body` | string | trim 后 1..8192 bytes；可含 Markdown，但不得含 HTML、链接目标或可执行指令 |
-| `evidence_entry_ids` | string[] | 1..64 项，按 UTF-8 bytes 排序去重；每项必须精确命中 input `semantic_material[].entry_id`，或为确定性 categories/replay evidence ID |
-| `requires_human_approval` | boolean | 必须为 `true` |
+| `body` | string | trim 后 1..8192 bytes；可含 Markdown 与 LF/TAB，拒绝 CR、NUL 和除 LF/TAB 外的 Unicode `Cc` |
+| `evidence_entry_ids` | string[] | 1..64 项，按 UTF-8 bytes 排序去重；每项必须精确命中 input 中全局唯一的 semantic/category/replay evidence ID |
+| `requires_human_approval` | boolean | 必须为常量 `true` |
 
-该 schema 故意没有 policy patch、配置写入、context path、Gate verdict、auto-merge、severity、Interrupt、Run 或 action 字段。正常输出只能持久化为不可变 `proposal_draft`（带 logical call、prompt/schema version、aggregate key、evidence IDs 和 `pending_human_approval`）；它不是有效 policy、不是 context.md 内容，也不产生 outbox、预算或状态转移。人类通过独立、审计化流程选择采纳后，policy 仍须经启动/加载 schema、影子门禁认证和下一次 Gate 的冻结输入；context 仍是人写 Agent 读，不能回写当前 Run。
+`target_scope` 必须与 aggregate key 的 scope 相等：global aggregate 只能提 global，project aggregate 只能提该 project。T7 不能把单项目证据提升为 global proposal，也不能从 global input 猜一个 project。`title/body` 是 inert、untrusted draft text；持久化层不解析其中的 Markdown 为配置、路径、链接动作或命令，展示 sink 必须禁用 raw HTML 并把链接视为不可执行文本。安全边界依靠 closed 字段与唯一写口，而不是对自然语言做不可测试的「是否像可执行指令」语义判断。
 
-T7 初始版本为 `T7/v1/<sha256前12位>`，`output_schema_version=1`。T7 的正常来源仅关联 proposal draft；它不与任何 Gate snapshot 建 link，不能以 prompt/schema bump 改写历史认证。
+该 schema 故意没有 policy patch、配置写入、context path、Gate verdict、auto-merge、severity、Interrupt、Run 或 action 字段。每个 terminal valid T7 call 最多产生一条 immutable `proposal_draft`，其 closed persistence shape 为 `{id,logical_call_id,prompt_version,output_schema_version,aggregate_key,proposal_kind,target_scope,title,body,evidence_entry_ids,status,created_at_ms}`；`logical_call_id` UNIQUE 且引用该 terminal valid call，版本和内容逐字段相等，`status` 恒为 `pending_human_approval`，时间为非负 integer。写端口只能 insert-or-return identical；同 call 不同内容是 contract violation。批准/拒绝必须另写独立审计记录，不更新 draft，也不由本端口创建 outbox、预算、状态转移、有效 policy 或 context 文件。
+
+人类通过独立、审计化流程选择采纳后，policy 仍须经启动/加载 schema、影子门禁认证和下一次 Gate 的冻结输入；context 仍是人写 Agent 读，不能回写当前 Run。T7 初始版本为 `T7/v1/<sha256前12位>`，`output_schema_version=1`。其正常来源按 §11.2 的 brain union 引用 terminal valid T7 call且仅关联 proposal draft；它不与任何 Gate snapshot 建 link，不能以 prompt/schema bump 改写历史认证。
 
 ### 13.3 不提案兜底与 A7 的可执行边界
 
-provider 禁用、token 阈值、输入超限、schema/domain failure、provider failure 或 recovery 时，T7 的确定性兜底是**不创建 proposal draft**。terminal fallback call 与原因照 §3–§6 持久化；若需要审计引用，来源固定为 `{kind:"fallback",logical_call_id,version:"T7/fallback/v1",reason}`。不得用上一次有效提案、模板或单条历史决定替代，更不得因没有 T7 而改变 Gate 或 Interrupt 行为。
+provider 禁用、token 阈值、输入超限、schema/domain failure、provider failure 或 recovery 时，T7 的确定性兜底是**不创建 proposal draft**。terminal fallback call 与原因照 §3–§6 持久化；审计来源是 closed `{kind:"fallback",logical_call_id,version:"T7/fallback/v1",reason}`，logical call 一致性同 §11.3，`reason` 只能为 `provider_disabled | token_threshold | input_too_large | invalid_output | provider_error | recovery`。不得用上一次有效提案、模板或单条历史决定替代，更不得因没有 T7 而改变 Gate 或 Interrupt 行为。
 
 A7 通过以下边界落实，而不是靠 prompt 自律：
 
@@ -602,9 +637,9 @@ T2 valid 后由确定性 assembler 生成：
 
 ### 15.4 M5：T4/T6/T7 与 A7
 
-1. T4 的 closed output 覆盖 headline、三点上限、候选 action ID 全排列和不可改写 effect/risk；任一失败只生成 `interrupt.md` §3 的 fallback，且仍由唯一发射器收费、去重与发布。
-2. T6 的正常/兜底路径都覆盖 severity 阈值、availability/expiry、channel candidate 和 quota exhausted；critical 不可被延后，任何路径不得绕过配额或 critical 熔断。
-3. T7 的两个 proposal kind 均只生成 `pending_human_approval` draft；schema、写端口和集成测试拒绝 Gate/Interrupt/action/policy patch 字段，fallback 不创建 draft。
+1. T4 的 closed output 覆盖 headline、三点上限、候选 action ID 同序全集和不可改写 effect/risk；Markdown/HTML/outbox marker/命令注入经固定纯文本 renderer 不可生效；任一失败只生成 `interrupt.md` §3 的 fallback，且仍由唯一发射器收费、去重与发布。
+2. T6 的正常/兜底路径都覆盖冻结时间、v1 `high` 阈值、availability/expiry、modality-compatible channel candidate、完整 quota snapshot 和 quota exhausted；critical 不可被延后，任何路径不得绕过配额或 critical 熔断。
+3. T7 覆盖 global/project × concrete/all aggregate identity、类别/replay count 边界和 target-scope 不提权；两个 proposal kind 均只生成每 call 至多一条 `pending_human_approval` immutable draft，schema/写端口拒绝 Gate/Interrupt/action/policy patch 字段，fallback 不创建 draft。
 4. 改变 T7 输出、历史 Ledger、replay 记录或 proposal draft 后，以相同冻结 Gate 输入重放仍得到相同 verdict；单条 Gate 和 HITL 路径没有 T7/Ledger proposal 查询。仅人审后的有效 policy 在新的冻结输入、认证与 Gate 评估下可产生后续影响。
 
 ## 16. 自查结果
@@ -617,9 +652,10 @@ T2 valid 后由确定性 assembler 生成：
 - [x] T3 风险分/风险点、失败或超预算高风险兜底与 Gate 来源/版本快照契约已冻结。
 - [x] T5 flaky/真实失败/基础设施分类、有限确定性重试边界与失败 `failure_review` HITL 兜底已冻结。
 - [x] T3/T5 prompt/schema 沿用统一版本规则、调用壳、token 收费与 trace；独立字段级评审已关闭嵌套字段、head/diff 绑定、rerun 目标和多 snapshot 关联。
-- [x] M5 draft：T4/T6/T7 各自的 closed schema、独立 prompt/schema/fallback 版本、调用壳/trace 身份、T4/T6 兜底和 T7 不提案兜底已冻结。
-- [x] A7：T7 聚合输入、仅 proposal draft 写口、Gate/Interrupt 的禁止读取面及回放测试判据已写成结构契约。
-- [ ] M5 实现、对应 prompt assets/schema 生成源、storage proposal draft 和集成测试尚未交付；不得将 §11–§13 描述为已实现。
+- [x] M5 active contract：T4/T6/T7 各自的 closed schema、独立 prompt/schema/fallback 版本、调用壳/trace 身份、source union、T4/T6 兜底和 T7 不提案兜底已冻结。
+- [x] T4 canonical option 同序、纯文本安全 renderer；T6 冻结时间、`high` fallback 阈值、quota/Channel 闭包；T7 aggregate grammar、证据 shape/count 与 target-scope 约束均可生成 fixture。
+- [x] A7：T7 聚合输入、每 call 唯一 immutable proposal draft 写口、Gate/Interrupt 的禁止读取面及回放测试判据已写成结构契约。
+- [ ] M5 实现、对应 prompt assets/schema 生成源、proposal draft 存储迁移和集成测试尚未交付；不得将 §11–§13 的规格通过描述为实现完成。
 - [x] 相对链接存在、代码围栏闭合、无尾随空白。
 
-**自查结论：** 既有 T1/T2/T3/T5 契约及其评审 P1（B1–B3）和采纳的 P2（B4–B7）保持 `active`；§11–§13 是待实现、待 M5 评审的字段级 draft。
+**自查结论：** T1–T7 契约均为 `active`；T4/T6/T7 已关闭本次字段评审的全部 P1/P2，但仍须在 M5 实现与独立 Interrupt 字段评审中兑现交叉接缝。
