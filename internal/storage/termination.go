@@ -83,6 +83,11 @@ func (d *DB) RecordTerminationObservation(ctx context.Context, cmd RecordTermina
 	if _, err := tx.ExecContext(ctx, `INSERT INTO events (id,run_id,attempt_no,type,source,payload_schema_version,payload_json,occurred_at_ms,recorded_at_ms) VALUES (?,?,?,'termination.absence_confirmed',?,1,?,?,?)`, eventID, cmd.RunID, cmd.AttemptNo, terminationEventSource(cmd.Source), string(evidence), cmd.NowMS, cmd.NowMS); err != nil {
 		return Run{}, err
 	}
+	if cmd.Source == TerminationRetry {
+		if _, err := tx.ExecContext(ctx, `UPDATE attempts SET attempt_resolution='retry_after_absence',resolution_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND attempt_resolution IS NULL`, cmd.NowMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
+			return Run{}, err
+		}
+	}
 	if isolation == "frozen" {
 		if _, err := tx.ExecContext(ctx, `UPDATE attempts SET isolation_state='none',isolation_released_at_ms=?,isolation_release_event_id=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND isolation_state='frozen'`, cmd.NowMS, eventID, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
 			return Run{}, err

@@ -67,5 +67,12 @@ func TestTerminationRetryAfterAbsenceCreatesNewAttempt(t *testing.T) {
 	if phase != "pending" {
 		t.Fatalf("new attempt phase = %s", phase)
 	}
+	var resolution string
+	if err := db.db.QueryRow(`SELECT attempt_resolution FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&resolution); err != nil {
+		t.Fatal(err)
+	}
+	if resolution != "retry_after_absence" {
+		t.Fatalf("old attempt resolution = %q", resolution)
+	}
 	assertCount(t, db, "outbox_operations", 1)
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 // Handoff errors are deliberately distinct so the control-plane boundary can
@@ -174,58 +175,32 @@ func (d *DB) ConfirmStarted(ctx context.Context, c StartedClaim) (string, error)
 	if c.RunID == "" || c.AttemptNo < 1 || c.Generation < 1 || !validHandoffSecret(c.Session) || !validHandoffSecret(c.Permit) || !validAgent(c.Agent) || c.InstanceID == "" || len(c.ControlDigest) != 64 || !isLowerHex(c.ControlDigest) || c.NowMS <= 0 {
 		return "", ErrHandoffConflict
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-	var phase, status string
-	var gen int
-	var version int64
-	var instance, session, permit sql.NullString
-	var pid, started sql.NullInt64
-	var executable sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT a.phase,a.generation,r.status,r.version,c.wrapper_instance_id,c.wrapper_session_hash,c.spawn_permit_hash,a.agent_pid,a.agent_started_at_ms,a.agent_executable FROM attempts a JOIN runs r ON r.id=a.run_id JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.run_id=? AND a.attempt_no=?`, c.RunID, c.AttemptNo).Scan(&phase, &gen, &status, &version, &instance, &session, &permit, &pid, &started, &executable)
+	var generation int
+	var phase string
+	var existingPID, existingStarted sql.NullInt64
+	var existingExecutable, instance, session, permit sql.NullString
+	err := d.db.QueryRowContext(ctx, `SELECT a.generation,a.phase,a.agent_pid,a.agent_started_at_ms,a.agent_executable,c.wrapper_instance_id,c.wrapper_session_hash,c.spawn_permit_hash FROM attempts a JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.run_id=? AND a.attempt_no=?`, c.RunID, c.AttemptNo).Scan(&generation, &phase, &existingPID, &existingStarted, &existingExecutable, &instance, &session, &permit)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrHandoffStale
 	}
 	if err != nil {
 		return "", err
 	}
-	if gen != c.Generation {
+	if generation != c.Generation {
 		return "", ErrHandoffStale
 	}
 	if !instance.Valid || instance.String != c.InstanceID || !session.Valid || session.String != handoffHash(c.Session) || !permit.Valid || permit.String != handoffHash(c.Permit) {
 		return "", ErrHandoffUnauthorized
 	}
-	if phase == "running" && pid.Valid && pid.Int64 == c.Agent.PID && started.Int64 == c.Agent.StartedAtMS && executable.String == c.Agent.Executable {
-		return "duplicate", tx.Commit()
+	if phase == "running" && existingPID.Valid && existingPID.Int64 == c.Agent.PID && existingStarted.Int64 == c.Agent.StartedAtMS && existingExecutable.String == c.Agent.Executable {
+		return AttemptRaceDuplicate, nil
 	}
-	if phase != "spawning" {
-		return "", ErrHandoffConflict
-	}
-	if status != "queued" && status != "waiting_human" {
-		return "", ErrHandoffConflict
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE attempts SET phase='running',agent_pid=?,agent_started_at_ms=?,agent_executable=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND phase='spawning'`, c.Agent.PID, c.Agent.StartedAtMS, c.Agent.Executable, c.NowMS, c.RunID, c.AttemptNo); err != nil {
+	factKey := fmt.Sprintf("started:%s:%d:%d:%d:%d:%s", c.RunID, c.AttemptNo, c.Generation, c.Agent.PID, c.Agent.StartedAtMS, c.Agent.Executable)
+	disposition, err := d.ResolveAttemptRace(ctx, AttemptRaceCommand{RunID: c.RunID, AttemptNo: c.AttemptNo, ExpectedGeneration: c.Generation, FactKey: factKey, NowMS: c.NowMS, Agent: &c.Agent})
+	if err != nil {
 		return "", err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE attempt_claims SET started_confirmed_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=?`, c.NowMS, c.NowMS, c.RunID, c.AttemptNo); err != nil {
-		return "", err
-	}
-	if err = d.transition(ctx, tx, c.RunID, version, DomainCommand{To: RunRunning, Source: SourceAgent, Actor: "wrapper", OccurredAtMS: c.NowMS}); err != nil {
-		return "", err
-	}
-	if err = appendHandoffEvent(ctx, tx, c.RunID, c.AttemptNo, "attempt.started", c.NowMS); err != nil {
-		return "", err
-	}
-	if err = tx.Commit(); err != nil {
-		return "", err
-	}
-	if status == "waiting_human" {
-		return "superseded_by_fact", nil
-	}
-	return "running", nil
+	return disposition, nil
 }
 func appendHandoffEvent(ctx context.Context, tx *sql.Tx, runID string, attemptNo int, typ string, now int64) error {
 	p, _ := json.Marshal(map[string]any{"attempt_no": attemptNo})
