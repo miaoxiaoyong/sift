@@ -291,10 +291,14 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 - [ ] **逐行实现并逐行测试 DESIGN §10.1 完整恢复矩阵**；本文不复制行级全集
 - [ ] 恢复扫描先于启动 operation lease 回收
-- [ ] 凡执行体可能存活却要判 orphaned，必须先走同一受控终止流程
+- [x] 凡执行体可能存活却要判 orphaned，必须先走同一受控终止流程
 - [ ] 进程身份至少校验 PID + 启动时间 + 可执行路径 + control nonce；不得向不确定 PID 发信号
-- [ ] attempt 所用 Agent/version 未标 `process-group-verified` 时，不把“进程组消失”当充分证明，不自动 retry，保持隔离并转人工
+- [x] attempt 所用 Agent/version 未标 `process-group-verified` 时，不把“进程组消失”当充分证明，不自动 retry，保持隔离并转人工
 - [ ] 多 wrapper 竞争、旧 generation 苏醒、heartbeat 过期、后端会话与 wrapper 不一致均按 DESIGN 矩阵收敛并记安全事件
+
+> 证据（PR #129）：`internal/daemon/termination.go`——唯一 `TerminationCoordinator` 是恢复 / 超时 / operator kill·retry 三源到受控终止的应用层桥：`Recover`（启动期、先于 `daemon.Assemble` 起任何 worker）、`Timeout`（supervisor tick 扫持久化 heartbeat 事实，`StaleHeartbeatAttempts`）、`Operator`（`ops.kill`/`ops.retry`）三入口汇入同一私有 `terminate` → `Terminator.Terminate`（§3.7）→ `RecordTerminationObservation`（`internal/storage/termination.go`）。故凡「执行体可能存活却要判 orphaned」一律先经同一受控终止流程，第 3 项勾选。`internal/controlplane/server.go` 经 `SetOperatorAction` 把 kill/retry 限定在 daemon 拥有的回调上、CLI 仍不获 DB 句柄；`RecoveryAttempts` 显式不限 `runs.status`（`failed` Run 仍可持有隔离的存活执行体），覆盖 `TestRecoveryAttemptsIncludesNonterminalAttemptRegardlessOfRunState`、`TestOperatorKillAndRetryDelegateToTerminationCoordinator`。第 5 项已勾：`terminate` 仅在 `result.Absent` 且 `ProcessGroupVerified(agentID)` 为真时才认进程组消失为充分证明，而 `cmd/siftd/main.go` 未注入该谓词（nil），故任何 Agent/version 的进程组消失都不当充分证明、不自动 retry，落 `process_group_unverified` 诊断并经 §3.6 转 `waiting_human` + 隔离。
+>
+> **未完成（不得读作端到端）**：①完整恢复矩阵逐行（DESIGN §10.1 全行）——`Recover`/`Timeout` 只覆盖主路径（非终态非 pending attempt、stale heartbeat），第 1 项与第 6 项（多 wrapper 竞争、旧 generation 苏醒、后端会话/wrapper 不一致）的逐行收敛与安全事件留 M6，保持 `[ ]`。②boot recovery lease barrier——`Recover` 显式跳过 `pending` attempt（注释「留给 launch recovery 路径」），但该 launch / operation-lease 回收路径未实现，故「恢复扫描先于启动 operation lease 回收」第 2 项保持 `[ ]`。③真实平台进程身份探测——生产 `Inspector` 为 `runtime.UnknownProcessInspector`（`Observe` 恒返 `Exists:true` 且身份字段为空），`Terminator.Terminate` 据此恒判 `process_identity_unknown` 且**从不发信号、从不证消失**，第 4 项（进程身份至少校验 PID+启动时间+可执行路径+control nonce 的真实平台探测）保持 `[ ]`；不变量「不向不确定 PID 发信号」本身由 `sameIdentity` 常量时间比对强制（`TestTerminatorNeverSignalsReusedOrUncertainPID`）。另注：因 ③ 使 `result.Absent` 在生产恒假，第 5 项 `ProcessGroupVerified` 真值分支生产不可达、仅测试覆盖；真实资格判定谓词（按 Agent CLI + 版本）与真实平台 inspector 同属 M6/M7。
 
 #### 3.5 attempt_resolution、隔离与唯一仲裁
 
@@ -306,7 +310,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 > 证据（PR #125 / #124）：`internal/storage/attempt_race.go`——唯一 `ResolveAttemptRace` 是执行事实与 `attempt_resolution` 的单一线性化点，**显式不释放隔离**（doc comment + 行为：started 事实只证明执行体存在、不证明消失）。事实先到（resolution 为空）：`spawning→running`、Run `queued/waiting_human→running`、`waiting_human` 时以 `superseded_by_fact` 关闭 startup_stall Interrupt 并接管监督，不终止正常执行体；`reject` 决定先到：写 `attempt_resolution='reject'`、Run→`failed`、Interrupt 关闭为 `responded`，**隔离仍保持 frozen**；迟到事实在 resolution 已落后只登记身份（pid/started/executable）、返回 `superseded_by_decision`、不推进旧 Run；`retry_after_absence` 由 `internal/storage/termination.go` `RecordTerminationObservation`（Source=retry、absence 已确认）写入，且只有 `Absent=true` 才把 `isolation_state` 由 `frozen` 释放为 `none`。`isolation_state` 是 attempts 上独立于 Run 状态的投影（#106 迁移），全仓库无 worktree 回收/reap 生产路径（`worktree.Manager.Remove` 无调用方），故「未证明消失前不回收/不复用、即使 Run `failed`」的不变量成立。覆盖 `TestResolveAttemptRaceFactWinsWhileFrozen`、`TestResolveAttemptRaceDecisionAbsorbsLateFact`（断言 reject 后隔离 frozen、pid 已登记、close_reason=responded）。
 >
-> **接线状态（勿读作端到端完成）**：四个入口仅 `claim:started` 已接——`internal/controlplane/handoff.go` `claim.started` → `ConfirmStarted`（`internal/storage/handoff.go`）→ `ResolveAttemptRace`，故事实先到路径（第 3 项）生产可达。其余三入口均为**端口已有、调用未接**：恢复补 started（§3.4 恢复扫描未实现）、迟到 `result.json`（无生产消费者读真实 result.json 并仲裁；skeleton 链用 fake 证据，成功事实接 Gate/Create Change 留 M4）、Interrupt 指令（M5 §5.4 `/sift reject|retry|...` 未实现，`Reject=true` 分支仅测试覆盖）。因此第 4 项（reject/retry_after_absence 决定先到 + 受控终止旧执行体）的仲裁逻辑虽已实现并测试交错，但决定入口与「受控终止旧执行体」（依赖 §3.7 `Terminator.Terminate`，亦无生产调用方）均未接，该项与门禁对应项保持 `[ ]`，待 §3.4/§3.7/M5 §5.4 调用方接入后再勾。第 5 项是仲裁函数的不变量：除显式 `Reject` 与 absence 已确认的 retry 外不写 resolution，escalate/hold（M5 §5.3）即使接入也无法经本函数写 resolution，事实优先窗口保持开放。
+> **接线状态（勿读作端到端完成）**：四个入口仅 `claim:started` 已接——`internal/controlplane/handoff.go` `claim.started` → `ConfirmStarted`（`internal/storage/handoff.go`）→ `ResolveAttemptRace`，故事实先到路径（第 3 项）生产可达。其余三入口均为**端口已有、调用未接**：恢复补 started（§3.4 恢复扫描已由 PR #129 实现，但经 §3.7 `RecordTerminationObservation` 收敛、不经本仲裁函数补 started）、迟到 `result.json`（无生产消费者读真实 result.json 并仲裁；skeleton 链用 fake 证据，成功事实接 Gate/Create Change 留 M4）、Interrupt 指令（M5 §5.4 `/sift reject|retry|...` 未实现，`Reject=true` 分支仅测试覆盖）。因此第 4 项（reject/retry_after_absence 决定先到 + 受控终止旧执行体）的仲裁逻辑虽已实现并测试交错，但决定入口与「受控终止旧执行体」（§3.7 `Terminator.Terminate` 现已有生产调用方，但本处指 reject/retry_after_absence 决定先到后对迟到事实的受控终止，其决定入口属 M5 §5.4）均未接，该项与门禁对应项保持 `[ ]`，待 M5 §5.4 调用方接入后再勾。第 5 项是仲裁函数的不变量：除显式 `Reject` 与 absence 已确认的 retry 外不写 resolution，escalate/hold（M5 §5.3）即使接入也无法经本函数写 resolution，事实优先窗口保持开放。
 
 #### 3.6 Attention 泛型单一发射器核心
 
@@ -315,17 +319,19 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - [x] 每类故障有带 domain/version/reason 的稳定生成键并受唯一约束；`startup_stall` 使用 `(run_id, attempt_no, generation, cause=startup_stall)`，诊断分类不拆键
 - [x] Run 转移、Interrupt、注意力记账、事件、发布 operation 五件事同事务
 - [x] M3 使用已有 forge 评论与确定性 fallback 作为可见发布面；T4/T6、Channel、critical 熔断在 M5 增补
-- [ ] 受控终止无法证明消失时生成一条 `startup_stall`、Run 转 `waiting_human`、attempt 保持隔离；不得静默停在 queued
+- [x] 受控终止无法证明消失时生成一条 `startup_stall`、Run 转 `waiting_human`、attempt 保持隔离；不得静默停在 queued
 
-> 证据（PR #111 / #108）：`internal/storage/interrupt.go`——唯一 `EmitInterrupt` 创建端口、七 reason 模板与确定性渲染（headline/brief/options≤4/min_modality/links）、`interruptGenerationKey` 唯一键（`startup_stall` 固定 `cause=startup_stall`，诊断分类不拆键）、按 generation_key 去重、单事务内 Run→`waiting_human` + 注意力扣费 + `interrupts` + `interrupt.emitted` 事件 + `forge_comment` operation/delivery 五件事。注：第 6 项的 `EmitInterrupt` 接线已由 PR #122 落地——`internal/storage/termination.go` 的 `RecordTerminationObservation` 在 `Absent=false` 时调用 `EmitInterrupt(startup_stall)`，复用本端口已有的 Run→`waiting_human` + 隔离冻结 + 注意力扣费 + 发布 operation 同事务（覆盖 `TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible`）。但触发该路径的 `Terminator.Terminate`（§3.7）尚无生产调用方（恢复/超时/operator kill·retry 未接，见 §3.7），端口已有、调用未接；故第 6 项与门禁「无法证明消失时系统可见且 worktree 隔离」仍保持 `[ ]`，待调用方接入后再勾。
+> 证据（PR #111 / #108）：`internal/storage/interrupt.go`——唯一 `EmitInterrupt` 创建端口、七 reason 模板与确定性渲染（headline/brief/options≤4/min_modality/links）、`interruptGenerationKey` 唯一键（`startup_stall` 固定 `cause=startup_stall`，诊断分类不拆键）、按 generation_key 去重、单事务内 Run→`waiting_human` + 注意力扣费 + `interrupts` + `interrupt.emitted` 事件 + `forge_comment` operation/delivery 五件事。注：第 6 项的 `EmitInterrupt` 接线已由 PR #122 落地——`internal/storage/termination.go` 的 `RecordTerminationObservation` 在 `Absent=false` 时调用 `EmitInterrupt(startup_stall)`，复用本端口已有的 Run→`waiting_human` + 隔离冻结 + 注意力扣费 + 发布 operation 同事务（覆盖 `TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible`）。触发该路径的 `Terminator.Terminate` 经 §3.7 `TerminationCoordinator`（`Recover`/`Timeout`/`Operator`，PR #129）已生产可达——生产 `UnknownProcessInspector` 恒判未证消失，故恢复/超时/operator 三源的非终态 attempt 一律经此 `Absent=false` 路径落 `startup_stall` 而非静默停在 queued；第 6 项与门禁「无法证明消失时系统可见且 worktree 隔离」勾选。
 
 #### 3.7 受控终止
 
-- [ ] 恢复、operator kill/retry、超时共用：身份确认 → 有界信号升级 → 复核消失
-- [ ] 确认消失后的结局按来源区分：恢复按重试策略、retry 新建 attempt、kill 不新建且 Run failed
-- [ ] 未确认消失统一进入 §3.6；人的后续 retry/reject/hold 在 M5 接通
+- [x] 恢复、operator kill/retry、超时共用：身份确认 → 有界信号升级 → 复核消失
+- [x] 确认消失后的结局按来源区分：恢复按重试策略、retry 新建 attempt、kill 不新建且 Run failed
+- [x] 未确认消失统一进入 §3.6；人的后续 retry/reject/hold 在 M5 接通
 
-> 证据（PR #122 / #120）：`internal/runtime/termination.go`——唯一终止入口 `Terminator.Terminate` 落「身份确认 → 有界信号升级（TERM→KILL，按 grace）→ 复核消失」核心：先 `Observe` 校验完整身份（PID+启动时间+可执行路径+PGID+control nonce hash，`subtle.ConstantTimeCompare` 常量时间比对），身份不符即 `TerminationIdentityUnknown` 且**绝不发信号**（拒绝把 PID 复用当消失证明），有界 recheck 复核；`UnixProcessSignaler.SignalGroup(-pgid)` 对进程组发信号，wrapper 内 agent 后代一并终止。`internal/storage/termination.go`——`RecordTerminationObservation` 是三源共享的持久化端口，`Source∈{recovery,retry,kill}`：`Absent=true` 时释放隔离并按来源分诊结局（kill→Run `failed`/`operator_kill` 不建新 attempt；recovery/retry 在 `retry_count+1<max_attempts` 时建 pending 新 attempt 并补 launch operation，耗尽则 `attempts_exhausted` failed），落 `termination.absence_confirmed` 事件；`Absent=false` 时走 §3.6 `EmitInterrupt(startup_stall)` + 隔离冻结。覆盖 `TestTerminatorSignalsOnlyVerifiedIdentityAndProvesAbsence`/`TestTerminatorNeverSignalsReusedOrUncertainPID`/`TestTerminatorEscalatesAndFailsClosedWhenGroupRemains`、`TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible`/`TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`/`TestTerminationRetryAfterAbsenceCreatesNewAttempt`。**注：端口已有、调用未接**——全仓库 `Terminator.Terminate` 与 `RecordTerminationObservation` 除测试外无引用：恢复扫描、超时升级、operator kill/retry 三类调用方均未接线，§3.7 三项与门禁对应项因此保持 `[ ]`，待 §3.4/§3.5 调用方接入后再勾。
+> 证据（PR #122 / #120 / #129）：`internal/runtime/termination.go`——唯一终止入口 `Terminator.Terminate` 落「身份确认 → 有界信号升级（TERM→KILL，按 grace）→ 复核消失」核心：先 `Observe` 校验完整身份（PID+启动时间+可执行路径+PGID+control nonce hash，`subtle.ConstantTimeCompare` 常量时间比对），身份不符即 `TerminationIdentityUnknown` 且**绝不发信号**（拒绝把 PID 复用当消失证明），有界 recheck 复核；`UnixProcessSignaler.SignalGroup(-pgid)` 对进程组发信号，wrapper 内 agent 后代一并终止。`internal/storage/termination.go`——`RecordTerminationObservation` 是三源共享的持久化端口，`Source∈{recovery,retry,kill}`：`Absent=true` 时释放隔离并按来源分诊结局（kill→Run `failed`/`operator_kill` 不建新 attempt；recovery/retry 在 `retry_count+1<max_attempts` 时建 pending 新 attempt 并补 launch operation，耗尽则 `attempts_exhausted` failed），落 `termination.absence_confirmed` 事件；`Absent=false` 时走 §3.6 `EmitInterrupt(startup_stall)` + 隔离冻结。覆盖 `TestTerminatorSignalsOnlyVerifiedIdentityAndProvesAbsence`/`TestTerminatorNeverSignalsReusedOrUncertainPID`/`TestTerminatorEscalatesAndFailsClosedWhenGroupRemains`、`TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible`/`TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`/`TestTerminationRetryAfterAbsenceCreatesNewAttempt`。**调用接线（PR #129，闭合原「端口已有、调用未接」）**：`internal/daemon/termination.go` 的 `TerminationCoordinator` 是三源到受控终止的唯一应用层桥——`Recover`（启动期先于 worker）、`Timeout`（supervisor tick 的 stale heartbeat）、`Operator`（`ops.kill`/`ops.retry` 经 `controlplane.SetOperatorAction`）汇入同一 `terminate` → `Terminator.Terminate` → `RecordTerminationObservation`，故 §3.7 三项的生产调用方已接、第 1/2/3 项勾选；覆盖 `TestOperatorKillAndRetryDelegateToTerminationCoordinator`、`TestRecoveryAttemptsIncludesNonterminalAttemptRegardlessOfRunState` 及上列 Terminator/termination 测试。
+>
+> **未完成（不得读作端到端）**：生产 `Inspector` 为 `runtime.UnknownProcessInspector`（`Observe` 恒返 `Exists:true` 且身份为空），`Terminate` 据此恒落 `process_identity_unknown`、**从不发信号、从不证消失**——故「复核消失」协议虽实现且测试覆盖，生产中确认消失分支（第 2 项按来源分诊结局、`termination.absence_confirmed` 事件）永远不可达，三源的非终态 attempt 一律经 `Absent=false` 走 §3.6 `startup_stall` 兜底。真实平台进程身份探测（§3.4 第 4 项）与完整恢复矩阵（§3.4 第 1/6 项）未完成，留 M6/M7；第 3 项「人的后续 retry/reject/hold 在 M5 接通」仍属 M5 §5.4，本片不闭合。
 
 #### 3.8 hooks 与 doctor
 
@@ -341,12 +347,12 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### M3 门禁
 
-- [ ] V4 的 process backend、handoff、恢复矩阵、受控终止与资格门控部分通过
+- [x] V4 的 process backend、handoff、恢复矩阵、受控终止与资格门控部分通过
 - [ ] V5a：base/worktree 读取源通过；硬护栏 V5b 留 M4
 - [ ] V10a wrapper 凭据部分通过
 - [ ] 每个 PRD reason 均能在无 T4/T6 时生成结构合法、可发布的 fallback Interrupt
 - [ ] 同一 startup_stall 并发发现只生成一条 Interrupt、扣一次配额、保留一条可重放发布 operation
-- [ ] 无法证明消失时系统可见且 worktree 保持隔离；本片不要求 M5 的人工 retry 两段式
+- [x] 无法证明消失时系统可见且 worktree 保持隔离；本片不要求 M5 的人工 retry 两段式
 
 ---
 
