@@ -261,11 +261,13 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 3.1 ExecutionBackend、launcher 与 wrapper
 
-- [ ] `process` backend 只负责启动 wrapper；Agent 恒由 wrapper 直接 spawn 到其进程组
-- [ ] Agent 启动只经一个 launcher 函数，V0 为恒等实现；不得绕过该接缝
-- [ ] daemon 只从自身安装目录解析同版本 wrapper，不从 `PATH` 猜；wrapper/daemon 主版本不一致拒绝
-- [ ] Agent 环境只注入非机密 `SIFT_RUN_DIR`；bootstrap/run token 不进 argv 或环境变量
-- [ ] 逐条实现 DESIGN §8.4 wrapper 契约，控制文件用 temp + fsync + rename
+- [x] `process` backend 只负责启动 wrapper；Agent 恒由 wrapper 直接 spawn 到其进程组
+- [x] Agent 启动只经一个 launcher 函数，V0 为恒等实现；不得绕过该接缝
+- [x] daemon 只从自身安装目录解析同版本 wrapper，不从 `PATH` 猜；wrapper/daemon 主版本不一致拒绝
+- [x] Agent 环境只注入非机密 `SIFT_RUN_DIR`；bootstrap/run token 不进 argv 或环境变量
+- [x] 逐条实现 DESIGN §8.4 wrapper 契约，控制文件用 temp + fsync + rename
+
+> 证据（PR #109 / #107）：`internal/runtime/runtime.go`——`ProcessBackend` 仅 spawn wrapper 且 `Setpgid`、唯一 `Launcher`/`DirectLauncher` V0 恒等、`ResolveWrapper` 仅从 daemon 安装目录解析并按完整版本拒绝；`internal/runtime/files.go`——`WriteControlFile` 走 temp+fsync+rename+目录 sync、`0600`；`cmd/sift-agent-wrapper/main.go`——`--version` 同版本握手。注：wrapper 主体仍为 M1 bootstrap stub，agent 进程组 spawn 经 `DirectLauncher` 单一接缝预留；控制面 acquire/permit/started 接线属 §3.2，此处不勾。
 
 #### 3.2 Spawn handoff 与控制面最终接线
 
@@ -300,12 +302,14 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 3.6 Attention 泛型单一发射器核心
 
-- [ ] 在 M3 建立此后唯一的 Interrupt 发射入口；M4/M5 只能调用或扩展渲染/调度，不能新建第二入口
-- [ ] 入口从第一天支持 PRD 全部 reason 的最小确定性契约：reason/min_modality、互斥 options（≤4）、fallback headline/brief/links、expires/on_expire 与 severity 映射；T4 不可用时也能生成合法对象
-- [ ] 每类故障有带 domain/version/reason 的稳定生成键并受唯一约束；`startup_stall` 使用 `(run_id, attempt_no, generation, cause=startup_stall)`，诊断分类不拆键
-- [ ] Run 转移、Interrupt、注意力记账、事件、发布 operation 五件事同事务
-- [ ] M3 使用已有 forge 评论与确定性 fallback 作为可见发布面；T4/T6、Channel、critical 熔断在 M5 增补
+- [x] 在 M3 建立此后唯一的 Interrupt 发射入口；M4/M5 只能调用或扩展渲染/调度，不能新建第二入口
+- [x] 入口从第一天支持 PRD 全部 reason 的最小确定性契约：reason/min_modality、互斥 options（≤4）、fallback headline/brief/links、expires/on_expire 与 severity 映射；T4 不可用时也能生成合法对象
+- [x] 每类故障有带 domain/version/reason 的稳定生成键并受唯一约束；`startup_stall` 使用 `(run_id, attempt_no, generation, cause=startup_stall)`，诊断分类不拆键
+- [x] Run 转移、Interrupt、注意力记账、事件、发布 operation 五件事同事务
+- [x] M3 使用已有 forge 评论与确定性 fallback 作为可见发布面；T4/T6、Channel、critical 熔断在 M5 增补
 - [ ] 受控终止无法证明消失时生成一条 `startup_stall`、Run 转 `waiting_human`、attempt 保持隔离；不得静默停在 queued
+
+> 证据（PR #111 / #108）：`internal/storage/interrupt.go`——唯一 `EmitInterrupt` 创建端口、七 reason 模板与确定性渲染（headline/brief/options≤4/min_modality/links）、`interruptGenerationKey` 唯一键（`startup_stall` 固定 `cause=startup_stall`，诊断分类不拆键）、按 generation_key 去重、单事务内 Run→`waiting_human` + 注意力扣费 + `interrupts` + `interrupt.emitted` 事件 + `forge_comment` operation/delivery 五件事。注：第 6 项需 §3.7 受控终止流程在“无法证明消失”时调用 `EmitInterrupt`，runtime 触发尚未接线、门禁对应项亦未过，保持 `[ ]`。
 
 #### 3.7 受控终止
 
@@ -320,9 +324,9 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### 先写/增补 spec
 
-- [ ] `specs/control-plane.md`：acquire/permit/started 完整字段与版本握手
-- [ ] `specs/storage.md`：resolution、隔离、关闭原因
-- [ ] `specs/config.md`：启动 lease/等待/终止/复核/Report 退避默认值
+- [x] `specs/control-plane.md`：acquire/permit/started 完整字段与版本握手（PR #94 / #88——§3.4 版本握手、§4.2–4.3 acquire/permit/started）
+- [x] `specs/storage.md`：resolution、隔离、关闭原因（PR #95 / #89——`attempt_resolution`/隔离独立投影/`close_reason`；行级实现见 §3.5）
+- [x] `specs/config.md`：启动 lease/等待/终止/复核/Report 退避默认值（PR #91 / #90——`spawn_operation_lease_ttl`/`starting_permit_timeout`/`spawning_started_timeout`/终止 grace/`absence_recheck_*`/`not_ready` 退避）
 - [x] `specs/interrupt.md`：先落全部 reason 的最小确定性契约与 `startup_stall` 特殊规则（[三次字段评审 PASS WITH NOTES](reviews/2026-07-29-interrupt-rereview-2-pi-gpt-5.6-sol.md)）
 
 ### M3 门禁
