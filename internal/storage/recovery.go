@@ -46,18 +46,27 @@ type StartupRecoveryAction struct {
 	NowMS                    int64
 }
 
-// ApplyStartupRecoveryAction records one deterministic classification after
-// filesystem/process observation has completed. The target generation or
-// operation version is checked in the same transaction as the boot-scoped
-// action receipt; a changed target must be observed and classified again.
+const (
+	startupRecoverySupervise  = "supervise"
+	startupRecoveryRedispatch = "redispatch"
+	startupRecoveryFreeze     = "frozen"
+	startupRecoveryOperation  = "converge_operation"
+)
+
+// ApplyStartupRecoveryAction applies a closed-set recovery action and records
+// its boot receipt in the same transaction. A receipt is evidence of a safe
+// postcondition, never a substitute for one.
 func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecoveryAction) error {
-	if cmd.BootID == "" || cmd.ObservationDigest == "" || cmd.Action == "" || cmd.NowMS <= 0 {
+	if cmd.BootID == "" || cmd.ObservationDigest == "" || cmd.NowMS <= 0 {
 		return errors.New("storage: invalid startup recovery action")
 	}
 	attemptTarget := cmd.RunID != "" || cmd.AttemptNo != 0 || cmd.ExpectedGeneration != 0
 	operationTarget := cmd.OperationID != "" || cmd.ExpectedOperationVersion != 0
 	if attemptTarget == operationTarget || (attemptTarget && (cmd.AttemptNo < 1 || cmd.ExpectedGeneration < 1)) || (operationTarget && (cmd.OperationID == "" || cmd.ExpectedOperationVersion < 1)) {
 		return errors.New("storage: invalid startup recovery action target")
+	}
+	if attemptTarget && cmd.Action != startupRecoverySupervise && cmd.Action != startupRecoveryRedispatch && cmd.Action != startupRecoveryFreeze || operationTarget && cmd.Action != startupRecoveryOperation {
+		return errors.New("storage: unknown startup recovery action")
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -74,10 +83,12 @@ func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecovery
 	if complete.Valid {
 		return ErrRejectedStale
 	}
+
 	key := ""
 	if attemptTarget {
+		var phase, isolation string
 		var generation int
-		if err := tx.QueryRowContext(ctx, `SELECT generation FROM attempts WHERE run_id=? AND attempt_no=? AND phase NOT IN ('finished','orphaned')`, cmd.RunID, cmd.AttemptNo).Scan(&generation); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT phase,generation,isolation_state FROM attempts WHERE run_id=? AND attempt_no=? AND phase NOT IN ('finished','orphaned')`, cmd.RunID, cmd.AttemptNo).Scan(&phase, &generation, &isolation); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrRejectedStale
 			}
@@ -86,10 +97,38 @@ func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecovery
 		if generation != cmd.ExpectedGeneration {
 			return ErrRejectedStale
 		}
-		key = fmt.Sprintf("attempt:%s:%d:%d", cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration)
+		key = fmt.Sprintf("attempt:%s:%d", cmd.RunID, cmd.AttemptNo)
+		if cmd.Action == startupRecoveryRedispatch {
+			if phase != "pending" || isolation != "none" {
+				return ErrRejectedStale
+			}
+			newGeneration := generation + 1
+			newKey := LaunchOperationKey(cmd.RunID, cmd.AttemptNo, newGeneration)
+			if _, err := tx.ExecContext(ctx, `UPDATE outbox_operations SET state='stale',lease_owner=NULL,lease_expires_at_ms=NULL,completed_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND kind='launch_agent' AND state NOT IN ('succeeded','failed','stale','conflict')`, cmd.NowMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE attempts SET generation=?,wrapper_pid=NULL,wrapper_started_at_ms=NULL,wrapper_executable=NULL,wrapper_pgid=NULL,wrapper_instance_id=NULL,agent_pid=NULL,agent_started_at_ms=NULL,agent_executable=NULL,control_nonce_hash=NULL,heartbeat_at_ms=NULL,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND phase='pending'`, newGeneration, cmd.NowMS, cmd.RunID, cmd.AttemptNo, generation); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE attempt_claims SET generation=?,launch_operation_key=?,dispatch_id=NULL,bootstrap_nonce_hash=NULL,run_token_hash=NULL,wrapper_instance_id=NULL,wrapper_session_hash=NULL,spawn_permit_hash=NULL,acquired_at_ms=NULL,permit_issued_at_ms=NULL,started_confirmed_at_ms=NULL,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=?`, newGeneration, newKey, cmd.NowMS, cmd.RunID, cmd.AttemptNo, generation); err != nil {
+				return err
+			}
+			if err := insertOperation(ctx, tx, Operation{Key: newKey, Kind: OperationLaunchAgent, Payload: []byte(`{"schema_version":1}`), RunID: cmd.RunID, AttemptNo: intPtr(cmd.AttemptNo)}, cmd.RunID, "", cmd.NowMS); err != nil {
+				return err
+			}
+		}
+		if cmd.Action == startupRecoveryFreeze {
+			if isolation != "frozen" {
+				return ErrRejectedStale
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE attempts SET isolation_state='frozen',updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND isolation_state='frozen'`, cmd.NowMS, cmd.RunID, cmd.AttemptNo, generation); err != nil {
+				return err
+			}
+		}
 	} else {
 		var version int64
-		if err := tx.QueryRowContext(ctx, `SELECT version FROM outbox_operations WHERE id=? AND kind='launch_agent' AND state NOT IN ('succeeded','failed','stale','conflict')`, cmd.OperationID).Scan(&version); err != nil {
+		var operationKey string
+		if err := tx.QueryRowContext(ctx, `SELECT version,operation_key FROM outbox_operations WHERE id=? AND kind='launch_agent' AND state NOT IN ('succeeded','failed','stale','conflict')`, cmd.OperationID).Scan(&version, &operationKey); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrRejectedStale
 			}
@@ -98,7 +137,16 @@ func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecovery
 		if version != cmd.ExpectedOperationVersion {
 			return ErrRejectedStale
 		}
-		key = fmt.Sprintf("operation:%s:%d", cmd.OperationID, cmd.ExpectedOperationVersion)
+		key = fmt.Sprintf("operation:%s", cmd.OperationID)
+		var safeRedispatch int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM attempts a JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.run_id=(SELECT run_id FROM outbox_operations WHERE id=?) AND a.attempt_no=(SELECT attempt_no FROM outbox_operations WHERE id=?) AND a.phase='pending' AND a.isolation_state='none' AND c.generation=a.generation AND c.launch_operation_key=?`, cmd.OperationID, cmd.OperationID, operationKey).Scan(&safeRedispatch); err != nil {
+			return err
+		}
+		if safeRedispatch == 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE outbox_operations SET state='stale',lease_owner=NULL,lease_expires_at_ms=NULL,completed_at_ms=?,updated_at_ms=? WHERE id=? AND version=?`, cmd.NowMS, cmd.NowMS, cmd.OperationID, cmd.ExpectedOperationVersion); err != nil {
+				return err
+			}
+		}
 	}
 	var digest string
 	err = tx.QueryRowContext(ctx, `SELECT observation_digest FROM startup_recovery_actions WHERE boot_id=? AND candidate_key=?`, cmd.BootID, key).Scan(&digest)
@@ -117,9 +165,9 @@ func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecovery
 	return tx.Commit()
 }
 
-// StartupRecoveryPending reports candidates not yet classified for bootID.
-// It is intentionally the union mandated by storage.md: no Run status filter
-// is permitted, and launch operations are included even without an attempt.
+// StartupRecoveryPending reports the attempt/unfinished-launch-operation
+// union. Every unfinished operation is independently converged, including a
+// newly fenced dispatch that is safe for the worker to claim.
 func (d *DB) StartupRecoveryPending(ctx context.Context, bootID string) ([]RecoveryAttempt, []RecoveryLaunchOperation, error) {
 	if bootID == "" {
 		return nil, nil, errors.New("storage: boot id is required")
@@ -135,23 +183,26 @@ func (d *DB) StartupRecoveryPending(ctx context.Context, bootID string) ([]Recov
 	return attempts, operations, nil
 }
 
+const recoveryAttemptColumns = `a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id,
+	COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
+	COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state`
+
+func scanRecoveryAttempt(rows *sql.Rows) (RecoveryAttempt, error) {
+	var a RecoveryAttempt
+	err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState)
+	return a, err
+}
+
 func (d *DB) recoveryAttempts(ctx context.Context, bootID string) ([]RecoveryAttempt, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id,
-		COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
-		COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state
-		FROM attempts a JOIN runs r ON r.id=a.run_id
-		WHERE a.phase NOT IN ('finished','orphaned') AND NOT EXISTS (
-			SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=?
-			AND s.candidate_key='attempt:' || a.run_id || ':' || a.attempt_no || ':' || a.generation)
-		ORDER BY a.run_id,a.attempt_no`, bootID)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.phase NOT IN ('finished','orphaned') AND NOT EXISTS (SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=? AND s.candidate_key='attempt:' || a.run_id || ':' || a.attempt_no) ORDER BY a.run_id,a.attempt_no`, bootID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list recovery attempts: %w", err)
 	}
 	defer rows.Close()
 	var attempts []RecoveryAttempt
 	for rows.Next() {
-		var a RecoveryAttempt
-		if err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState); err != nil {
+		a, err := scanRecoveryAttempt(rows)
+		if err != nil {
 			return nil, err
 		}
 		attempts = append(attempts, a)
@@ -160,10 +211,7 @@ func (d *DB) recoveryAttempts(ctx context.Context, bootID string) ([]RecoveryAtt
 }
 
 func (d *DB) recoveryLaunchOperations(ctx context.Context, bootID string) ([]RecoveryLaunchOperation, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT o.id,o.version,COALESCE(o.run_id,''),COALESCE(o.attempt_no,0),o.state
-		FROM outbox_operations o WHERE o.kind='launch_agent' AND o.state NOT IN ('succeeded','failed','stale','conflict') AND NOT EXISTS (
-			SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=?
-			AND s.candidate_key='operation:' || o.id || ':' || o.version) ORDER BY o.id`, bootID)
+	rows, err := d.db.QueryContext(ctx, `SELECT o.id,o.version,COALESCE(o.run_id,''),COALESCE(o.attempt_no,0),o.state FROM outbox_operations o WHERE o.kind='launch_agent' AND o.state NOT IN ('succeeded','failed','stale','conflict') AND NOT EXISTS (SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=? AND s.candidate_key='operation:' || o.id) ORDER BY o.id`, bootID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list recovery launch operations: %w", err)
 	}
@@ -181,21 +229,16 @@ func (d *DB) recoveryLaunchOperations(ctx context.Context, bootID string) ([]Rec
 	return operations, rows.Err()
 }
 
-// RecoveryAttempts retains the termination/supervisor read view. Startup
-// recovery must use StartupRecoveryPending so it cannot bypass the boot log.
 func (d *DB) RecoveryAttempts(ctx context.Context) ([]RecoveryAttempt, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id,
-		COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
-		COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state
-		FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.phase NOT IN ('finished','orphaned') ORDER BY a.run_id,a.attempt_no`)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.phase NOT IN ('finished','orphaned') ORDER BY a.run_id,a.attempt_no`)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list recovery attempts: %w", err)
 	}
 	defer rows.Close()
 	var attempts []RecoveryAttempt
 	for rows.Next() {
-		var a RecoveryAttempt
-		if err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState); err != nil {
+		a, err := scanRecoveryAttempt(rows)
+		if err != nil {
 			return nil, err
 		}
 		attempts = append(attempts, a)
@@ -204,15 +247,15 @@ func (d *DB) RecoveryAttempts(ctx context.Context) ([]RecoveryAttempt, error) {
 }
 
 func (d *DB) StaleHeartbeatAttempts(ctx context.Context, cutoffMS int64) ([]RecoveryAttempt, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id, COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0), COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.phase='running' AND (a.heartbeat_at_ms IS NULL OR a.heartbeat_at_ms < ?) ORDER BY a.run_id,a.attempt_no`, cutoffMS)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.phase='running' AND (a.heartbeat_at_ms IS NULL OR a.heartbeat_at_ms < ?) ORDER BY a.run_id,a.attempt_no`, cutoffMS)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list stale heartbeats: %w", err)
 	}
 	defer rows.Close()
 	var attempts []RecoveryAttempt
 	for rows.Next() {
-		var a RecoveryAttempt
-		if err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState); err != nil {
+		a, err := scanRecoveryAttempt(rows)
+		if err != nil {
 			return nil, err
 		}
 		attempts = append(attempts, a)
@@ -221,13 +264,13 @@ func (d *DB) StaleHeartbeatAttempts(ctx context.Context, cutoffMS int64) ([]Reco
 }
 
 func (d *DB) RecoveryAttemptForRun(ctx context.Context, runID string) (RecoveryAttempt, error) {
-	var a RecoveryAttempt
-	err := d.db.QueryRowContext(ctx, `SELECT a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id,COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.run_id=? AND a.phase NOT IN ('finished','orphaned') ORDER BY a.attempt_no DESC LIMIT 1`, runID).Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState)
-	if errors.Is(err, sql.ErrNoRows) {
+	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.run_id=? AND a.phase NOT IN ('finished','orphaned') ORDER BY a.attempt_no DESC LIMIT 1`, runID)
+	if err != nil {
+		return RecoveryAttempt{}, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
 		return RecoveryAttempt{}, ErrRejectedStale
 	}
-	if err != nil {
-		return RecoveryAttempt{}, fmt.Errorf("storage: recovery attempt for run: %w", err)
-	}
-	return a, nil
+	return scanRecoveryAttempt(rows)
 }

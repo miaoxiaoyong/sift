@@ -59,18 +59,27 @@ func (c *TerminationCoordinator) RecoverStartup(ctx context.Context, bootID stri
 			return nil
 		}
 		for _, attempt := range attempts {
-			observation, err := c.recoverAttempt(ctx, attempt)
-			if err != nil {
-				return err
+			observation, action := "", ""
+			if attempt.Phase == "pending" {
+				observation, action = "no_execution_body", "redispatch"
+			} else {
+				observation, err = c.recoverAttempt(ctx, attempt)
+				if err != nil {
+					return err
+				}
+				action = "frozen"
+				if observation == "owner_live" || observation == "late_fact" {
+					action = "supervise"
+				}
 			}
-			err = c.DB.ApplyStartupRecoveryAction(ctx, storage.StartupRecoveryAction{BootID: bootID, RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedGeneration: attempt.Generation, ObservationDigest: recoveryDigest(attempt, observation), Action: "attempt_" + attempt.Phase, NowMS: c.nowMS()})
+			err := c.DB.ApplyStartupRecoveryAction(ctx, storage.StartupRecoveryAction{BootID: bootID, RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedGeneration: attempt.Generation, ObservationDigest: recoveryDigest(attempt, observation), Action: action, NowMS: c.nowMS()})
 			if err != nil && err != storage.ErrRejectedStale {
 				return err
 			}
 		}
 		for _, operation := range operations {
 			digest := recoveryOperationDigest(operation)
-			err := c.DB.ApplyStartupRecoveryAction(ctx, storage.StartupRecoveryAction{BootID: bootID, OperationID: operation.ID, ExpectedOperationVersion: operation.Version, ObservationDigest: digest, Action: "launch_operation_held", NowMS: c.nowMS()})
+			err := c.DB.ApplyStartupRecoveryAction(ctx, storage.StartupRecoveryAction{BootID: bootID, OperationID: operation.ID, ExpectedOperationVersion: operation.Version, ObservationDigest: digest, Action: "converge_operation", NowMS: c.nowMS()})
 			if err != nil && err != storage.ErrRejectedStale {
 				return err
 			}

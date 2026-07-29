@@ -54,12 +54,12 @@ func (d *DB) CompleteStartupRecovery(ctx context.Context, bootID string, nowMS i
 		AND NOT EXISTS (
 			SELECT 1 FROM attempts a WHERE a.phase NOT IN ('finished','orphaned')
 			AND NOT EXISTS (SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=?
-				AND s.candidate_key='attempt:' || a.run_id || ':' || a.attempt_no || ':' || a.generation)
+				AND s.candidate_key='attempt:' || a.run_id || ':' || a.attempt_no)
 		)
 		AND NOT EXISTS (
 			SELECT 1 FROM outbox_operations o WHERE o.kind='launch_agent' AND o.state NOT IN ('succeeded','failed','stale','conflict')
 			AND NOT EXISTS (SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=?
-				AND s.candidate_key='operation:' || o.id || ':' || o.version)
+				AND s.candidate_key='operation:' || o.id)
 		)`, nowMS, bootID, bootID, bootID)
 	if err != nil {
 		return err

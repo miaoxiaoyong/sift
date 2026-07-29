@@ -100,6 +100,29 @@ func TestRecoverStartupClassifiesAttemptBeforeBootBarrier(t *testing.T) {
 	}
 }
 
+func TestRecoverStartupRedispatchesPendingAttemptBeforeOpeningBarrier(t *testing.T) {
+	db, raw, attempt, now := seedRecoveryCoordinator(t, "pending", 0)
+	boot, err := db.StartDaemonBoot(context.Background(), "hash-cfg", "test", 1, 123, now.UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := &TerminationCoordinator{DB: db, Runtime: config.Runtime{HeartbeatStaleAfter: time.Second}, AttentionDailyQuota: recoveryQuota(), Now: func() time.Time { return now }}
+	if err := coordinator.RecoverStartup(context.Background(), boot); err != nil {
+		t.Fatal(err)
+	}
+	var generation int
+	var operations int
+	if err := raw.QueryRow(`SELECT generation FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&generation); err != nil || generation != attempt.Generation+1 {
+		t.Fatalf("generation = %d, %v", generation, err)
+	}
+	if err := raw.QueryRow(`SELECT count(*) FROM outbox_operations WHERE run_id='run' AND attempt_no=1 AND kind='launch_agent' AND state='pending'`).Scan(&operations); err != nil || operations != 1 {
+		t.Fatalf("pending dispatches = %d, %v", operations, err)
+	}
+	if err := db.CompleteStartupRecovery(context.Background(), boot, now.UnixMilli()+1); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRecoverRoutesStaleHeartbeatThroughTermination(t *testing.T) {
 	db, raw, attempt, now := seedRecoveryCoordinator(t, "running", nowMillis(time.UnixMilli(10_000).Add(-2*time.Second)))
 	signaler := &recoverySignaler{}

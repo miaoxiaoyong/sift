@@ -66,7 +66,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("launch worker: configured agent %q not found", dispatch.AgentID)
 	}
-	runDir := filepath.Join(w.Root, "runs", dispatch.RunID, fmt.Sprintf("%d", dispatch.AttemptNo))
+	runDir := filepath.Join(w.Root, "runs", dispatch.RunID, "attempts", fmt.Sprintf("%d", dispatch.AttemptNo))
 	if err := os.MkdirAll(runDir, 0700); err != nil {
 		return err
 	}

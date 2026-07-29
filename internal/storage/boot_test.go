@@ -35,18 +35,15 @@ func TestLaunchClaimWaitsForCurrentBootRecoveryBarrier(t *testing.T) {
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("pending launch recovery = %#v, %v", pending, err)
 	}
-	if err := db.ApplyStartupRecoveryAction(ctx, StartupRecoveryAction{BootID: boot, OperationID: pending[0].ID, ExpectedOperationVersion: pending[0].Version, ObservationDigest: "test-observation", Action: "launch_operation_held", NowMS: testNow + 1}); err != nil {
+	if err := db.ApplyStartupRecoveryAction(ctx, StartupRecoveryAction{BootID: boot, OperationID: pending[0].ID, ExpectedOperationVersion: pending[0].Version, ObservationDigest: "test-observation", Action: "converge_operation", NowMS: testNow + 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.CompleteStartupRecovery(ctx, boot, testNow+1); err != nil {
 		t.Fatal(err)
 	}
 	claim, err := db.ClaimLaunchOperation(ctx, boot, "launch", testNow+1, 10)
-	if err != nil || claim == nil || claim.Kind != OperationLaunchAgent {
-		t.Fatalf("claim after recovery = %#v, %v", claim, err)
-	}
-	if err := db.CompleteOutboxAttempt(ctx, *claim, CompleteOutcome{State: OperationSucceeded, NowMS: testNow + 2}); err != nil {
-		t.Fatal(err)
+	if err != nil || claim != nil {
+		t.Fatalf("converged operation claim = %#v, %v", claim, err)
 	}
 	newBoot, err := db.StartDaemonBoot(ctx, snapshot.Hash, "test", 1, 124, testNow+3)
 	if err != nil {
