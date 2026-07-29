@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -81,7 +82,7 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 			}
 			defer check.Close()
 			pid, pgid, agent := pausedIdentity(t, check)
-			assertPausedLive(t, pid, pgid)
+			assertPausedStopped(t, pid, pgid)
 			var phase string
 			if err := check.QueryRow(`SELECT phase FROM attempts WHERE run_id='run-1'`).Scan(&phase); err != nil || phase != tc.phase {
 				t.Fatalf("pause phase=%q want=%q: %v", phase, tc.phase, err)
@@ -194,6 +195,23 @@ func assertPausedLive(t *testing.T, pid, pgid int) {
 	if got, err := syscall.Getpgid(pid); err != nil || got != pgid {
 		t.Fatalf("pid %d pgid=%d want=%d: %v", pid, got, pgid, err)
 	}
+}
+
+func assertPausedStopped(t *testing.T, pid, pgid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		assertPausedLive(t, pid, pgid)
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err == nil {
+			// /proc/<pid>/stat: "pid (comm) state ..."
+			if i := bytes.LastIndexByte(stat, ')'); i >= 0 && i+2 < len(stat) && stat[i+2] == 'T' {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pid %d did not reach stopped (T) state", pid)
 }
 func lineCount(path string) int {
 	b, err := os.ReadFile(path)

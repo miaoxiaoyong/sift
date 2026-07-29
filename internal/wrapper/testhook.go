@@ -16,5 +16,11 @@ func pauseForTest(point string) error {
 			return err
 		}
 	}
-	return syscall.Kill(os.Getpid(), syscall.SIGSTOP)
+	// Self-directed SIGSTOP is delivered asynchronously: Kill can return and
+	// subsequent instructions (claim.started, result rename, process exit) still
+	// run. Park here and re-STOP after any unexpected CONT so the sync point
+	// never advances until the test SIGKILLs the group.
+	for {
+		_ = syscall.Kill(os.Getpid(), syscall.SIGSTOP)
+	}
 }
