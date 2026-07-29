@@ -191,6 +191,36 @@ type ProtectedPaths struct {
 	SoftExceptions []string `json:"soft_exceptions"`
 }
 
+// FrozenInput is the complete policy and certification contribution to one
+// immutable Gate input. Gate receives this value and never re-reads policy,
+// configuration, capability, or certification state.
+type FrozenInput struct {
+	EffectivePolicy           EffectivePolicyV1 `json:"effective_policy"`
+	EffectivePolicyHash       string            `json:"effective_policy_hash"`
+	CertificationRulesVersion string            `json:"certification_rules_version"`
+	CertificationVersion      string            `json:"certification_version"`
+}
+
+// FreezeInput verifies the assembled effective policy before carrying it into
+// a Gate snapshot.
+func FreezeInput(effective EffectivePolicyV1, effectiveHash, certificationRulesVersion, certificationVersion string) (FrozenInput, error) {
+	canonical, err := canonicalJSON(effective)
+	if err != nil {
+		return FrozenInput{}, err
+	}
+	sum := sha256.Sum256(canonical)
+	if effectiveHash != hex.EncodeToString(sum[:]) {
+		return FrozenInput{}, errors.New("policy: effective policy hash does not match policy")
+	}
+	if !validVersion(certificationRulesVersion) || !validVersion(certificationVersion) {
+		return FrozenInput{}, errors.New("policy: invalid certification version")
+	}
+	return FrozenInput{
+		EffectivePolicy: effective, EffectivePolicyHash: effectiveHash,
+		CertificationRulesVersion: certificationRulesVersion, CertificationVersion: certificationVersion,
+	}, nil
+}
+
 // Assemble applies defaults then monotonically narrows privileged settings.
 func Assemble(base BasePolicy, defaults config.GateDefaults, taskKind string, certification CertificationProjection, forgeCAS bool) (EffectivePolicyV1, string, string, QualificationReport, error) {
 	if err := base.validate(); err != nil {
@@ -244,7 +274,7 @@ func validVersion(v string) bool {
 		return false
 	}
 	_, err := hex.DecodeString(v)
-	return err == nil
+	return err == nil && v == strings.ToLower(v)
 }
 func sorted(in []string) []string {
 	out := append([]string(nil), in...)

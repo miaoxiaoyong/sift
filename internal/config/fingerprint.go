@@ -51,3 +51,37 @@ func Fingerprint(cfg *Config) (hash string, canonical []byte, err error) {
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:]), canonical, nil
 }
+
+// CertificationRulesVersion identifies the frozen certification algorithm and
+// its normalized global thresholds. It deliberately excludes evidence, which
+// belongs to the task-kind-specific certification version.
+func CertificationRulesVersion(certification Certification) (string, error) {
+	canonical, err := canonicalValue(map[string]any{
+		"algorithm_version": 1,
+		"certification":     certification,
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func canonicalValue(value any) ([]byte, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("config: marshal canonical value: %w", err)
+	}
+	var tree any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := dec.Decode(&tree); err != nil {
+		return nil, fmt.Errorf("config: re-decode canonical value: %w", err)
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(tree); err != nil {
+		return nil, fmt.Errorf("config: encode canonical value: %w", err)
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}

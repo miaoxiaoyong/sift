@@ -378,8 +378,8 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - [x] 编写 `specs/policy.md`；项目 policy 经 closed schema 校验，失败只隔离该项目
 - [x] Gate 外组装：base policy ∪ 全局缺省 → 按认证与 forge capability 剔除未获资格的提权项（`internal/policy`）
 - [x] `auto_merge` 同时要求配置、类别认证、远端 expected-head CAS capability；缺一即关闭（`internal/policy`）
-- [ ] 有效策略 hash 与 certification version 进入冻结输入
-- [ ] `doctor` 横向比较项目策略并标记漂移；Gate 本身不读取配置/认证/文件
+- [x] 有效策略 hash 与 certification version 进入冻结输入（`internal/policy.FrozenInput`）
+- [x] `doctor` 横向比较项目策略并标记漂移；Gate 本身不读取配置/认证/文件（`internal/controlplane/doctor.go`）
 
 #### 4.2 Brain T3/T5
 

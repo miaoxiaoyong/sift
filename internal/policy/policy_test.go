@@ -84,6 +84,28 @@ checks_pending_timeout: 60m
 	}
 }
 
+func TestFreezeInputBindsPolicyHashAndCertificationVersions(t *testing.T) {
+	defaults := config.GateDefaults{ReviewPolicy: config.ReviewPolicyAlways, RiskyReviewThreshold: 1, ChecksPendingTimeout: time.Hour, FlakyRetryLimit: 1}
+	effective, hash, version, _, err := Assemble(Missing(), defaults, "bugfix", CertificationProjection{TaskKind: "bugfix", CertificationVersion: strings.Repeat("b", 64)}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rulesVersion := strings.Repeat("c", 64)
+	frozen, err := FreezeInput(effective, hash, rulesVersion, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frozen.EffectivePolicyHash != hash || frozen.CertificationRulesVersion != rulesVersion || frozen.CertificationVersion != version {
+		t.Fatalf("frozen input = %#v", frozen)
+	}
+	if _, err := FreezeInput(effective, strings.Repeat("0", 64), rulesVersion, version); err == nil {
+		t.Fatal("FreezeInput accepted a mismatched policy hash")
+	}
+	if _, err := FreezeInput(effective, hash, "bad", version); err == nil {
+		t.Fatal("FreezeInput accepted an invalid certification rules version")
+	}
+}
+
 func TestMissingUsesDefaultsAndNotRequested(t *testing.T) {
 	defaults := config.GateDefaults{ReviewPolicy: config.ReviewPolicyAlways, RiskyReviewThreshold: 1, ChecksPendingTimeout: time.Hour, FlakyRetryLimit: 1}
 	e, _, _, report, err := Assemble(Missing(), defaults, "bugfix", CertificationProjection{TaskKind: "bugfix", CertificationVersion: strings.Repeat("b", 64)}, true)

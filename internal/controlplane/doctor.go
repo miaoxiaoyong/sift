@@ -13,6 +13,7 @@ import (
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/hooks"
+	"github.com/miaoxiaoyong/sift/internal/policy"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -41,6 +42,7 @@ func doctor(ctx context.Context, offline bool, home config.Home) map[string]any 
 	checks = append(checks, sqliteCheck(ctx, dbPath))
 	if cfg != nil {
 		checks = append(checks, hookChecks(ctx, dbPath, cfg)...)
+		checks = append(checks, projectPolicyChecks(ctx, cfg)...)
 	}
 	checks = append(checks, attemptChecks(ctx, dbPath)...)
 	checks = append(checks, homePermissions(home.Path, offline)...)
@@ -140,6 +142,123 @@ func hookChecks(ctx context.Context, dbPath string, cfg *config.Config) []doctor
 		}
 	}
 	return checks
+}
+
+func projectPolicyChecks(ctx context.Context, cfg *config.Config) []doctorCheck {
+	type observedPolicy struct {
+		projectID string
+		hash      string
+	}
+	observed := make([]observedPolicy, 0, len(cfg.Projects))
+	checks := make([]doctorCheck, 0, len(cfg.Projects)*2)
+	for _, project := range cfg.Projects {
+		if !project.Enabled {
+			continue
+		}
+		baseSHA, data, missing, err := readProjectPolicy(ctx, project.Repo)
+		if err != nil {
+			checks = append(checks, errorCheck("policy:"+project.ID, err))
+			continue
+		}
+		base := policy.Missing()
+		fileState := "missing"
+		if !missing {
+			base, err = policy.Parse(data)
+			if err != nil {
+				checks = append(checks, errorCheck("policy:"+project.ID, err))
+				continue
+			}
+			fileState = "valid"
+		}
+		// Doctor has no task-kind-specific certification projection to invent.
+		// The all-zero revision makes unavailable certification fail closed while
+		// still exposing the effective policy currently safe to use.
+		_, hash, _, qualification, err := policy.Assemble(base, cfg.GateDefaults, "doctor", policy.CertificationProjection{TaskKind: "doctor", CertificationVersion: strings.Repeat("0", 64)}, false)
+		if err != nil {
+			checks = append(checks, errorCheck("policy:"+project.ID, err))
+			continue
+		}
+		rulesVersion, err := config.CertificationRulesVersion(cfg.Certification)
+		if err != nil {
+			checks = append(checks, errorCheck("policy:"+project.ID, err))
+			continue
+		}
+		details := map[string]any{
+			"project_id": project.ID, "base_sha": baseSHA, "file_state": fileState,
+			"effective_policy_hash": hash, "certification_rules_version": rulesVersion, "certification_version": "unknown",
+			"auto_merge_qualification":  qualification.AutoMerge,
+			"explicit_scalar_overrides": explicitScalarOverrides(base),
+			"path_rules":                map[string][]string{"hard": base.Hard, "soft": base.Soft, "soft_exceptions": base.SoftExceptions},
+		}
+		level, message := "ok", "project policy matches global defaults"
+		if hasExplicitDrift(base) {
+			level, message = "warning", "project policy explicitly differs from global defaults"
+		}
+		if qualification.AutoMerge != policy.AutoMergeNotRequested {
+			level, message = "warning", "auto_merge requested but certification or CAS qualification is unavailable"
+		}
+		checks = append(checks, doctorCheck{ID: "policy:" + project.ID, Level: level, Message: message, Details: details})
+		observed = append(observed, observedPolicy{projectID: project.ID, hash: hash})
+	}
+	if len(observed) > 1 {
+		baseline := observed[0]
+		for _, current := range observed[1:] {
+			if current.hash != baseline.hash {
+				checks = append(checks, doctorCheck{ID: "policy-drift:" + current.projectID, Level: "info", Message: "effective policy differs from project baseline", Details: map[string]any{"project_id": current.projectID, "baseline_project_id": baseline.projectID, "effective_policy_hash": current.hash, "baseline_effective_policy_hash": baseline.hash}})
+			}
+		}
+	}
+	return checks
+}
+
+func readProjectPolicy(ctx context.Context, repo string) (baseSHA string, data []byte, missing bool, err error) {
+	shaBytes, err := gitOutput(ctx, repo, "rev-parse", "HEAD^{commit}")
+	if err != nil {
+		return "", nil, false, fmt.Errorf("project policy base revision: %w", err)
+	}
+	sha := string(shaBytes)
+	data, err = gitOutput(ctx, repo, "show", sha+":.sift/policy.yaml")
+	if err == nil {
+		return sha, data, false, nil
+	}
+	if _, probeErr := gitOutput(ctx, repo, "cat-file", "-e", sha+":.sift/policy.yaml"); probeErr != nil {
+		return sha, nil, true, nil
+	}
+	return "", nil, false, fmt.Errorf("read project policy: %w", err)
+}
+
+func gitOutput(ctx context.Context, repo string, args ...string) ([]byte, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	output, err := exec.CommandContext(commandCtx, "git", append([]string{"-C", repo}, args...)...).Output()
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.TrimSuffix(string(output), "\n")), nil
+}
+
+func explicitScalarOverrides(base policy.BasePolicy) map[string]string {
+	overrides := map[string]string{}
+	if base.ReviewPolicy != nil {
+		overrides["review_policy"] = string(*base.ReviewPolicy)
+	}
+	if base.RiskyReviewThreshold != nil {
+		overrides["risky_review_threshold"] = fmt.Sprint(*base.RiskyReviewThreshold)
+	}
+	if base.AutoMerge != nil {
+		overrides["auto_merge"] = fmt.Sprint(*base.AutoMerge)
+	}
+	if base.ChecksPendingTimeout != nil {
+		overrides["checks_pending_timeout"] = base.ChecksPendingTimeout.String()
+	}
+	if base.FlakyRetryLimit != nil {
+		overrides["flaky_retry_limit"] = fmt.Sprint(*base.FlakyRetryLimit)
+	}
+	return overrides
+}
+
+func hasExplicitDrift(base policy.BasePolicy) bool {
+	return len(base.Hard) != 0 || len(base.Soft) != 0 || len(base.SoftExceptions) != 0 || len(explicitScalarOverrides(base)) != 0
 }
 
 func attemptChecks(ctx context.Context, dbPath string) []doctorCheck {

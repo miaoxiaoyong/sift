@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ projects:
       kind: github
       project: owner/repo
 `
+	initDoctorRepo(t, home.Path, "version: 1\n")
 	if err := os.WriteFile(filepath.Join(home.Path, "config.yaml"), []byte(configYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +57,52 @@ projects:
 	}
 	if checks["operator-token-readable-by-agent"].Level != "warning" {
 		t.Fatalf("unsafe-local check = %#v", checks["operator-token-readable-by-agent"])
+	}
+}
+
+func TestDoctorReportsProjectPolicyDrift(t *testing.T) {
+	home := testHome(t)
+	for _, name := range []string{"agent", "gh"} {
+		writeDoctorExecutable(t, home.Path, name)
+	}
+	t.Setenv("PATH", home.Path+string(os.PathListSeparator)+os.Getenv("PATH"))
+	first := filepath.Join(home.Path, "first")
+	second := filepath.Join(home.Path, "second")
+	if err := os.MkdirAll(first, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(second, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	initDoctorRepo(t, first, "version: 1\nreview_policy: never\n")
+	initDoctorRepo(t, second, "version: 1\n")
+	configYAML := `version: 1
+agents:
+  - id: agent
+    executable: agent
+projects:
+  - id: first
+    repo: ` + first + `
+    forge: {kind: github, project: owner/first}
+  - id: second
+    repo: ` + second + `
+    forge: {kind: github, project: owner/second}
+`
+	if err := os.WriteFile(filepath.Join(home.Path, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := doctor(context.Background(), true, home)
+	checks := doctorChecks(t, result)
+	if checks["policy:first"].Level != "warning" || checks["policy:second"].Level != "ok" {
+		t.Fatalf("policy checks = %#v", checks)
+	}
+	if checks["policy-drift:second"].Level != "info" {
+		t.Fatalf("policy comparison = %#v", checks["policy-drift:second"])
+	}
+	for _, id := range []string{"base_sha", "effective_policy_hash", "certification_version", "explicit_scalar_overrides", "path_rules"} {
+		if _, ok := checks["policy:first"].Details[id]; !ok {
+			t.Errorf("policy detail %q missing", id)
+		}
 	}
 }
 
@@ -84,6 +132,30 @@ func TestDoctorRejectsNonSocketAtSocketPath(t *testing.T) {
 	checks := doctorChecks(t, doctor(context.Background(), false, home))
 	if checks["permissions:siftd.sock"].Level != "error" {
 		t.Fatalf("socket check = %#v", checks["permissions:siftd.sock"])
+	}
+}
+
+func initDoctorRepo(t *testing.T, repo, policy string) {
+	t.Helper()
+	for _, args := range [][]string{{"init"}, {"config", "user.email", "doctor@example.test"}, {"config", "user.name", "Doctor"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(repo, ".sift"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".sift", "policy.yaml"), []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", repo, "add", ".sift/policy.yaml")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, output)
+	}
+	cmd = exec.Command("git", "-C", repo, "commit", "-m", "policy")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, output)
 	}
 }
 

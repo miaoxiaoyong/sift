@@ -40,6 +40,23 @@ func writeConfig(t *testing.T, home Home, yaml string) {
 	}
 }
 
+func TestCertificationRulesVersionChangesWithRules(t *testing.T) {
+	base := DefaultConfig().Certification
+	first, err := CertificationRulesVersion(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := base
+	changed.Window += time.Hour
+	second, err := CertificationRulesVersion(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("certification rules version did not change")
+	}
+}
+
 // TestV12Scenario1MissingFile: an absent config.yaml boots as a healthy idle
 // daemon with empty operators/agents/projects and every documented default
 // (config.md §6 scenario 1). doctor would report clean; no gh/glab/tmux/brain
