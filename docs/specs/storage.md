@@ -795,7 +795,7 @@ Gate 预判先插入；人的结果由受限存储端口一次性补全，补全
 | 列 | 类型 | 说明 |
 |----|------|------|
 | `task_kind` | TEXT | NOT NULL；任务类别 |
-| `certification_version` | TEXT | NOT NULL；含窗口与阈值版本 |
+| `certification_version` | TEXT | NOT NULL；承诺认证规则版本、task kind 与当前可重算证据版本 |
 | `total_samples` | INTEGER | NOT NULL |
 | `negative_samples` | INTEGER | NOT NULL |
 | `leak_count` | INTEGER | NOT NULL |

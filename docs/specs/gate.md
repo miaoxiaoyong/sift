@@ -65,7 +65,7 @@ cache key       = (gate_input_hash, gate_version)
 
 1. **`protected_paths`。** 将 Change 路径与有效策略匹配。默认硬护栏是 PRD §5.4 表中的 [`.sift/**`、`.github/workflows/**`、`.gitlab-ci.yml` 及等价 CI 配置](../PRD.md#54-gate门禁)。命中 hard 立即返回 failed；命中 soft 且没有本次有效豁免，返回 `guardrail_violation` HITL。
 2. **Checks。** success 才进入下一阶段；pending 未超时返回等待结果，pending 已超时转 HITL。failure 使用冻结的 T5 分类：仅 `flaky` 且尚有有效重试额度可请求确定性重试；真实失败、基础设施失败、T5 不可用/超预算或任何未知分类均转 `failure_review` HITL。Gate 不自行重试或调用 T5。
-3. **review policy。** `always` 在冻结的有效审查未满足时转 `code_review` HITL；`risky-only` 只在 riskScore 达到有效策略阈值或风险来源为确定性高风险兜底、且有效审查尚未满足时转 HITL；`never` 不要求 review。需要审查时，审查状态或平台能力未知不得视为已经满足审查。
+3. **review policy。** `always` 在冻结的有效审查未满足时转 `code_review` HITL；`risky-only` 只在 `riskScore.risk_score >= effectivePolicy.risky_review_threshold`（确定性高风险兜底固定为 100）、且有效审查尚未满足时转 HITL；`never` 不要求 review。需要审查时，审查状态或平台能力未知不得视为已经满足审查。
 4. **auto merge。** 只有有效策略允许、前述所有阶段全绿、Change 非 draft 且 mergeability 明确可合并时，才返回可创建 `merge_change` 的 verdict。该 operation 必须携带本 verdict 的 `head_sha` 作为 `expected_head_sha`。`auto_merge=false` 或 draft 可返回“门禁全绿但不自动合并”；`auto_merge=true` 时，`mergeability=conflicting` 必须转 `merge_conflict` HITL，`unknown` 必须转显式人工/等待分支，二者都不得冒充全绿结果。合并时远端 CAS 拒绝或 head 已变化，旧 operation 必须 stale/no-op，新 head 必须重新组装快照并过 Gate。
 
 硬护栏、未知事实和所有 HITL 分支都不能被后续 review、auto merge 或缓存命中放宽。

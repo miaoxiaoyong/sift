@@ -329,6 +329,7 @@ Report 子配额统计所有 Report 直接触发的 Interrupt（含 critical）�
 | 字段 | 默认 | 约束/语义 |
 |------|------|-----------|
 | `review_policy` | `always` | `always \| risky-only \| never` |
+| `risky_review_threshold` | `1` | `0..100`；T3 `risk_score >= threshold` 时 `risky-only` 要求人审 |
 | `auto_merge` | `false` | true 仍须通过认证与 forge capability |
 | `checks_pending_timeout` | `1h` | `1m..24h` |
 | `flaky_retry_limit` | `1` | `0..10` |
@@ -345,7 +346,7 @@ Report 子配额统计所有 Report 直接触发的 Interrupt（含 critical）�
 | `false_block_rate_max` | `0.2` | `[0,1]` |
 | `window` | `4320h`（180 天） | `24h..8760h` |
 
-`certification_version = SHA-256(算法版本 + canonical certification 配置)`。任一阈值或窗口变化必须生成新 version；新 version 进入有效策略与 Gate 输入快照，使旧 Gate cache 自动失效。认证仍只按任务类别聚合，不能被单条 Run 历史绕过。
+`certification_rules_version = SHA-256(算法版本 + canonical certification 配置)`。它只标识规则、窗口与阈值；Ledger 再把该 version、任务类别和当前可重算证据版本纳入类别级 `certification_version`。任一规则、阈值、窗口或资格证据变化都必须改变最终 version；后者进入 Gate 输入快照，使旧 Gate cache 自动失效。认证仍只按任务类别聚合，不能被单条 Run 历史绕过。
 
 ### 3.13 `metrics`
 
