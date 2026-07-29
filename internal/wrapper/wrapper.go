@@ -50,7 +50,7 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	instance, session := secret(), secret()
 	wi := map[string]any{"pid": pid, "started_at_ms": started, "executable": self, "pgid": pid}
 	base := map[string]any{"run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "dispatch_id": b.DispatchID, "wrapper_instance_id": instance, "session_candidate": session, "wrapper_identity": wi}
-	if _, err := call(b.RunDir, "claim.acquire", map[string]any{"kind": "bootstrap", "nonce": b.BootstrapNonce}, base); err != nil {
+	if _, err := call(ctx, b.RunDir, "claim.acquire", map[string]any{"kind": "bootstrap", "nonce": b.BootstrapNonce}, base); err != nil {
 		return err
 	}
 	nonce := secret()
@@ -106,35 +106,31 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	if err != nil {
 		return err
 	}
-	cleanup := func() {
-		_ = syscall.Kill(-syscall.Getpgrp(), syscall.SIGTERM)
-	}
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			cleanup()
-		case <-done:
-		}
-	}()
 	ai := map[string]any{"pid": int64(cmd.Process.Pid), "started_at_ms": time.Now().UnixMilli(), "executable": b.Agent.Executable}
 	control["agent_identity"] = ai
 	control["updated_at_ms"] = time.Now().UnixMilli()
 	digest, err = writeJSON(filepath.Join(b.RunDir, "control.json"), control)
 	if err != nil {
-		cleanup()
+		terminateAndReap(cmd)
 		return err
 	}
 	sp := map[string]any{"run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "agent_identity": ai, "control_digest": digest, "result_digest": nil}
-	if _, err = call(b.RunDir, "claim.started", map[string]any{"kind": "wrapper_started", "session": session, "permit": permit}, sp); err != nil {
-		cleanup()
+	if _, err = call(ctx, b.RunDir, "claim.started", map[string]any{"kind": "wrapper_started", "session": session, "permit": permit}, sp); err != nil {
+		terminateAndReap(cmd)
 		return err
 	}
 	stopHeartbeat := make(chan struct{})
 	defer close(stopHeartbeat)
 	go heartbeat(b, instance, stopHeartbeat)
-	waitErr := cmd.Wait()
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	var waitErr error
+	select {
+	case waitErr = <-waited:
+	case <-ctx.Done():
+		terminateAndReapWait(cmd, waited)
+		return ctx.Err()
+	}
 	exitCode, signal := resultStatus(waitErr)
 	result := map[string]any{"schema_version": 1, "run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "agent_identity": ai, "exit_code": exitCode, "signal": signal, "finished_at_ms": time.Now().UnixMilli(), "final_head_sha": headSHA(b.WorktreePath), "control_digest": digest}
 	if _, err := writeJSON(filepath.Join(b.RunDir, "result.json"), result); err != nil {
@@ -142,6 +138,31 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	}
 	return waitErr
 }
+
+const terminationGrace = 500 * time.Millisecond
+
+// terminateAndReap bounds shutdown of the direct Agent child. Supported
+// Agents remain in the wrapper's process group, so once the child is reaped
+// the wrapper can exit without leaving that controlled execution behind.
+func terminateAndReap(cmd *exec.Cmd) {
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	terminateAndReapWait(cmd, waited)
+}
+
+func terminateAndReapWait(cmd *exec.Cmd, waited <-chan error) {
+	_ = syscall.Kill(-syscall.Getpgrp(), syscall.SIGTERM)
+	timer := time.NewTimer(terminationGrace)
+	defer timer.Stop()
+	select {
+	case <-waited:
+		return
+	case <-timer.C:
+		_ = cmd.Process.Kill()
+		<-waited
+	}
+}
+
 func readBootstrap(path string) (runtime.Bootstrap, error) {
 	var b runtime.Bootstrap
 	info, err := os.Lstat(path)
@@ -188,7 +209,7 @@ func callPermit(ctx context.Context, runDir string, auth, params map[string]any)
 	deadline := time.NewTimer(30 * time.Second)
 	defer deadline.Stop()
 	for {
-		result, err := call(runDir, "claim.permit_spawn", auth, params)
+		result, err := call(ctx, runDir, "claim.permit_spawn", auth, params)
 		if err == nil {
 			return result, nil
 		}
@@ -209,12 +230,15 @@ func callPermit(ctx context.Context, runDir string, auth, params map[string]any)
 	}
 }
 
-func call(runDir, method string, auth, params map[string]any) (map[string]any, error) {
-	c, err := net.DialTimeout("unix", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(runDir))), "run.sock"), 5*time.Second)
+func call(ctx context.Context, runDir, method string, auth, params map[string]any) (map[string]any, error) {
+	var dialer net.Dialer
+	c, err := dialer.DialContext(ctx, "unix", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(runDir))), "run.sock"))
 	if err != nil {
 		return nil, err
 	}
 	defer c.Close()
+	stopCancel := context.AfterFunc(ctx, func() { _ = c.Close() })
+	defer stopCancel()
 	req := map[string]any{"protocol_major": 1, "protocol_minor": 0, "client_version": controlplane.Version, "request_id": secret()[:32], "method": method, "auth": auth, "params": params}
 	b, _ := json.Marshal(req)
 	var h [4]byte

@@ -89,6 +89,82 @@ func TestProductionWrapperCrashWindows(t *testing.T) {
 	}
 }
 
+func TestProductionWrapperReapsTERMIgnoringAgentAfterStartedFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups differ on Windows")
+	}
+	wrapperPath := buildWrapper(t)
+	root, _, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "trap '' TERM; while :; do :; done"})
+	server := newWrapperServer(t, root, "claim.started")
+	defer server.Close()
+	cmd := osexec.Command(wrapperPath, bootstrap)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pgid := cmd.Process.Pid
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("wrapper unexpectedly succeeded")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := syscall.Kill(-pgid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("probe process group %d: %v", pgid, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process group %d still exists after wrapper exit", pgid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestProductionWrapperReapsTERMIgnoringAgentOnTerminationSignal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups differ on Windows")
+	}
+	wrapperPath := buildWrapper(t)
+	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "trap '' TERM; while :; do :; done"})
+	server := newWrapperServer(t, root, "")
+	defer server.Close()
+	cmd := osexec.Command(wrapperPath, bootstrap)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pgid := cmd.Process.Pid
+	defer cmd.Process.Kill()
+	deadline := time.Now().Add(5 * time.Second)
+	started := false
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(filepath.Join(runDir, "control.json")); err == nil {
+			var control struct {
+				AgentIdentity any `json:"agent_identity"`
+			}
+			if json.Unmarshal(data, &control) == nil && control.AgentIdentity != nil {
+				started = true
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !started {
+		t.Fatal("wrapper did not publish agent identity")
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("wrapper unexpectedly succeeded")
+	}
+	if err := syscall.Kill(-pgid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("process group %d still exists after wrapper exit: %v", pgid, err)
+	}
+}
+
 func TestProductionWrapperKeepsAgentInWrapperProcessGroup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups differ on Windows")
