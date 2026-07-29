@@ -512,7 +512,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - [ ] `specs/command.md`
 - [ ] `specs/report.md`
 - [ ] 增补 `specs/brain.md`（T4/T6/T7）
-- [ ] 增补 `specs/config.md`（配额、熔断、reason 上限去向、指标权重）
+- [x] 增补 `specs/config.md`（配额、熔断、reason 上限去向、指标权重）
 
 ### M5 门禁
 

@@ -8,7 +8,7 @@ summary: 全局配置、默认值、路径与启动探测契约
 
 本文是 `~/.sift/config.yaml`、`SIFT_HOME`、默认值及启动期能力探测的字段级契约。项目内策略由后续的 `specs/policy.md` 定义；控制面凭据由后续的 `specs/control-plane.md` 定义；持久化快照见 [`storage.md`](storage.md)。
 
-需求与结构来源：[PRD §5.2、§5.3、§5.5、§5.7、§9](../PRD.md)，[DESIGN §7、§9.1、§9.2、§9.4、§11、§14.2](../DESIGN.md)，[WBS M1 §1.4](../WBS.md)。
+需求与结构来源：[PRD §5.2、§5.3、§5.5、§5.7、§9、§10.2](../PRD.md)，[DESIGN §7、§9.1、§9.2、§9.4、§11、§14.2](../DESIGN.md)，[WBS M1 §1.4、M5 §5.2–§5.7](../WBS.md)。
 
 ## 评审处置
 
@@ -259,7 +259,7 @@ API 只在 Forge 适配层收费。达到 `warning_ratio` 后降低轮询频率�
 
 ### 3.9 `attention`
 
-Severity 枚举为 `low | normal | high | critical`。`critical` 不设日配额，但受熔断约束。
+Severity 枚举为 `low | normal | high | critical`。本节是 M5 Attention 的唯一全局配置入口；发射、批处理和递送的对象/事务契约见 [`interrupt.md`](interrupt.md)、[`storage.md` §9](storage.md) 与 [`outbox.md` §10](outbox.md)。`critical` 不占日配额，但绝不是无限制通道：它仍受 `critical_fuse` 的硬熔断约束。
 
 ```yaml
 attention:
@@ -273,6 +273,35 @@ attention:
     window: 15m
     total_limit: 5
     per_run_limit: 2
+  reason_defaults:
+    design_approval:
+      expires_after: 24h
+      on_expire: hold
+      on_max_escalations: hold
+    guardrail_violation:
+      expires_after: 24h
+      on_expire: hold
+      on_max_escalations: hold
+    code_review:
+      expires_after: 72h
+      on_expire: hold
+      on_max_escalations: hold
+    agent_blocked:
+      expires_after: 8h
+      on_expire: escalate
+      on_max_escalations: auto_reject
+    merge_conflict:
+      expires_after: 8h
+      on_expire: escalate
+      on_max_escalations: auto_reject
+    failure_review:
+      expires_after: 24h
+      on_expire: auto_reject
+      on_max_escalations: auto_reject
+    startup_stall:
+      expires_after: 1h
+      on_expire: escalate
+      on_max_escalations: hold
   daily_summary_at: "09:00"
 ```
 
@@ -282,18 +311,30 @@ attention:
 | `daily_quota.low` | `3` | `0..1000` |
 | `daily_quota.normal` | `5` | `0..1000` |
 | `daily_quota.high` | `5` | `0..1000` |
-| `max_escalations` | `2` | `0..10` |
+| `max_escalations` | `2` | `0..10`；一条 Interrupt 初发后最多允许的升级次数 |
 | `critical_fuse.window` | `15m` | `1m..24h` |
-| `critical_fuse.total_limit` | `5` | `1..1000` |
-| `critical_fuse.per_run_limit` | `2` | `1..total_limit` |
-| `daily_summary_at` | `09:00` | 本地 `HH:MM` |
+| `critical_fuse.total_limit` | `5` | `1..1000`；窗口内全局 critical 上限 |
+| `critical_fuse.per_run_limit` | `2` | `1..total_limit`；同窗口同一 Run 的 critical 上限 |
+| `daily_summary_at` | `09:00` | `HH:MM`；按 `day_timezone` 解释，而非 daemon 所在机器的时区 |
 | `hold_max_duration` | `720h`（30 天） | `1m..8760h` |
 | `channel_failure_alert_after` | `3` | `1..100`；连续失败后改走 forge 告警评论 |
 
-每个 reason 的默认超时与到期动作：
+`daily_quota` 是 closed map，只允许 `low`、`normal`、`high` 三个键；省略的键采用表中默认值，不得声明 `critical` 或其他 severity。每个非 critical Interrupt 在首次发射时以其确定性 severity 原子扣一格对应日配额；同 generation 重放、Channel 重试、升级重推和关闭均不得再扣或退款。日桶和 `daily_summary_at` 都按发射时冻结的 `day_timezone` 计算。额度为零或 CAS 失败时不得借支、不得以更高 severity 重试，也不得因 T4/T6、Channel、token/API 降级或任何 fallback 绕过；原 Interrupt 进入当日合批，最多在该日的 `daily_summary_at` 发一条摘要。
 
-| reason | `expires_after` | `on_expire` | 达升级上限后 |
-|--------|-----------------|-------------|----------------|
+`critical_fuse` 使用真实滑动窗口，不得以自然日或固定桶近似。首次发射为 critical、或升级后首次成为 critical 的候选，都必须在同一 `EmitInterrupt` 事务中同时检查全局和 Run 两个计数；任一候选会使计数超过对应 limit 时，熔断该候选的单独 critical 递送，归入该窗口的唯一汇总 HITL。汇总不是对原 critical 的借支、升级重推或第二条逐项 critical 递送；源事实和熔断决定必须可审计。首次进入 critical 的计数、窗口边界和 append-only 证据以 [`storage.md` §9.3](storage.md) 为准。重放或同一 Interrupt 的重推不重复占用熔断名额。
+
+#### `attention.reason_defaults`
+
+`reason_defaults` 是 closed map，只允许 PRD 的七个 reason：`design_approval`、`guardrail_violation`、`code_review`、`agent_blocked`、`merge_conflict`、`failure_review`、`startup_stall`。该 map 及其中每个 reason object 都可省略；省略字段逐项采用下表默认值。出现的 reason object 只允许 `expires_after`、`on_expire`、`on_max_escalations`，未知 reason 或字段拒绝。每条 Interrupt 在创建时冻结三个解析后的值，后续重启或配置变更不得改写已存在 Interrupt。
+
+| 字段 | 约束/语义 |
+|------|-----------|
+| `expires_after` | duration，`1m..8760h`；创建时令 `expires_at = created_at + expires_after` |
+| `on_expire` | `hold \| escalate \| auto_reject`；到期 supervisor 的动作 |
+| `on_max_escalations` | `hold \| auto_reject`；只有 `on_expire=escalate` 且已用尽 `max_escalations` 时的确定性去向 |
+
+| reason | `expires_after` | `on_expire` | `on_max_escalations` |
+|--------|-----------------|-------------|----------------------|
 | `design_approval` | `24h` | `hold` | `hold` |
 | `guardrail_violation` | `24h` | `hold` | `hold` |
 | `code_review` | `72h` | `hold` | `hold` |
@@ -302,7 +343,9 @@ attention:
 | `failure_review` | `24h` | `auto_reject` | `auto_reject` |
 | `startup_stall` | `1h` | `escalate` | `hold` |
 
-`hold_max_duration` 是每条 `/sift hold <duration>` 指令的单次上限，不限制人多次显式 hold。`auto_approve` 不是合法值。`startup_stall` 在 schema 与运行时双重禁止 `auto_reject`。
+达到上限不是再提高 severity 或延后检查：按冻结的 `on_max_escalations` 立即收敛。`hold` 保持当前 Interrupt/Run 的人工等待语义；`auto_reject` 走该 reason 已有的拒绝状态机，不能由配置伪造 `approve`。`startup_stall.on_expire=auto_reject` 与 `startup_stall.on_max_escalations=auto_reject` 一律在 schema 和运行时拒绝；它在封顶后保持 `hold`、Interrupt open 与 attempt 隔离，且不写 resolution，详见 [`interrupt.md` §4.1、§6](interrupt.md)。`auto_approve` 在任意字段都不是合法值。
+
+`hold_max_duration` 是每条 `/sift hold <duration>` 指令的单次上限，不限制人多次显式 hold。
 
 ### 3.10 `report`
 
@@ -350,10 +393,24 @@ Report 子配额统计所有 Report 直接触发的 Interrupt（含 critical）�
 
 ### 3.13 `metrics`
 
-北极星权重单位为“典型人工分钟”，仅作代理口径：
+北极星权重单位为“典型人工分钟”，仅作 [PRD §10.2](../PRD.md) 的代理口径：
 
-| reason | 默认权重 |
-|--------|----------|
+```yaml
+metrics:
+  attention_weight_minutes:
+    design_approval: 10
+    guardrail_violation: 5
+    code_review: 15
+    agent_blocked: 5
+    merge_conflict: 3
+    failure_review: 5
+    startup_stall: 5
+```
+
+`attention_weight_minutes` 是 closed map，只允许 PRD 的七个 reason；该 field 可省略，出现时其中省略的 reason 采用下表默认值。不得添加未知 reason 或按 severity/Channel 定义另一张权重表。每项是有限 JSON number，范围 `0..1440`，单位为典型人工分钟；允许小数以支持人工抽样校准。默认值如下：
+
+| reason | 默认权重（分钟） |
+|--------|------------------|
 | `design_approval` | `10` |
 | `guardrail_violation` | `5` |
 | `code_review` | `15` |
@@ -362,7 +419,9 @@ Report 子配额统计所有 Report 直接触发的 Interrupt（含 critical）�
 | `failure_review` | `5` |
 | `startup_stall` | `5` |
 
-每项必须为非负 number。人的响应间隔不得替代本权重参与注意力成本计算。
+加权打扰分子对每个首次成功送达的 attention charge 恰取一次其 reason 的权重；同一 charge 的重试、升级重推和重复送达不得重复加权。非 critical 合批仍保留其源 Interrupt/charge 的 reason，以便按相同规则计入；未成功送达的 charge 不计入该北极星分子。权重取该 charge 所属 Run 创建时冻结的 `config_snapshot_id` 中的值；指标查询必须使用持久化快照，而不得以当前配置重算历史。配置变更后，新 Run 使用新值，既有 Run 与历史序列保持原值。
+
+人的响应间隔只能作为 T6 调度特征；不得替代、校正或隐式乘入本权重。权重表仅定义北极星分子，不能改变注意力配额、critical 熔断、Gate 阈值或单条 HITL 决定。
 
 ### 3.14 `labels`
 
@@ -447,7 +506,7 @@ V12 包含两个场景：
 
 Daemon 不可用时，doctor 输出必须标记 `offline: true`；只能读取文件、权限、二进制与 SQLite 只读信息，绝不修改 DB、迁移或状态。
 
-## 8. M1 验收映射
+## 8. 验收映射
 
 | WBS | 规格判据 |
 |-----|----------|
@@ -455,6 +514,9 @@ Daemon 不可用时，doctor 输出必须标记 `offline: true`；只能读取�
 | 1.4 / V12 | 文件缺失健康 idle；最小配置所有可选值均有默认 |
 | 1.5 / V10 | 双 socket、权限、探测分级和 doctor 退出码可确定验证 |
 | H16 | 全局配置只启动期生效；漂移只告警 |
+| M5 §5.2–§5.3 / V8、V13 | 非 critical 不借支而合批；critical 用真实滑动全局/每 Run 双阈值熔断，首次进入 critical 和重推边界均可验证 |
+| M5 §5.3 | 七个 reason 的 expiry/封顶去向冻结；`startup_stall` 的 `auto_reject` 在 schema 与运行时都被拒绝 |
+| M5 §5.7 | 七项权重 closed/default/range 可校验；同一 attention charge 只贡献一次、历史权重不被新配置改写 |
 | DESIGN §14.2 | 开放数值及启动协议时限均有本文件中的确定性默认值 |
 
 ## 9. 自查结果
@@ -464,5 +526,6 @@ Daemon 不可用时，doctor 输出必须标记 `offline: true`；只能读取�
 - [x] C3：全局 Context、控制文件与单实例锁均有路径、权限和生命周期。
 - [x] C4：Report 子配额只统计 Report 直接致扰，并确定触顶动作及 critical 口径。
 - [x] C5：漂移周期/新文件、权限拒启、Agent/Brain 探测、hold 上限、持续项目探测与委派文档均明确。
+- [x] M5：非 critical 配额、critical 双阈值熔断、reason 封顶去向与指标权重均有 closed/default/freeze 契约。
 - [x] canonical JSON 只在 §4 定义，storage 通过链接引用。
 - [x] 所有 markdown 相对链接存在、代码围栏闭合、无尾随空白。
