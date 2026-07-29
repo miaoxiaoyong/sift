@@ -35,6 +35,40 @@ func (d *DB) SeedForgeRunForTest(ctx context.Context, runID, projectID, cfgID, i
 	return d.SeedReverseSyncRunForTest(ctx, runID, projectID, cfgID, issueID, "", "queued", nowMS)
 }
 
+// SeedLaunchRunForTest creates the smallest fully assigned pending launch used
+// by end-to-end runtime tests. It deliberately remains a test-only seed: the
+// production assignment and transition ports are still the only domain writes.
+func (d *DB) SeedLaunchRunForTest(ctx context.Context, runID, projectID, cfgID string, nowMS int64, worktree string) error {
+	if err := d.SeedForgeRunForTest(ctx, runID, projectID, cfgID, "issue-1", nowMS); err != nil {
+		return err
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO task_spec_snapshots
+		(id, run_id, version, schema_version, canonical_json, content_digest, created_at_ms)
+		VALUES ('task-1', ?, 1, 1, '{"title":"crash-suite"}', 'task-digest', ?)
+	`, runID, nowMS); err != nil {
+		return fmt.Errorf("storage: seed launch task: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE runs SET kind='bug', agent_id='agent', current_task_spec_id='task-1', version=2, updated_at_ms=? WHERE id=?`, nowMS, runID); err != nil {
+		return fmt.Errorf("storage: seed launch assignment: %w", err)
+	}
+	key := LaunchOperationKey(runID, 1, 1)
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO attempts
+		(run_id, attempt_no, phase, generation, backend, agent_id, task_spec_snapshot_id,
+		 worktree_path, branch_name, base_ref, base_sha, isolation_state, created_at_ms, updated_at_ms)
+		VALUES (?, 1, 'pending', 1, 'process', 'agent', 'task-1', ?, 'main', 'main', 'base', 'none', ?, ?)`, runID, worktree, nowMS, nowMS); err != nil {
+		return fmt.Errorf("storage: seed launch attempt: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO attempt_claims
+		(run_id, attempt_no, generation, launch_operation_key, created_at_ms, updated_at_ms)
+		VALUES (?, 1, 1, ?, ?, ?)`, runID, key, nowMS, nowMS); err != nil {
+		return fmt.Errorf("storage: seed launch claim: %w", err)
+	}
+	if _, err := d.EnqueueOperation(ctx, Operation{Key: key, Kind: OperationLaunchAgent, RunID: runID, AttemptNo: intPtr(1), Payload: []byte(`{"schema_version":1}`)}, nowMS); err != nil {
+		return fmt.Errorf("storage: seed launch operation: %w", err)
+	}
+	return nil
+}
+
 // SeedReverseSyncRunForTest inserts an active forge run with the remote
 // identity needed by the reverse-sync integration tests.
 func (d *DB) SeedReverseSyncRunForTest(ctx context.Context, runID, projectID, cfgID, issueID, changeID, status string, nowMS int64) error {
