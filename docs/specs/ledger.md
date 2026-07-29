@@ -78,7 +78,7 @@ M4 实现的唯一生成源为 `internal/ledger/contract/ledger_v1.go`；它生�
 
 因此「策略要求 code review」、认证尚未获得或 `auto_merge=false` 不会被伪造成 `block`；`inconclusive` 可审计但永不结算、永不参与认证。
 
-创建 Gate HITL Interrupt 时，`interrupts.calibration_id` 必须在同一事务不可变地绑定本 evaluation 的 calibration；非 Gate Interrupt 为 null。外部手工 merge/close 由事实消费者在观察该 Forge fact 时创建不可变 `external_decision_bindings(forge_fact_event_id, calibration_id)`；只有事实已携带该 binding 才能结算，缺失或歧义时仍记人类动作但 `calibration_decision=null`。禁止按 Run、head、时间或「最新 evaluation」猜测。
+创建 Gate HITL Interrupt 时，`interrupts.calibration_id` 必须在同一事务不可变地绑定本 evaluation 的 calibration；非 Gate Interrupt 为 null。外部手工 merge/close 只可消费当前 `waiting_human` Gate Interrupt 已落库的精确 `(gate_evaluation_id, calibration_id)`，并在观察该 Forge fact 的同一事务创建不可变 `external_decision_bindings(forge_fact_event_id, calibration_id)`；缺失、歧义或非二元 binding 一律拒绝该事实结算，绝不写空 binding。禁止按 Run、head、时间或「最新 evaluation」猜测。
 
 `recordHumanDecision` 接受已鉴权 actor、稳定 command/Forge-fact 幂等身份和 tagged union：
 
@@ -124,6 +124,6 @@ V0 使用配置的固定 `false_block_rate_max`；注意力配额/吞吐只能�
 
 ## 5. 手工合并、用途与验收
 
-Forge 是合并事实权威。手工 merge 收敛 Run 为 `done` 并标 `gate_bypassed=true`；它不进入 Sift 发起合并的误放行率分母。若 immutable external binding 指向二元 calibration，则 `recordHumanDecision` 记录 `manual_merge/allow` 并保留校准；没有 binding 或影子为 inconclusive 时只记录审计动作，绝不伪造样本。manual close 同理映射 `block`。
+Forge 是合并事实权威。手工 merge 收敛 Run 为 `done` 并标 `gate_bypassed=true`；它不进入 Sift 发起合并的误放行率分母。外部事实必须携带当前 waiting-human Interrupt 的 immutable binary binding，随后 `recordHumanDecision` 记录 `manual_merge/allow` 并保留校准；没有 binding、binding 歧义或影子为 inconclusive 均拒绝，绝不伪造样本。manual close 同理映射 `block`。
 
 验收：closed schema/fixtures 与大小限制可生成并拒绝未知字段；每次 Gate 都有一条 calibration 和唯一 gate-sample FK；所有 verdict 均有上表 shadow 值；Interrupt/external binding 不可变且命令不能猜选；同一 Gate 事务原子写 snapshot/evaluation/calibration/gate sample/必要 Interrupt；认证公式、边界 fixtures、revision 和 Gate cache 失效均可重放验证；响应间隔不进入注意力成本。

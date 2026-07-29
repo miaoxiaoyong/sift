@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/forge"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
@@ -39,7 +40,7 @@ func seedWaitingRun(t *testing.T, db *storage.DB, project Project, runID, issueI
 
 func reconcile(t *testing.T, db *storage.DB, fc forge.Client, projects ...Project) {
 	t.Helper()
-	if err := (&Reconciler{DB: db, Forge: fc, Projects: projects, Now: func() time.Time { return time.UnixMilli(reconcilerNow) }}).ReconcileOnce(context.Background()); err != nil {
+	if err := (&Reconciler{DB: db, Forge: fc, Projects: projects, Certification: config.DefaultConfig().Certification, Now: func() time.Time { return time.UnixMilli(reconcilerNow) }}).ReconcileOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -57,7 +58,25 @@ func TestReconcilerOnceExternalMergeCompletesWaitingHuman(t *testing.T) {
 	if _, err := fc.InjectMerged(project.Ref, "c1", time.UnixMilli(reconcilerNow)); err != nil {
 		t.Fatal(err)
 	}
-	seedWaitingRun(t, db, project, "run-merge", "1", "c1")
+	if err := db.SeedForgeRunForTest(context.Background(), "run-merge", project.ID, "cfg-"+project.ID, "1", reconcilerNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordCreatedChange(context.Background(), "run-merge", "c1", reconcilerNow); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := sql.Open("sqlite", db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.Exec(`UPDATE runs SET kind='feature' WHERE id='run-merge'`); err != nil {
+		seed.Close()
+		t.Fatal(err)
+	}
+	seed.Close()
+	recorded, _, err := db.RecordGateEvaluationAndEmitInterrupt(context.Background(), intakeGateRecord("run-merge"), intakeGateInterrupt("run-merge"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	reconcile(t, db, fc, project)
 	run, err := db.Run(context.Background(), "run-merge")
@@ -73,15 +92,46 @@ func TestReconcilerOnceExternalMergeCompletesWaitingHuman(t *testing.T) {
 	}
 	defer check.Close()
 	var facts, decisions int
+	var boundCalibration, settledCalibration, humanDecision, certificationVersion string
 	if err := check.QueryRow(`SELECT COUNT(*) FROM events WHERE type='forge_change_merged' AND run_id='run-merge'`).Scan(&facts); err != nil {
 		t.Fatal(err)
 	}
 	if err := check.QueryRow(`SELECT COUNT(*) FROM ledger_entries WHERE run_id='run-merge' AND entry_kind='human_decision'`).Scan(&decisions); err != nil {
 		t.Fatal(err)
 	}
-	if facts != 1 || decisions != 1 {
-		t.Fatalf("external merge audit facts=%d human decisions=%d, want 1 each", facts, decisions)
+	if err := check.QueryRow(`SELECT b.calibration_id,c.human_decision FROM external_decision_bindings b JOIN calibration_entries c ON c.id=b.calibration_id`).Scan(&boundCalibration, &humanDecision); err != nil {
+		t.Fatal(err)
 	}
+	if err := check.QueryRow(`SELECT calibration_id FROM human_decision_receipts`).Scan(&settledCalibration); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT certification_version FROM certification_current WHERE task_kind='feature'`).Scan(&certificationVersion); err != nil {
+		t.Fatal(err)
+	}
+	if facts != 1 || decisions != 1 || boundCalibration != recorded.CalibrationID || settledCalibration != recorded.CalibrationID || humanDecision != "allow" || certificationVersion == "" {
+		t.Fatalf("external merge facts=%d decisions=%d binding=%q settlement=%q decision=%q certification=%q", facts, decisions, boundCalibration, settledCalibration, humanDecision, certificationVersion)
+	}
+	// A recovery tick after the terminal transition cannot append another fact,
+	// decision, or certification revision.
+	reconcile(t, db, fc, project)
+	var factsAfter, decisionsAfter int
+	if err := check.QueryRow(`SELECT COUNT(*) FROM events WHERE type='forge_change_merged' AND run_id='run-merge'`).Scan(&factsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM ledger_entries WHERE run_id='run-merge' AND entry_kind='human_decision'`).Scan(&decisionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if factsAfter != facts || decisionsAfter != decisions {
+		t.Fatalf("recovery appended facts=%d decisions=%d, want %d/%d", factsAfter, decisionsAfter, facts, decisions)
+	}
+}
+
+func intakeGateRecord(runID string) storage.GateEvaluationRecord {
+	return storage.GateEvaluationRecord{RunID: runID, GateInputHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", GateVersion: "gate/v1", SnapshotSchemaVersion: 1, SnapshotJSON: []byte(`{"schema_version":1}`), VerdictJSON: []byte(`{"schema_version":1,"kind":"hitl"}`), HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", EffectivePolicyHash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", CertificationVersion: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", RiskSourceVersion: "T3/fallback/v1", VerdictDigest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", ShadowDecision: "block", FeaturesJSON: []byte(`{"schema_version":1}`), NowMS: reconcilerNow}
+}
+
+func intakeGateInterrupt(runID string) storage.EmitInterruptCmd {
+	return storage.EmitInterruptCmd{RunID: runID, ExpectedRunVersion: 2, Reason: storage.InterruptCodeReview, Facts: map[string]string{"change_ref": "https://example.test/c1", "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "review_requirement": "required", "recommended_action": "approve", "diff_ref": "https://example.test/c1/diff"}, Generation: storage.InterruptGeneration{ChangeID: "c1", HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, GatePhase: storage.GateReview, GuardrailLevel: storage.GuardrailNone, AttentionDailyQuota: map[storage.InterruptSeverity]int{storage.SeverityLow: 3, storage.SeverityNormal: 3, storage.SeverityHigh: 3}, DayTimezone: "UTC", Source: storage.SourceSystem, NowMS: reconcilerNow}
 }
 
 func TestReconcilerClassifiesSucceededGateMergeWithoutBypass(t *testing.T) {

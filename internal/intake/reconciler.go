@@ -125,15 +125,19 @@ func (r *Reconciler) reconcileProject(ctx context.Context, project Project, now 
 	return nil
 }
 
-// recordExternalMerge preserves the observed Forge fact. Forge state does not
-// identify a Gate evaluation, so it intentionally records an unbound fact
-// rather than guessing a calibration from Run/head.
+// recordExternalMerge settles only the exact Gate prediction atomically bound
+// to the currently displayed waiting-human Interrupt. It never infers a
+// calibration from mutable Forge facts or Gate history.
 func (r *Reconciler) recordExternalMerge(ctx context.Context, c storage.ReverseSyncCandidate, change forge.Change, now time.Time) error {
+	gateEvaluationID, calibrationID, err := r.DB.WaitingHumanGateBinding(ctx, c.RunID)
+	if err != nil {
+		return err
+	}
 	payload, err := json.Marshal(map[string]string{"change_id": change.ID, "head_sha": change.HeadSHA, "merge_sha": change.MergeSHA, "state": string(change.State)})
 	if err != nil {
 		return err
 	}
-	factID, err := r.DB.AppendExternalMergeFact(ctx, storage.EventCmd{RunID: c.RunID, ProjectID: c.ProjectID, Type: "forge_change_merged", Source: storage.SourceForge, PayloadJSON: payload, IdempotencyKey: "forge-change-merged:" + c.RunID + ":" + change.ID + ":" + change.HeadSHA, OccurredAtMS: now.UnixMilli(), RecordedAtMS: now.UnixMilli()}, change.HeadSHA, "", "")
+	factID, err := r.DB.AppendExternalMergeFact(ctx, storage.EventCmd{RunID: c.RunID, ProjectID: c.ProjectID, Type: "forge_change_merged", Source: storage.SourceForge, PayloadJSON: payload, IdempotencyKey: "forge-change-merged:" + c.RunID + ":" + change.ID + ":" + change.HeadSHA, OccurredAtMS: now.UnixMilli(), RecordedAtMS: now.UnixMilli()}, change.HeadSHA, gateEvaluationID, calibrationID)
 	if err != nil {
 		return err
 	}

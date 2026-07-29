@@ -96,7 +96,11 @@ func TestAppendExternalMergeFactRejectsPartialOrMismatchedBinding(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := EventCmd{RunID: "run", ProjectID: "project", Type: "forge_change_merged", Source: SourceForge, PayloadJSON: []byte(`{}`), IdempotencyKey: "partial", OccurredAtMS: testNow + 1, RecordedAtMS: testNow + 1}
+	cmd := EventCmd{RunID: "run", ProjectID: "project", Type: "forge_change_merged", Source: SourceForge, PayloadJSON: []byte(`{}`), IdempotencyKey: "empty", OccurredAtMS: testNow + 1, RecordedAtMS: testNow + 1}
+	if _, err := db.AppendExternalMergeFact(ctx, cmd, strings.Repeat("b", 40), "", ""); err == nil {
+		t.Fatal("empty external binding accepted")
+	}
+	cmd.IdempotencyKey = "partial"
 	if _, err := db.AppendExternalMergeFact(ctx, cmd, strings.Repeat("b", 40), "", recorded.CalibrationID); err == nil {
 		t.Fatal("partial external binding accepted")
 	}
