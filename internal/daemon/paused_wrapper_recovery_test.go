@@ -83,17 +83,22 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer check.Close()
-			pid, pgid, agent := pausedIdentity(t, check)
-			assertPausedStopped(t, pid, pgid)
+			execution, agent := pausedIdentity(t, check)
+			if tc.agentLive && agent.PID == 0 {
+				agent.PID = agentPIDFromControl(t, root)
+			}
+			outer := pausedSpawnIdentity(t, spawns)
+			assertDistinctPausedProcesses(t, outer, execution)
+			assertPausedLive(t, outer.PID, outer.PGID)
+			assertPausedStopped(t, execution.PID, execution.PGID)
+			if got := pausedParentPID(t, execution.PID); got != outer.PID {
+				t.Fatalf("execution wrapper parent=%d want outer supervisor=%d", got, outer.PID)
+			}
+			assertPausedProjection(t, check, execution, agent, tc.point)
+			assertPausedAgentInterval(t, agent, execution.PGID, tc.agentLive)
 			var phase string
 			if err := check.QueryRow(`SELECT phase FROM attempts WHERE run_id='run-1'`).Scan(&phase); err != nil || phase != tc.phase {
 				t.Fatalf("pause phase=%q want=%q: %v", phase, tc.phase, err)
-			}
-			if tc.agentLive {
-				if agent == 0 {
-					agent = agentPIDFromControl(t, root)
-				}
-				assertPausedLive(t, agent, pgid)
 			}
 
 			restartedAt := now.Add(time.Second)
@@ -112,19 +117,28 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 			if err := (&launchworker.Worker{DB: db, BootID: restarted, WorkerID: "new", Root: root, Lease: time.Minute, Backend: candidate, Agents: worker.Agents}).RunOnce(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if candidate.count != 0 || lineCount(spawns) != 1 {
-				t.Fatalf("new/global spawns=%d/%d, want 0/1", candidate.count, lineCount(spawns))
+			replacement := pausedReplacementIdentity(t, spawns)
+			if candidate.count != 0 || replacement.PID != 0 {
+				t.Fatalf("replacement outer=%d backend spawns=%d, want explicit empty interval", replacement.PID, candidate.count)
 			}
-			assertPausedLive(t, pid, pgid)
-			if tc.agentLive {
-				assertPausedLive(t, agent, pgid)
-			}
-			var owners int
-			if err := check.QueryRow(`SELECT count(*) FROM attempts WHERE run_id='run-1' AND wrapper_instance_id IS NOT NULL`).Scan(&owners); err != nil || owners != 1 {
-				t.Fatalf("persisted owners=%d: %v", owners, err)
-			}
-			if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+			assertPausedLive(t, outer.PID, outer.PGID)
+			assertPausedStopped(t, execution.PID, execution.PGID)
+			assertPausedAgentInterval(t, agent, execution.PGID, tc.agentLive)
+			assertPausedProjection(t, check, execution, agent, tc.point)
+
+			if err := syscall.Kill(-execution.PGID, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
 				t.Fatal(err)
+			}
+			if err := syscall.Kill(outer.PID, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+				t.Fatal(err)
+			}
+			assertPausedAbsent(t, execution.PID)
+			assertPausedAbsent(t, outer.PID)
+			if agent.PID != 0 {
+				assertPausedAbsent(t, agent.PID)
+			}
+			if replacement.PID != 0 {
+				t.Fatalf("replacement outer=%d must remain absent after cleanup", replacement.PID)
 			}
 		})
 	}
@@ -170,12 +184,12 @@ func agentPIDFromControl(t *testing.T, root string) int {
 		t.Fatal(err)
 	}
 	var control struct {
-		AgentIdentity struct {
+		AgentIdentity *struct {
 			PID int `json:"pid"`
 		} `json:"agent_identity"`
 	}
-	if err := json.Unmarshal(data, &control); err != nil || control.AgentIdentity.PID <= 0 {
-		t.Fatalf("control agent_identity: %v pid=%d", err, control.AgentIdentity.PID)
+	if err := json.Unmarshal(data, &control); err != nil || control.AgentIdentity == nil || control.AgentIdentity.PID <= 0 {
+		t.Fatalf("control agent_identity: %v", err)
 	}
 	return control.AgentIdentity.PID
 }
@@ -203,28 +217,157 @@ func waitPausedFile(t *testing.T, path string) {
 	}
 	t.Fatalf("timed out waiting for %s", path)
 }
-func pausedIdentity(t *testing.T, db *sql.DB) (int, int, int) {
+
+type pausedProcessIdentity struct {
+	PID, PGID int
+}
+
+func pausedIdentity(t *testing.T, db *sql.DB) (pausedProcessIdentity, pausedProcessIdentity) {
 	t.Helper()
-	var pid, pgid int
+	var execution pausedProcessIdentity
 	var agent sql.NullInt64
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := db.QueryRow(`SELECT wrapper_pid,wrapper_pgid,agent_pid FROM attempts WHERE run_id='run-1'`).Scan(&pid, &pgid, &agent); err == nil && pid > 0 && pgid > 0 {
-			return pid, pgid, int(agent.Int64)
+		if err := db.QueryRow(`SELECT wrapper_pid,wrapper_pgid,agent_pid FROM attempts WHERE run_id='run-1'`).Scan(&execution.PID, &execution.PGID, &agent); err == nil && execution.PID > 0 && execution.PGID > 0 {
+			return execution, pausedProcessIdentity{PID: int(agent.Int64), PGID: execution.PGID}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("missing persisted wrapper identity")
-	return 0, 0, 0
+	return pausedProcessIdentity{}, pausedProcessIdentity{}
 }
+
+func pausedSpawnIdentity(t *testing.T, path string) pausedProcessIdentity {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(string(bytes.TrimSpace(data)), "%d", &pid); err != nil || pid <= 0 {
+		t.Fatalf("outer supervisor spawn record %q: %v", data, err)
+	}
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		t.Fatalf("outer supervisor %d pgid: %v", pid, err)
+	}
+	return pausedProcessIdentity{PID: pid, PGID: pgid}
+}
+
+func pausedReplacementIdentity(t *testing.T, path string) pausedProcessIdentity {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Count(data, []byte{'\n'}) != 1 {
+		t.Fatalf("spawn records=%q, want exactly one outer supervisor", data)
+	}
+	return pausedProcessIdentity{}
+}
+
+func assertDistinctPausedProcesses(t *testing.T, outer, execution pausedProcessIdentity) {
+	t.Helper()
+	if outer.PID == execution.PID || outer.PGID == execution.PGID {
+		t.Fatalf("outer=%+v execution=%+v must have distinct PID/PGID", outer, execution)
+	}
+}
+
+func pausedParentPID(t *testing.T, pid int) int {
+	t.Helper()
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := bytes.Fields(stat[bytes.LastIndexByte(stat, ')')+2:])
+	if len(fields) < 2 {
+		t.Fatalf("malformed proc stat for pid %d: %q", pid, stat)
+	}
+	var ppid int
+	if _, err := fmt.Sscanf(string(fields[1]), "%d", &ppid); err != nil {
+		t.Fatal(err)
+	}
+	return ppid
+}
+
+func assertPausedAgentInterval(t *testing.T, agent pausedProcessIdentity, pgid int, live bool) {
+	t.Helper()
+	if !live {
+		if agent.PID != 0 {
+			assertPausedAbsent(t, agent.PID)
+		}
+		return
+	}
+	if agent.PID == 0 {
+		t.Fatal("agent interval is empty after it should have started")
+	}
+	assertPausedLive(t, agent.PID, pgid)
+}
+
+func assertPausedProjection(t *testing.T, db *sql.DB, execution, agent pausedProcessIdentity, point string) {
+	t.Helper()
+	var owners, pid, pgid int
+	if err := db.QueryRow(`SELECT count(*) FROM attempts WHERE run_id='run-1' AND wrapper_instance_id IS NOT NULL`).Scan(&owners); err != nil || owners != 1 {
+		t.Fatalf("persisted owners=%d: %v", owners, err)
+	}
+	var persistedAgent sql.NullInt64
+	var instance, session, permit sql.NullString
+	err := db.QueryRow(`SELECT a.wrapper_pid,a.wrapper_pgid,a.agent_pid,c.wrapper_instance_id,c.wrapper_session_hash,c.spawn_permit_hash FROM attempts a JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.run_id='run-1'`).Scan(&pid, &pgid, &persistedAgent, &instance, &session, &permit)
+	if err != nil || pid != execution.PID || pgid != execution.PGID || !instance.Valid || !session.Valid {
+		t.Fatalf("owner/claim projection pid/pgid=%d/%d instance=%q session=%q: %v", pid, pgid, instance.String, session.String, err)
+	}
+	if point == "before-permit-rpc" {
+		if permit.Valid || persistedAgent.Valid || agent.PID != 0 {
+			t.Fatalf("pre-permit projection permit=%q persisted agent=%d observed agent=%d", permit.String, persistedAgent.Int64, agent.PID)
+		}
+		return
+	}
+	if !permit.Valid {
+		t.Fatalf("post-permit projection has no permit at %s", point)
+	}
+	if point == "before-started-rpc" {
+		if persistedAgent.Valid && int(persistedAgent.Int64) != agent.PID {
+			t.Fatalf("started-pending projection persisted agent=%d observed agent=%d", persistedAgent.Int64, agent.PID)
+		}
+		return
+	}
+	if agent.PID != 0 && (!persistedAgent.Valid || int(persistedAgent.Int64) != agent.PID) {
+		t.Fatalf("post-permit projection persisted agent=%d observed agent=%d", persistedAgent.Int64, agent.PID)
+	}
+}
+
 func assertPausedLive(t *testing.T, pid, pgid int) {
 	t.Helper()
-	if err := syscall.Kill(pid, 0); err != nil {
-		t.Fatalf("pid %d is not live: %v", pid, err)
+	if !pausedProcessLive(pid) {
+		t.Fatalf("pid %d is not live", pid)
 	}
 	if got, err := syscall.Getpgid(pid); err != nil || got != pgid {
 		t.Fatalf("pid %d pgid=%d want=%d: %v", pid, got, pgid, err)
 	}
+}
+
+func assertPausedAbsent(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !pausedProcessLive(pid) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pid %d remained live after cleanup", pid)
+}
+
+func pausedProcessLive(pid int) bool {
+	if pid <= 0 || syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	i := bytes.LastIndexByte(stat, ')')
+	return i >= 0 && i+2 < len(stat) && stat[i+2] != 'Z'
 }
 
 func assertPausedStopped(t *testing.T, pid, pgid int) {
@@ -242,17 +385,4 @@ func assertPausedStopped(t *testing.T, pid, pgid int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("pid %d did not reach stopped (T) state", pid)
-}
-func lineCount(path string) int {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	n := 0
-	for _, c := range b {
-		if c == '\n' {
-			n++
-		}
-	}
-	return n
 }
