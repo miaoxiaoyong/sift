@@ -1,0 +1,104 @@
+---
+status: draft
+created: 2026-07-29
+summary: Gate 纯判定、快照、豁免和 Change 创建契约
+---
+
+# Gate 规格
+
+本文冻结 M4 Gate 的纯函数边界、输入快照/缓存、判定顺序、护栏豁免、Shadow Gate 事务，以及由 M3 成功事实驱动的 Change 创建。Policy 字段级 schema、T3/T5 字段级输出和 Ledger 特征字段分别由 [`policy.md`](policy.md)、[`brain.md`](brain.md)、[`ledger.md`](ledger.md) 规定；本文不复制它们。
+
+来源：[PRD §5.4、§5.6](../PRD.md)、[DESIGN §6.4–§6.5、§8.5](../DESIGN.md)、[WBS M4 §4.3](../WBS.md)。持久化/写端口与事务配方见 [`storage.md` §10.2–§10.5、§12.2、§12.6](storage.md)；Interrupt 发射器见 [`interrupt.md`](interrupt.md)，Change marker 与 outbox 对账见 [`outbox.md` §2–§3、§7](outbox.md) 和 [`forge.md` §4.7–§4.8](forge.md)。
+
+## 1. 边界与不变量
+
+```text
+gate(changeFacts, effectivePolicy, riskScore) -> verdict
+```
+
+1. `gate` 是纯函数：不做 IO、不读时钟、网络、文件、数据库或当前配置，不调用 Forge、Brain、T5 或 T3，也不写入状态。调用方先取得并冻结全部事实；时间有关的 Checks 结论（例如 pending 是否已经超时）必须已成为输入事实。
+2. 函数只裁定传入的冻结世界。它不得查询历史 Gate、单条 Ledger、认证明细或人的过往选择；认证和 Forge expected-head-CAS 能力已在 Gate 外折入 `effectivePolicy`。
+3. 风险评分是输入而不是副作用。T3 正常结果或“高风险”确定性兜底的来源、提示词/schema 版本都必须进入快照；Gate 不得因 Brain 恢复而暗中改变同一输入的 verdict。
+4. 每一次调用（包括 cache hit）均须留下同一份输入快照、`gate_evaluations` 和 Shadow Gate 预判；没有“仅运行、不记录”的配置开关。
+5. 硬护栏失败不能产出豁免、review 或 merge 动作。无法确定的 Checks、审查、可合并性或输入契约一律 fail closed，转明确的人工路径而不猜成绿灯。
+
+`verdict` 是确定性 tagged union，至少表达终止失败、等待/重试 Checks、`guardrail_violation` HITL、`code_review` HITL、失败复核 HITL、可自动合并和停止于“全绿但不自动合并”的结果。每个分支必须携带其冻结 `head_sha` 和足以构造相应后续 operation 或 Interrupt 的确定性理由；它不能携带自由文本、任意 severity 或调用方提供的 action。
+
+## 2. 冻结输入、hash 与缓存
+
+### 2.1 输入快照
+
+调用方将 `changeFacts`、`effectivePolicy` 和 `riskScore` 组装为 schema-versioned Gate 输入快照。它至少包含以下事实域；具体字段/枚举以所链接规格为准：
+
+| 域 | 必须冻结的内容 |
+|---|---|
+| Change | 已验证远端 Change ID/URL、base/head ref、`head_sha`、draft、mergeability、review/approval 状态、变更路径和规模；未知值必须显式编码 |
+| Checks | 对该 `head_sha` 的归一结论、失败项、以及已由调用方判定的 pending-timeout 事实 |
+| Policy | 完整有效策略、其 hash、适用的软护栏及已被人明确批准的本次豁免；`certification_version` |
+| Risk | T3 风险分、风险点及来源/提示词/schema 或确定性兜底版本 |
+| Identity | Run、任务类别和 Change/策略快照身份，仅用于审计、后继动作和回放，不能让 Gate 读取可变 Run 历史 |
+
+`effectivePolicy` 是 Gate 外的产物：base policy 与全局缺省合并后，认证或 Forge CAS capability 不足的提权项已经剔除。特别是 `auto_merge=true` 只有在项目配置、任务类别认证和远端 expected-head CAS 三者均已满足时才可进入有效策略；Gate 不重新计算资格。
+
+使用 [`config.md` §4](config.md) 的 canonical JSON 序列化**整份**输入快照，并计算：
+
+```text
+gate_input_hash = SHA-256(canonical_json(full_gate_input_snapshot))
+cache key       = (gate_input_hash, gate_version)
+```
+
+不得以 run ID、head SHA 或若干手选维度替代该摘要。新增任何实际影响 verdict 的输入都必须写入快照，因而自动改变 hash。相同 head 下 Checks、review、mergeability、risk 结果/来源版本、有效策略 hash 或 certification version 任一改变，都必须 cache miss。
+
+### 2.2 缓存与回放
+
+`gate_version` 版本化纯函数及其判定语义；输入 schema 变更以快照 schema version 表示。缓存仅可按上述二元键 insert-or-return existing：同键却得到不同 verdict digest 是 contract violation，不得覆盖或选择其中之一。
+
+缓存条目、每次 evaluation、Shadow Gate/校准记录和 JSONL 回放记录必须引用同一个 `gate_input_snapshot_id`。cache hit 复用 verdict 可以避免重新计算，但仍必须新建 evaluation 和 calibration 预判；回放只把冻结输入重新喂给相同 `gate_version`，绝不拼接当前 Forge、策略或认证数据。
+
+## 3. 判定顺序
+
+下列是逻辑顺序；为保持纯函数，T3/T5 和 Forge 读取由调用方先完成并冻结。前一阶段产生终局结果时不得继续执行后续阶段或绕过它。
+
+1. **`protected_paths`。** 将 Change 路径与有效策略匹配。默认硬护栏是 PRD §5.4 表中的 [`.sift/**`、`.github/workflows/**`、`.gitlab-ci.yml` 及等价 CI 配置](../PRD.md#54-gate门禁)。命中 hard 立即返回 failed；命中 soft 且没有本次有效豁免，返回 `guardrail_violation` HITL。
+2. **Checks。** success 才进入下一阶段；pending 未超时返回等待结果，pending 已超时转 HITL。failure 使用冻结的 T5 分类：仅 `flaky` 且尚有有效重试额度可请求确定性重试；真实失败、基础设施失败、T5 不可用/超预算或任何未知分类均转 `failure_review` HITL。Gate 不自行重试或调用 T5。
+3. **review policy。** `always` 在冻结的有效审查未满足时转 `code_review` HITL；`risky-only` 只在 riskScore 达到有效策略阈值或风险来源为确定性高风险兜底、且有效审查尚未满足时转 HITL；`never` 不要求 review。需要审查时，审查状态或平台能力未知不得视为已经满足审查。
+4. **auto merge。** 只有有效策略允许、前述所有阶段全绿、Change 非 draft 且 mergeability 明确可合并时，才返回可创建 `merge_change` 的 verdict。该 operation 必须携带本 verdict 的 `head_sha` 作为 `expected_head_sha`；否则返回不自动合并的全绿结果。合并时远端 CAS 拒绝或 head 已变化，旧 operation 必须 stale/no-op，新 head 必须重新组装快照并过 Gate。
+
+硬护栏、未知事实和所有 HITL 分支都不能被后续 review、auto merge 或缓存命中放宽。
+
+## 4. 软护栏豁免
+
+软护栏命中默认只可请求一次性豁免：它绑定此 Run、此 Gate 输入/命中和当前 Change head，不能在重新评估、换 head 或其他 Run 复用。批准后该受限事实进入下一次冻结输入；原来的 `guardrail_violation` verdict 不被原地改写。
+
+“记住”不是一次性豁免的别名，也不是 Gate 选项的隐式副作用。它必须是人显式选择的独立动作，形成一个由人发起、按**旧**策略审查的仓库 policy 例外变更；只有该变更已进入 base policy 并经有效策略组装，后续 Gate 才可使用该例外。Gate 从不写 policy、从不把人的自然语言回复解释为 remembered exception。
+
+默认硬护栏及任何被有效策略标为 hard 的规则永远不进入一次性或记住豁免路径：命中即 failed，也不得创建 `guardrail_violation` Interrupt 来寻求批准。
+
+## 5. 调用、Shadow Gate 与 HITL 事务
+
+Gate reconciler 在事务外读取 Forge/Brain 事实、组装快照并运行纯函数；不得持有数据库事务执行这些 IO。随后通过 `RecordGateEvaluation` 原子持久化：输入 snapshot（按 hash 去重）、cache insert-or-return、一次 evaluation、Shadow Gate 预判 calibration 和必要的领域后继动作。
+
+若 verdict 需要 HITL，该写端口必须在**同一事务**内完成 Gate snapshot/cache/evaluation/calibration，并调用 M3 `EmitInterrupt` 的五件事：Run 转合法 `waiting_human` 状态、generation-key 去重和首次注意力记账、Interrupt、事件、发布 operation。任一步失败则整体回滚；严禁等人回复后再补 Shadow Gate，或先使 Run 等待再补 Interrupt。人类决定的补全、Ledger entry 和认证投影属于 `recordHumanDecision` 的后续同事务职责，见 [`ledger.md`](ledger.md)。
+
+非 HITL verdict 同样必须创建 calibration 预判，且不得把“没有打扰人”误作人类决定。每次 evaluation 的 `cache_hit` 状态和 verdict digest 都可审计；同一输入的多次调用应有多行 evaluation/calibration，而不是覆盖先前记录。
+
+## 6. Change 创建与 Gate 的衔接
+
+Gate/Change reconciler 只接受 M3 `EvaluateSuccess` 已确认的“可创建 Change”领域事实：成功 `result.json` 身份一致、final head 已冻结且一致、分支至少一个提交。失败 attempt、中间提交、未冻结 head 或 Agent 自报完成都不得创建 Change operation；Gate 不重新从 worktree 或 Agent 输出推断这些事实。
+
+满足该事实时创建 `create_change` operation，key 固定为 `run:<run_id>:create-change:<head_sha>`，payload 冻结 base/head/title/body。worker 必须先经 Forge `FindChangeForCreateOperation` 跨开启、关闭和已合并状态搜索 marker：
+
+1. marker 唯一命中时持久化远端 Change ID，之后只按该 ID 收敛；命中已关闭/已合并对象按外部事实处理，绝不重建；
+2. 无命中才调用 `CreateChange`，其 body 由 outbox renderer 追加同一 operation marker；创建成功后同样持久化远端 ID；
+3. 同 base/head 的无 marker 对象、marker 歧义或 key/digest 不符均为 `SemanticConflict`，转 HITL，绝不接管他人 Change。
+
+远端 Change ID、head 和归一后的 Change facts 成为后续 Gate 输入的一部分。创建并不授权合并；只有本规格 §3 得到的、对应同一 head 的 auto-merge verdict 才可建立带 `expected_head_sha` 的 merge operation。
+
+## 7. 验收派生
+
+- `gate` 在无 Forge/数据库/时钟/文件/Brain 的环境中，对相同冻结输入得到字节等价 verdict；回放集可重跑。
+- 整份输入 hash 与唯一二元缓存键生效：同一 head 下 Checks、review、mergeability、risk（含来源版本）或 certification/effective policy 变化均 cache miss。
+- `.sift/**`、CI 配置和其他 hard rule 命中失败，不能走两种软豁免；soft rule 分别覆盖一次性批准和显式 remembered-policy 路径。
+- Checks、review policy、风险兜底和 auto merge 按 §3 顺序 fail closed；merge 的 head 漂移使旧 operation stale/no-op，远端 CAS 不能以 Gate(A) 合并 B。
+- 每次 Gate 调用（包括 cache hit）都有新的 evaluation 与 calibration；HITL 时它们和 Interrupt 五件事全有或全无。
+- Change 仅由 M3 可创建事实触发；marker 全状态命中、远端 ID 持久化、已关闭/已合并收敛及无 marker 冲突拒绝均有测试。
