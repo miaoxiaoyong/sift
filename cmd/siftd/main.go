@@ -42,6 +42,10 @@ func main() {
 	if err := db.ActivateConfig(ctx, snapshot, controlplane.Version, now.UnixMilli()); err != nil {
 		fatal(err)
 	}
+	bootID, err := db.StartDaemonBoot(ctx, snapshot.Hash, controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), now.UnixMilli())
+	if err != nil {
+		fatal(err)
+	}
 	termination := &daemon.TerminationCoordinator{
 		DB: db, Terminator: runtime.Terminator{Inspector: runtime.PlatformProcessInspector{}, Signaler: runtime.UnixProcessSignaler{}}, Runtime: snapshot.Config.Runtime,
 		ControlRoot:         home.Path,
@@ -51,6 +55,9 @@ func main() {
 	// evidence deliberately fails closed and becomes a visible startup_stall
 	// instead of allowing a launch lease to be reclaimed.
 	if err := termination.Recover(ctx); err != nil {
+		fatal(err)
+	}
+	if err := db.CompleteStartupRecovery(ctx, bootID, time.Now().UnixMilli()); err != nil {
 		fatal(err)
 	}
 	workers, err := daemon.Assemble(db, snapshot.Config, time.Now)

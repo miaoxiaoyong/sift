@@ -153,7 +153,19 @@ func insertOperation(ctx context.Context, tx *sql.Tx, op Operation, runID, _ str
 // reclaimed in the same transaction, with an immutable lease_expired result
 // written for the old attempt first.
 func (d *DB) ClaimOutboxOperation(ctx context.Context, workerID string, nowMS, leaseMS int64) (*ClaimedOperation, error) {
-	return d.claimOutboxOperation(ctx, workerID, nowMS, leaseMS, "", "")
+	// launch_agent has a stricter boot recovery barrier and must use
+	// ClaimLaunchOperation instead.
+	return d.claimOutboxOperation(ctx, workerID, nowMS, leaseMS, "", "", "")
+}
+
+// ClaimLaunchOperation leases a launch only after recovery for bootID has
+// completed. The barrier check and lease CAS share one transaction, so an
+// expired launch lease cannot be reclaimed during recovery.
+func (d *DB) ClaimLaunchOperation(ctx context.Context, bootID, workerID string, nowMS, leaseMS int64) (*ClaimedOperation, error) {
+	if bootID == "" {
+		return nil, errors.New("storage: boot id is required for launch claim")
+	}
+	return d.claimOutboxOperation(ctx, workerID, nowMS, leaseMS, OperationLaunchAgent, "", bootID)
 }
 
 // ClaimOutboxOperationKind leases only operations consumed by one worker kind.
@@ -169,10 +181,13 @@ func (d *DB) ClaimOutboxOperationKindProject(ctx context.Context, workerID strin
 	if !validOperationKind(kind) {
 		return nil, errors.New("storage: invalid outbox operation kind")
 	}
-	return d.claimOutboxOperation(ctx, workerID, nowMS, leaseMS, kind, projectID)
+	if kind == OperationLaunchAgent {
+		return nil, errors.New("storage: use ClaimLaunchOperation for launch_agent")
+	}
+	return d.claimOutboxOperation(ctx, workerID, nowMS, leaseMS, kind, projectID, "")
 }
 
-func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, leaseMS int64, filterKind OperationKind, projectID string) (*ClaimedOperation, error) {
+func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, leaseMS int64, filterKind OperationKind, projectID, bootID string) (*ClaimedOperation, error) {
 	if workerID == "" || leaseMS <= 0 {
 		return nil, errors.New("storage: worker id and positive lease required")
 	}
@@ -181,10 +196,25 @@ func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, l
 		return nil, err
 	}
 	defer tx.Rollback()
+	if bootID != "" {
+		var completed sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT recovery_completed_at_ms FROM daemon_boots WHERE id=?`, bootID).Scan(&completed); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrRejectedStaleWorker
+			}
+			return nil, err
+		}
+		if !completed.Valid {
+			return nil, nil
+		}
+	}
 	query := `SELECT id, operation_key, kind, payload_json, run_id, attempt_no, interrupt_id, attempt_count, state
 		FROM outbox_operations WHERE ((state IN ('pending','retryable') AND next_attempt_at_ms <= ?)
 		OR (state='executing' AND lease_expires_at_ms <= ?))`
 	args := []any{nowMS, nowMS}
+	if bootID == "" && filterKind == "" {
+		query += ` AND kind <> 'launch_agent'`
+	}
 	if filterKind != "" {
 		query += ` AND kind=?`
 		args = append(args, filterKind)

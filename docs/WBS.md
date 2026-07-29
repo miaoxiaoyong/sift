@@ -290,15 +290,15 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 #### 3.4 恢复矩阵与资格门控
 
 - [ ] **逐行实现并逐行测试 DESIGN §10.1 完整恢复矩阵**；本文不复制行级全集
-- [ ] 恢复扫描先于启动 operation lease 回收
+- [x] 恢复扫描先于启动 operation lease 回收
 - [x] 凡执行体可能存活却要判 orphaned，必须先走同一受控终止流程
-- [ ] 进程身份至少校验 PID + 启动时间 + 可执行路径 + control nonce；不得向不确定 PID 发信号
+- [x] 进程身份至少校验 PID + 启动时间 + 可执行路径 + control nonce；不得向不确定 PID 发信号
 - [x] attempt 所用 Agent/version 未标 `process-group-verified` 时，不把“进程组消失”当充分证明，不自动 retry，保持隔离并转人工
 - [ ] 多 wrapper 竞争、旧 generation 苏醒、heartbeat 过期、后端会话与 wrapper 不一致均按 DESIGN 矩阵收敛并记安全事件
 
 > 证据（PR #129）：`internal/daemon/termination.go`——唯一 `TerminationCoordinator` 是恢复 / 超时 / operator kill·retry 三源到受控终止的应用层桥：`Recover`（启动期、先于 `daemon.Assemble` 起任何 worker）、`Timeout`（supervisor tick 扫持久化 heartbeat 事实，`StaleHeartbeatAttempts`）、`Operator`（`ops.kill`/`ops.retry`）三入口汇入同一私有 `terminate` → `Terminator.Terminate`（§3.7）→ `RecordTerminationObservation`（`internal/storage/termination.go`）。故凡「执行体可能存活却要判 orphaned」一律先经同一受控终止流程，第 3 项勾选。`internal/controlplane/server.go` 经 `SetOperatorAction` 把 kill/retry 限定在 daemon 拥有的回调上、CLI 仍不获 DB 句柄；`RecoveryAttempts` 显式不限 `runs.status`（`failed` Run 仍可持有隔离的存活执行体），覆盖 `TestRecoveryAttemptsIncludesNonterminalAttemptRegardlessOfRunState`、`TestOperatorKillAndRetryDelegateToTerminationCoordinator`。第 5 项已勾：`terminate` 仅在 `result.Absent` 且 `ProcessGroupVerified(agentID)` 为真时才认进程组消失为充分证明，而 `cmd/siftd/main.go` 未注入该谓词（nil），故任何 Agent/version 的进程组消失都不当充分证明、不自动 retry，落 `process_group_unverified` 诊断并经 §3.6 转 `waiting_human` + 隔离。
 >
-> **未完成（不得读作端到端）**：①完整恢复矩阵逐行（DESIGN §10.1 全行）——`Recover`/`Timeout` 只覆盖主路径（非终态非 pending attempt、stale heartbeat），第 1 项与第 6 项（多 wrapper 竞争、旧 generation 苏醒、后端会话/wrapper 不一致）的逐行收敛与安全事件留 M6，保持 `[ ]`。②boot recovery lease barrier——`Recover` 显式跳过 `pending` attempt（注释「留给 launch recovery 路径」），但该 launch / operation-lease 回收路径未实现，故「恢复扫描先于启动 operation lease 回收」第 2 项保持 `[ ]`。③真实平台进程身份探测——生产 `Inspector` 为 `runtime.UnknownProcessInspector`（`Observe` 恒返 `Exists:true` 且身份字段为空），`Terminator.Terminate` 据此恒判 `process_identity_unknown` 且**从不发信号、从不证消失**，第 4 项（进程身份至少校验 PID+启动时间+可执行路径+control nonce 的真实平台探测）保持 `[ ]`；不变量「不向不确定 PID 发信号」本身由 `sameIdentity` 常量时间比对强制（`TestTerminatorNeverSignalsReusedOrUncertainPID`）。另注：因 ③ 使 `result.Absent` 在生产恒假，第 5 项 `ProcessGroupVerified` 真值分支生产不可达、仅测试覆盖；真实资格判定谓词（按 Agent CLI + 版本）与真实平台 inspector 同属 M6/M7。
+> **未完成（不得读作端到端）**：①完整恢复矩阵逐行（DESIGN §10.1 全行）——`Recover`/`Timeout` 只覆盖主路径（非终态非 pending attempt、stale heartbeat），第 1 项与第 6 项（多 wrapper 竞争、旧 generation 苏醒、后端会话/wrapper 不一致）的逐行收敛与安全事件留 M6，保持 `[ ]`。②boot recovery lease barrier 已由 #138 闭合：`StartDaemonBoot` 为每次启动写入一个 recovery completion 为空的新 boot，`cmd/siftd/main.go` 在 `Recover` 成功后才调用 `CompleteStartupRecovery`；`ClaimLaunchOperation` 在同一事务内验证该 boot 的 completion，再租约认领（含过期 lease 回收）。普通 outbox claim 与 kind-scoped claim 均拒绝 `launch_agent`，不能旁路屏障。覆盖 `TestLaunchClaimWaitsForCurrentBootRecoveryBarrier`。③Linux 平台身份探测已由 #133 闭合：`runtime.PlatformProcessInspector` 从 procfs 与 owner-only `control.json` 独立读取 PID、启动时间、可执行路径、PGID 与 control nonce hash；任何缺失或不一致都 fail-closed，`Terminator` 不发信号。Darwin native inspector 仍非范围，继续 fail-closed；真实资格判定谓词（按 Agent CLI + 版本）仍留 M6/M7。
 
 #### 3.5 attempt_resolution、隔离与唯一仲裁
 
