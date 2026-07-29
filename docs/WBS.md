@@ -313,13 +313,15 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - [x] M3 使用已有 forge 评论与确定性 fallback 作为可见发布面；T4/T6、Channel、critical 熔断在 M5 增补
 - [ ] 受控终止无法证明消失时生成一条 `startup_stall`、Run 转 `waiting_human`、attempt 保持隔离；不得静默停在 queued
 
-> 证据（PR #111 / #108）：`internal/storage/interrupt.go`——唯一 `EmitInterrupt` 创建端口、七 reason 模板与确定性渲染（headline/brief/options≤4/min_modality/links）、`interruptGenerationKey` 唯一键（`startup_stall` 固定 `cause=startup_stall`，诊断分类不拆键）、按 generation_key 去重、单事务内 Run→`waiting_human` + 注意力扣费 + `interrupts` + `interrupt.emitted` 事件 + `forge_comment` operation/delivery 五件事。注：第 6 项需 §3.7 受控终止流程在“无法证明消失”时调用 `EmitInterrupt`，runtime 触发尚未接线、门禁对应项亦未过，保持 `[ ]`。
+> 证据（PR #111 / #108）：`internal/storage/interrupt.go`——唯一 `EmitInterrupt` 创建端口、七 reason 模板与确定性渲染（headline/brief/options≤4/min_modality/links）、`interruptGenerationKey` 唯一键（`startup_stall` 固定 `cause=startup_stall`，诊断分类不拆键）、按 generation_key 去重、单事务内 Run→`waiting_human` + 注意力扣费 + `interrupts` + `interrupt.emitted` 事件 + `forge_comment` operation/delivery 五件事。注：第 6 项的 `EmitInterrupt` 接线已由 PR #122 落地——`internal/storage/termination.go` 的 `RecordTerminationObservation` 在 `Absent=false` 时调用 `EmitInterrupt(startup_stall)`，复用本端口已有的 Run→`waiting_human` + 隔离冻结 + 注意力扣费 + 发布 operation 同事务（覆盖 `TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible`）。但触发该路径的 `Terminator.Terminate`（§3.7）尚无生产调用方（恢复/超时/operator kill·retry 未接，见 §3.7），端口已有、调用未接；故第 6 项与门禁「无法证明消失时系统可见且 worktree 隔离」仍保持 `[ ]`，待调用方接入后再勾。
 
 #### 3.7 受控终止
 
 - [ ] 恢复、operator kill/retry、超时共用：身份确认 → 有界信号升级 → 复核消失
 - [ ] 确认消失后的结局按来源区分：恢复按重试策略、retry 新建 attempt、kill 不新建且 Run failed
 - [ ] 未确认消失统一进入 §3.6；人的后续 retry/reject/hold 在 M5 接通
+
+> 证据（PR #122 / #120）：`internal/runtime/termination.go`——唯一终止入口 `Terminator.Terminate` 落「身份确认 → 有界信号升级（TERM→KILL，按 grace）→ 复核消失」核心：先 `Observe` 校验完整身份（PID+启动时间+可执行路径+PGID+control nonce hash，`subtle.ConstantTimeCompare` 常量时间比对），身份不符即 `TerminationIdentityUnknown` 且**绝不发信号**（拒绝把 PID 复用当消失证明），有界 recheck 复核；`UnixProcessSignaler.SignalGroup(-pgid)` 对进程组发信号，wrapper 内 agent 后代一并终止。`internal/storage/termination.go`——`RecordTerminationObservation` 是三源共享的持久化端口，`Source∈{recovery,retry,kill}`：`Absent=true` 时释放隔离并按来源分诊结局（kill→Run `failed`/`operator_kill` 不建新 attempt；recovery/retry 在 `retry_count+1<max_attempts` 时建 pending 新 attempt 并补 launch operation，耗尽则 `attempts_exhausted` failed），落 `termination.absence_confirmed` 事件；`Absent=false` 时走 §3.6 `EmitInterrupt(startup_stall)` + 隔离冻结。覆盖 `TestTerminatorSignalsOnlyVerifiedIdentityAndProvesAbsence`/`TestTerminatorNeverSignalsReusedOrUncertainPID`/`TestTerminatorEscalatesAndFailsClosedWhenGroupRemains`、`TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible`/`TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`/`TestTerminationRetryAfterAbsenceCreatesNewAttempt`。**注：端口已有、调用未接**——全仓库 `Terminator.Terminate` 与 `RecordTerminationObservation` 除测试外无引用：恢复扫描、超时升级、operator kill/retry 三类调用方均未接线，§3.7 三项与门禁对应项因此保持 `[ ]`，待 §3.4/§3.5 调用方接入后再勾。
 
 #### 3.8 hooks 与 doctor
 
