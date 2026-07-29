@@ -367,13 +367,15 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 ### 前置
 
 - [x] M3 门禁通过（[phase gate PASS WITH NOTES](reviews/2026-07-29-m3-phase-gate-pi-gpt-5.6-sol.md)；不代表完整 V4/M6 已通过）
-- [ ] 本片开始前先完成下列 spec，而不是把 spec 完成列为本片结束条件
+- [x] 本片开始前先完成下列 spec，而不是把 spec 完成列为本片结束条件
+
+> 规格对账证据：[`policy.md`](specs/policy.md) 已由 [PR #221](https://github.com/miaoxiaoyong/sift/pull/221) 字段级评审转为 `active`；[`ledger.md`](specs/ledger.md) 已由 [PR #232](https://github.com/miaoxiaoyong/sift/pull/232) P1 复审转为 `active`；[`brain.md`](specs/brain.md) 的 T3/T5 已由 [PR #228](https://github.com/miaoxiaoyong/sift/pull/228) 字段级评审补齐并保持 `active`；[`gate.md`](specs/gate.md) 已由 [PR #238](https://github.com/miaoxiaoyong/sift/pull/238) [二次定向复审](reviews/2026-07-29-gate-rereview-2-pi-gpt-5.6-sol.md)转为 `active`。以下仅对账规格完成，M4 实现项仍待交付。
 
 ### 任务
 
 #### 4.1 Policy 与有效策略组装
 
-- [ ] 编写 `specs/policy.md`；项目 policy 经 closed schema 校验，失败只隔离该项目
+- [x] 编写 `specs/policy.md`；项目 policy 经 closed schema 校验，失败只隔离该项目
 - [ ] Gate 外组装：base policy ∪ 全局缺省 → 按认证与 forge capability 剔除未获资格的提权项
 - [ ] `auto_merge` 同时要求配置、类别认证、远端 expected-head CAS capability；缺一即关闭
 - [ ] 有效策略 hash 与 certification version 进入冻结输入
@@ -381,14 +383,14 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 4.2 Brain T3/T5
 
-- [ ] 在 `specs/brain.md` 增 T3/T5 schema、提示词版本与兜底
+- [x] 在 `specs/brain.md` 增 T3/T5 schema、提示词版本与兜底
 - [ ] T3 输出风险分与风险点；失败/超预算视为高风险
 - [ ] T5 分类 flaky/真实失败/基础设施问题；失败兜底为 HITL
 - [ ] 两触点复用 M1 调用壳、token 收费与 trace；输出来源/版本进入 Gate 快照
 
 #### 4.3 Gate、Shadow Gate 与 Change 创建
 
-- [ ] 编写 `specs/gate.md`；`gate(changeFacts, effectivePolicy, riskScore)` 保持纯函数
+- [x] 编写 `specs/gate.md`；`gate(changeFacts, effectivePolicy, riskScore)` 保持纯函数
 - [ ] `gate_input_hash` 摘要整份规范化快照；缓存键仅 `(gate_input_hash, gate_version)`
 - [ ] 默认硬护栏、Checks、review policy、auto merge 顺序按 PRD §5.4
 - [ ] 软护栏豁免默认仅本 Run 本次命中；“记住”必须是独立显式选项，并形成可审计的仓库 policy 例外变更
@@ -399,7 +401,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 4.4 Ledger、人类结果接口与认证投影
 
-- [ ] 编写 `specs/ledger.md`，覆盖 Gate 预判、人类决定、路径/文件类型、护栏、Issue 作者、打扰特征及自然语言原料
+- [x] 编写 `specs/ledger.md`，覆盖 Gate 预判、人类决定、路径/文件类型、护栏、Issue 作者、打扰特征及自然语言原料
 - [ ] 提供确定性 `recordHumanDecision` 应用入口；M5 Command 只调用它，不另写账本
 - [ ] 人类结果、校准样本与认证投影增量在同事务提交
 - [ ] 认证按任务类别计算漏放、误拦、总样本与负样本绝对数；输出只有类别布尔与证据摘要
@@ -414,10 +416,10 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### 先写 spec
 
-- [ ] `specs/policy.md`
-- [ ] `specs/gate.md`
-- [ ] `specs/ledger.md`
-- [ ] 增补 `specs/brain.md`（T3/T5）
+- [x] `specs/policy.md`
+- [x] `specs/gate.md`
+- [x] `specs/ledger.md`
+- [x] 增补 `specs/brain.md`（T3/T5）
 
 ### M4 门禁
 
