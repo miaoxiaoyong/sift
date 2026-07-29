@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
 	"github.com/miaoxiaoyong/sift/internal/wrapper"
@@ -13,6 +14,17 @@ import (
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
 		fmt.Println(controlplane.Version)
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == "--reap-process-group" {
+		pgid, err := strconv.Atoi(os.Args[2])
+		if err == nil {
+			err = wrapper.ReapProcessGroup(pgid)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sift-agent-wrapper:", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if len(os.Args) != 2 {

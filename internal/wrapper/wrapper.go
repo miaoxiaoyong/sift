@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -128,7 +129,7 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	select {
 	case waitErr = <-waited:
 	case <-ctx.Done():
-		terminateAndReapWait(cmd, waited)
+		terminateProcessGroup()
 		return ctx.Err()
 	}
 	exitCode, signal := resultStatus(waitErr)
@@ -141,25 +142,72 @@ func Run(ctx context.Context, bootstrapPath string) error {
 
 const terminationGrace = 500 * time.Millisecond
 
-// terminateAndReap bounds shutdown of the direct Agent child. Supported
-// Agents remain in the wrapper's process group, so once the child is reaped
-// the wrapper can exit without leaving that controlled execution behind.
+// terminateAndReap bounds shutdown of the wrapper process group.
 func terminateAndReap(cmd *exec.Cmd) {
-	waited := make(chan error, 1)
-	go func() { waited <- cmd.Wait() }()
-	terminateAndReapWait(cmd, waited)
+	go cmd.Wait()
+	terminateProcessGroup()
 }
 
-func terminateAndReapWait(cmd *exec.Cmd, waited <-chan error) {
-	_ = syscall.Kill(-syscall.Getpgrp(), syscall.SIGTERM)
+func terminateProcessGroup() {
+	pgid, err := wrapperProcessGroup()
+	if err != nil {
+		return
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
 	timer := time.NewTimer(terminationGrace)
 	defer timer.Stop()
-	select {
-	case <-waited:
-		return
-	case <-timer.C:
-		_ = cmd.Process.Kill()
-		<-waited
+	// Reaping the direct child is not proof that its descendants are gone.
+	// Always complete the bounded grace period and then kill the whole group.
+	// The wrapper itself is in that group, so a helper must confirm absence.
+	<-timer.C
+	_ = startProcessGroupReaper(pgid)
+}
+
+func wrapperProcessGroup() (int, error) {
+	pid := os.Getpid()
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		return 0, err
+	}
+	if pgid != pid {
+		return 0, errors.New("wrapper: process group is not self-led")
+	}
+	return pgid, nil
+}
+
+func startProcessGroupReaper(pgid int) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	reaper := exec.Command(self, "--reap-process-group", strconv.Itoa(pgid))
+	reaper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return reaper.Start()
+}
+
+// ReapProcessGroup sends SIGKILL to pgid, then proves its absence with bounded
+// kill(-pgid, 0) probes. It runs in a separate process group because SIGKILL
+// necessarily terminates the wrapper which owns the target group.
+func ReapProcessGroup(pgid int) error {
+	if pgid <= 0 {
+		return errors.New("wrapper: invalid process group")
+	}
+	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("wrapper: kill process group: %w", err)
+	}
+	deadline := time.Now().Add(terminationGrace)
+	for {
+		err := syscall.Kill(-pgid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("wrapper: probe process group: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return errors.New("wrapper: process group remained after SIGKILL")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

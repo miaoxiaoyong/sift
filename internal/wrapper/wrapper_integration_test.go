@@ -11,6 +11,8 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -89,13 +91,13 @@ func TestProductionWrapperCrashWindows(t *testing.T) {
 	}
 }
 
-func TestProductionWrapperReapsTERMIgnoringAgentAfterStartedFailure(t *testing.T) {
+func TestProductionWrapperReapsTERMIgnoringGroupAfterStartedFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups differ on Windows")
 	}
 	wrapperPath := buildWrapper(t)
-	root, _, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "trap '' TERM; while :; do :; done"})
-	server := newWrapperServer(t, root, "claim.started")
+	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "trap '' TERM; (trap '' TERM; while :; do :; done) & echo $! > \"$SIFT_RUN_DIR/descendant.pid\"; wait"})
+	server := newWrapperServerWaitFor(t, root, "claim.started", filepath.Join(runDir, "descendant.pid"))
 	defer server.Close()
 	cmd := osexec.Command(wrapperPath, bootstrap)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -103,23 +105,11 @@ func TestProductionWrapperReapsTERMIgnoringAgentAfterStartedFailure(t *testing.T
 		t.Fatal(err)
 	}
 	pgid := cmd.Process.Pid
+	assertProcessInGroup(t, filepath.Join(runDir, "descendant.pid"), pgid)
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("wrapper unexpectedly succeeded")
 	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		err := syscall.Kill(-pgid, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		if err != nil {
-			t.Fatalf("probe process group %d: %v", pgid, err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("process group %d still exists after wrapper exit", pgid)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForGroupAbsence(t, pgid)
 }
 
 func TestProductionWrapperReapsTERMIgnoringAgentOnTerminationSignal(t *testing.T) {
@@ -136,7 +126,6 @@ func TestProductionWrapperReapsTERMIgnoringAgentOnTerminationSignal(t *testing.T
 		t.Fatal(err)
 	}
 	pgid := cmd.Process.Pid
-	defer cmd.Process.Kill()
 	deadline := time.Now().Add(5 * time.Second)
 	started := false
 	for time.Now().Before(deadline) {
@@ -160,8 +149,48 @@ func TestProductionWrapperReapsTERMIgnoringAgentOnTerminationSignal(t *testing.T
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("wrapper unexpectedly succeeded")
 	}
-	if err := syscall.Kill(-pgid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("process group %d still exists after wrapper exit: %v", pgid, err)
+	waitForGroupAbsence(t, pgid)
+}
+
+func assertProcessInGroup(t *testing.T, pidPath string, pgid int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(pidPath)
+		if err == nil {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err != nil {
+				t.Fatalf("parse descendant pid: %v", err)
+			}
+			got, err := syscall.Getpgid(pid)
+			if err != nil {
+				t.Fatalf("get descendant process group: %v", err)
+			}
+			if got != pgid {
+				t.Fatalf("descendant pgid=%d, want wrapper pgid=%d", got, pgid)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("TERM-ignoring descendant was not started")
+}
+
+func waitForGroupAbsence(t *testing.T, pgid int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := syscall.Kill(-pgid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("probe process group %d: %v", pgid, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process group %d still exists after wrapper exit", pgid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -266,20 +295,38 @@ func countLines(path string) int {
 type wrapperServer struct {
 	listener net.Listener
 	reject   string
+	waitPath string
 	once     sync.Once
 }
 
 func newWrapperServer(t *testing.T, root, reject string) *wrapperServer {
+	return newWrapperServerWaitFor(t, root, reject, "")
+}
+
+func newWrapperServerWaitFor(t *testing.T, root, reject, waitPath string) *wrapperServer {
 	t.Helper()
 	l, err := net.Listen("unix", filepath.Join(root, "run.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &wrapperServer{listener: l, reject: reject}
+	s := &wrapperServer{listener: l, reject: reject, waitPath: waitPath}
 	go s.serve()
 	return s
 }
 func (s *wrapperServer) Close() { s.once.Do(func() { _ = s.listener.Close() }) }
+func (s *wrapperServer) waitForPath() {
+	if s.waitPath == "" {
+		return
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(s.waitPath); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (s *wrapperServer) serve() {
 	for {
 		c, err := s.listener.Accept()
@@ -302,6 +349,7 @@ func (s *wrapperServer) serve() {
 			_ = json.Unmarshal(body, &req)
 			var response any = map[string]any{"ok": true, "result": map[string]any{}}
 			if req.Method == s.reject {
+				s.waitForPath()
 				response = map[string]any{"ok": false, "error": map[string]any{"code": "rejected"}}
 			}
 			b, _ := json.Marshal(response)
