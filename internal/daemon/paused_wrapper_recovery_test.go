@@ -29,11 +29,12 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 	wrapper := buildPausedRecoveryWrapper(t)
 	for _, tc := range []struct {
 		name, point, script, phase string
+		agentLive                  bool
 	}{
-		{"control-initial", "before-permit-rpc", "while :; do sleep 1; done", "starting"},
-		{"control-rewrite", "before-started-rpc", "while :; do sleep 1; done", "spawning"},
-		{"result-before-rename", "before-result-rename", "exit 0", "running"},
-		{"result-after-rename", "after-result-rename", "exit 0", "running"},
+		{"control-initial", "before-permit-rpc", "while :; do sleep 1; done", "starting", true},
+		{"control-rewrite", "before-started-rpc", "while :; do sleep 1; done", "spawning", true},
+		{"result-before-rename", "before-result-rename", "exit 0", "running", false},
+		{"result-after-rename", "after-result-rename", "exit 0", "running", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, now := context.Background(), time.Now().Truncate(time.Millisecond)
@@ -87,7 +88,10 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 			if err := check.QueryRow(`SELECT phase FROM attempts WHERE run_id='run-1'`).Scan(&phase); err != nil || phase != tc.phase {
 				t.Fatalf("pause phase=%q want=%q: %v", phase, tc.phase, err)
 			}
-			if agent != 0 {
+			if tc.agentLive {
+				if agent == 0 {
+					t.Fatal("missing agent pid while agent should still be live")
+				}
 				assertPausedLive(t, agent, pgid)
 			}
 
@@ -111,7 +115,7 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 				t.Fatalf("new/global spawns=%d/%d, want 0/1", candidate.count, lineCount(spawns))
 			}
 			assertPausedLive(t, pid, pgid)
-			if agent != 0 {
+			if tc.agentLive {
 				assertPausedLive(t, agent, pgid)
 			}
 			var owners int
@@ -126,7 +130,9 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 }
 
 func pausedRecoveryCoordinator(db *storage.DB, root string, now time.Time) *TerminationCoordinator {
-	return &TerminationCoordinator{DB: db, Terminator: runtimepkg.Terminator{Inspector: runtimepkg.PlatformProcessInspector{}, Signaler: runtimepkg.UnixProcessSignaler{}}, Runtime: config.Runtime{HeartbeatStaleAfter: time.Hour}, ProcessGroupVerified: func(string) bool { return true }, AttentionDailyQuota: recoveryQuota(), ControlRoot: root, Now: func() time.Time { return now }}
+	rt := config.DefaultConfig().Runtime
+	rt.HeartbeatStaleAfter = time.Hour
+	return &TerminationCoordinator{DB: db, Terminator: runtimepkg.Terminator{Inspector: runtimepkg.PlatformProcessInspector{}, Signaler: runtimepkg.UnixProcessSignaler{}}, Runtime: rt, ProcessGroupVerified: func(string) bool { return true }, AttentionDailyQuota: recoveryQuota(), ControlRoot: root, Now: func() time.Time { return now }}
 }
 
 type pausedRecoveryBackend struct {

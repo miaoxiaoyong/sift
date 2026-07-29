@@ -98,12 +98,14 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 	if err := os.Remove(filepath.Join(b.RunDir, "reaper-result.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("wrapper: clear reaper result: %w", err)
 	}
-	self, err := os.Executable()
+	self, err := runtime.ProcessExecutable(os.Getpid())
 	if err != nil {
 		return err
 	}
 	pid := int64(os.Getpid())
-	started := time.Now().UnixMilli()
+	// Align with PlatformProcessInspector's procfs identity so recovery
+	// liveness checks can match the persisted fields on Linux.
+	started := runtime.ProcessStartedAtMS(os.Getpid())
 	instance, session := secret(), secret()
 	wi := map[string]any{"pid": pid, "started_at_ms": started, "executable": self, "pgid": pid}
 	base := map[string]any{"run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "dispatch_id": b.DispatchID, "wrapper_instance_id": instance, "session_candidate": session, "wrapper_identity": wi}
