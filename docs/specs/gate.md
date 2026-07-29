@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 created: 2026-07-29
 summary: Gate 纯判定、快照、豁免和 Change 创建契约
 ---
@@ -12,7 +12,7 @@ summary: Gate 纯判定、快照、豁免和 Change 创建契约
 
 ## 评审状态
 
-字段级评审的 G1–G6 均已关闭：G1 的路径不完整在组装边界以唯一 contract error 拒绝，G2 对非 open Change 有唯一终局 verdict，G3/G5 只消费 active [`policy.md` §3.3](policy.md)，G4 的 durable request-start 边界及特殊 reclaim 已冻结在 [`storage.md` §8.3–§8.5](storage.md) 和 [`outbox.md` §4、§8](outbox.md)，G6 的校准映射由 [`ledger.md` §3](ledger.md) 唯一规定。soft guardrail Interrupt 只以本次冻结输入的 `effective_policy_hash`、`rule_id` 与 `matched_paths_digest` 生成身份，见本文 §5 和 [`interrupt.md` §5](interrupt.md)。本文仍**保持 `draft`**，直至 M4 实现及本规格 §7 的 schema/事务验收完成。处置依据见[评审报告](../reviews/2026-07-29-gate-review-pi-gpt-5.6-sol.md)。
+字段级评审的 G1–G6 均已关闭：G1 的路径不完整在组装边界以唯一 contract error 拒绝，G2 对非 open Change 有唯一终局 verdict，G3/G5 只消费 active [`policy.md` §3.3](policy.md)，G4 的 durable request-start 边界及特殊 reclaim 已冻结在 [`storage.md` §8.3–§8.5](storage.md) 和 [`outbox.md` §4、§8](outbox.md)，G6 的校准映射由 [`ledger.md` §3](ledger.md) 唯一规定。soft guardrail Interrupt 只以本次冻结输入的 `effective_policy_hash`、`rule_id` 与 `matched_paths_digest` 生成身份，见本文 §5 和 [`interrupt.md` §5](interrupt.md)。二次定向复审确认无残余 P1，本文转为 `active`，可作为 M4 Gate 实现与测试基线；实现验收仍按 §7 执行。处置依据见[首次评审](../reviews/2026-07-29-gate-review-pi-gpt-5.6-sol.md)、[首次定向复审](../reviews/2026-07-29-gate-rereview-pi-gpt-5.6-sol.md)与[二次定向复审](../reviews/2026-07-29-gate-rereview-2-pi-gpt-5.6-sol.md)。
 
 ## 1. 边界与不变量
 
@@ -149,7 +149,7 @@ Gate/Change reconciler 只接受 M3 `EvaluateSuccess` 已确认的“可创建 C
 
 ## 7. 验收派生
 
-本节是行为验收映射，不替代尚未冻结的 input/verdict closed schema。字段级评审阻断关闭后，schema fixture 与下列行为断言必须同时成立。
+本节是行为验收映射，不替代 §2.2–§2.3 已冻结的 input/verdict closed schema。schema fixture 与下列行为断言必须同时成立。
 
 - `gate` 在无 Forge/数据库/时钟/文件/Brain 的环境中，对相同冻结输入得到字节等价 verdict；回放集可重跑。
 - 整份输入 hash 与唯一二元缓存键生效：同一 head 下 Checks、review、mergeability、risk（含来源版本）或 certification/effective policy 变化均 cache miss。
