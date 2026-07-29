@@ -555,7 +555,7 @@ M1 冻结上述表与约束，并仅实现 fake 骨架链所需的 Forge Run/rec
 | `updated_at_ms` | INTEGER | NOT NULL |
 | `completed_at_ms` | INTEGER | NULL |
 
-`executing` 必须同时有 lease owner/expiry；其他 state 不得保留有效 lease。terminal state 为 succeeded/failed/stale/conflict。payload 一经创建不可改；重试只更新执行字段。
+`executing` 必须同时有 lease owner/expiry；其他 state 不得保留有效 lease。terminal state 为 succeeded/failed/stale/conflict。payload 一经创建不可改；重试只更新执行字段。`rerun_checks` 的 claim/reclaim、request-start 与 complete 另按 §8.5 执行，不得套用通用 lease-expiry 重试。
 
 ### 8.2 `check_rerun_consumptions`（不可变）
 
@@ -598,6 +598,19 @@ Gate 创建 `rerun_checks` operation 的同一事务插入一行，防止崩溃�
 每个 attempt 最多一个结果。operation claim 用 CAS：pending/retryable 且到期，或 executing 且 lease 已过期的行可被认领；后者先为旧 attempt 插入 `outcome=retry,error_class=transient,error_summary=lease_expired` result，再替换 lease owner并创建新 attempt，旧 owner 的 complete 随即 CAS 失败。
 
 `launch_agent` 是特殊 claim：`ClaimOutboxOperation(current_boot_id, ...)` 必须在同一 SQL 语句/事务中证明 `daemon_boots.id=current_boot_id AND recovery_completed_at_ms IS NOT NULL`；先在应用内检查再 claim 不成立。恢复扫描可把旧启动 operation 收敛为 pending/retryable/succeeded/stale/conflict，但在屏障落定前同样不得取得执行 lease。daemon 在 `CompleteStartupRecovery` 提交后才启动 launch worker；崩溃产生的新 boot 因新行屏障为空而重新关闭该入口。外部动作结束后，同一事务插入 result 并 CAS 更新 operation；旧 lease owner 的结果整笔拒绝。
+
+### 8.5 `outbox_attempt_request_starts`（不可变，`rerun_checks` 专用）
+
+这是远端 `RerunCheck` 已可能发生的唯一 durable boundary；它不以 worker 内存、日志或 lease 推断。
+
+| 列 | 类型 | 约束/说明 |
+|---|---|---|
+| `attempt_id` | TEXT | PK、FK `outbox_attempts` |
+| `started_at_ms` | INTEGER | NOT NULL；写入前注入的时间 |
+
+只允许 `outbox_operations.kind=rerun_checks` 的 attempt 插入一行；其他 kind 不得伪造该事实；该跨表约束与本表的 UPDATE/DELETE 禁止均由数据库 trigger 执行。`MarkOutboxAttemptRequestStarted(operationID, expectedLease, attemptID)` 在一个 `BEGIN IMMEDIATE` 中验证 operation 仍为 `executing` 且 owner/未过期 lease 和 attempt 均匹配，再插入本行；重复调用返回既有事实。该事务成功提交后 worker 才可调用 `RerunCheck`，提交失败则不得调用。
+
+`ClaimOutboxOperation` 对 `rerun_checks` 的规则替代通用 reclaim：pending/retryable 到期可正常 claim；executing lease 到期时，若旧 attempt **没有**本表记录，事务为旧 attempt 插入 `retry/transient:lease_expired` result 后创建新 attempt。若旧 attempt已有本表记录，事务必须为旧 attempt 插入（或确认既有）`conflict` result，将 operation CAS 为 `conflict`、清除 lease，并同事务创建/去重 `failure_review` Interrupt；不得创建新 attempt。`CompleteOutboxAttempt` 对已有本表记录的 `rerun_checks` 只接受 `success` 或 `conflict`，不接受 `retry`；调用结果不明、调用后错误或 complete CAS 丢失都走 `conflict`。因此调用前崩溃可重试，request-start 后的崩溃或 lease expiry 永远不会导致第二次远端调用。
 
 ## 9. 预算
 
@@ -909,9 +922,10 @@ Gate record 来自同一 snapshot/evaluation；Brain record 一条 logical recor
 | `PersistIntakeBatch`（M2 Intake） | forge receipts、`pending_evaluation` intake 投影、Run/事实投影、events，最后推进 cursor |
 | `PersistIntakeDecision`（M2 Intake） | intake assessment + intake state CAS + event + 必要 outbox operation；ready/fallback 同事务幂等创建 Run 并写 `linked_run_id` |
 | `ChargeForgeAPICall(callAttemptKey)` | forge_api budget counter + entry；适配器每次外部调用尝试前预留且不退款，崩溃可能保守计费但不得超支 |
-| `ClaimOutboxOperation` | operation + immutable attempt start；reclaim 时先为旧 attempt 写 `retry/transient:lease_expired` result |
+| `ClaimOutboxOperation` | operation + immutable attempt start；通用 reclaim 时先为旧 attempt 写 `retry/transient:lease_expired` result；`rerun_checks` 按 §8.5 的 request-start 分支收敛 |
 | `PrepareLaunchDispatch` | lease/generation CAS + dispatch id + bootstrap/run token hash；提交后才可写 bootstrap/spawn wrapper |
-| `CompleteOutboxAttempt(expectedLease, outcomeCommand)` | operation + immutable result + kind-specific 投影/event；可选 project isolation、Run transition、Interrupt/预算、delivery、后继 outbox，必须同事务 |
+| `MarkOutboxAttemptRequestStarted(operationID, expectedLease, attemptID)` | 仅 `rerun_checks`：在实际 `RerunCheck` 前以 lease CAS 插入不可变 request-start 事实；提交前不得调用远端 |
+| `CompleteOutboxAttempt(expectedLease, outcomeCommand)` | operation + immutable result + kind-specific 投影/event；可选 project isolation、Run transition、Interrupt/预算、delivery、后继 outbox，必须同事务；`rerun_checks` 受 §8.5 outcome 限制 |
 | `AcquireLaunchClaim` | wrapper/session CAS + pending→starting + launch outbox attempt/result/succeeded + event |
 | `AdvanceAttempt` | attempt/claim + events；不得旁路 Run transition |
 | `StartOrAdvanceProbe` | attempt probe + 受控终止观测事件 |
@@ -957,7 +971,7 @@ CAS 失败整笔回滚并返回 `RejectedStale`；非法状态组合在开事务
 
 ### 12.4 Outbox claim
 
-CAS 认领到期的 pending/retryable，或接管 lease 已过期的 executing operation；reclaim 先关闭旧 attempt result，再写新 lease owner/expiry、attempt_count+1并新增 outbox_attempt。外部动作在提交后执行。执行结果再以 operation id + lease owner CAS 收敛；过期 worker 不得覆盖新 owner 结果。
+CAS 认领到期的 pending/retryable，或接管 lease 已过期的 executing operation；通用 reclaim 先关闭旧 attempt result，再写新 lease owner/expiry、attempt_count+1并新增 outbox_attempt。`rerun_checks` 必须改按 §8.5 查询旧 attempt 的 durable request-start：已开始则 conflict + failure_review，无该事实才可重试。外部动作在提交后执行。执行结果再以 operation id + lease owner CAS 收敛；过期 worker 不得覆盖新 owner 结果。
 
 ### 12.5 `startup_stall` retry 成功
 
@@ -1047,6 +1061,7 @@ COMMIT
 - `report_receipts`
 - `outbox_attempts`
 - `outbox_attempt_results`
+- `outbox_attempt_request_starts`
 - `budget_entries`
 - `brain_attempts`
 - `intake_assessments`

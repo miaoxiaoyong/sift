@@ -12,7 +12,7 @@ summary: Gate 纯判定、快照、豁免和 Change 创建契约
 
 ## 评审状态
 
-字段级评审的 G1–G5 已由本文 §2.2、§2.3、§3.1、§3.2 和 active 的 [`policy.md` §3.3](policy.md) 关闭：Gate 只消费其 `EffectivePolicyV1`，不自定义 policy 字段。G6（#227）亦已关闭：每个 verdict 的校准值由已更新的 [`ledger.md` §3](ledger.md) 唯一规定为 `allow`、`block` 或 `inconclusive`（不可比较）；soft guardrail Interrupt 则只以本次冻结输入的 `effective_policy_hash`、`rule_id` 与 `matched_paths_digest` 生成身份，见本文 §5 和 [`interrupt.md` §5](interrupt.md)。本文仍**保持 `draft`**，直至 M4 实现及本规格 §7 的 schema/事务验收完成。处置依据见[评审报告](../reviews/2026-07-29-gate-review-pi-gpt-5.6-sol.md)。
+字段级评审的 G1–G6 均已关闭：G1 的路径不完整在组装边界以唯一 contract error 拒绝，G2 对非 open Change 有唯一终局 verdict，G3/G5 只消费 active [`policy.md` §3.3](policy.md)，G4 的 durable request-start 边界及特殊 reclaim 已冻结在 [`storage.md` §8.3–§8.5](storage.md) 和 [`outbox.md` §4、§8](outbox.md)，G6 的校准映射由 [`ledger.md` §3](ledger.md) 唯一规定。soft guardrail Interrupt 只以本次冻结输入的 `effective_policy_hash`、`rule_id` 与 `matched_paths_digest` 生成身份，见本文 §5 和 [`interrupt.md` §5](interrupt.md)。本文仍**保持 `draft`**，直至 M4 实现及本规格 §7 的 schema/事务验收完成。处置依据见[评审报告](../reviews/2026-07-29-gate-review-pi-gpt-5.6-sol.md)。
 
 ## 1. 边界与不变量
 
@@ -61,7 +61,7 @@ cache key       = (gate_input_hash, gate_version)
 |---|---|
 | `schema_version` | 常量 `1` |
 | `identity` | closed object：非空 `run_id`、`project_id`、`task_kind`、`change_id`；所有 ID 为 UTF-8、1–256 bytes |
-| `change` | closed object：`state=open|closed|merged`、40（SHA-1 repository）或 64（SHA-256 repository）个小写十六进制字符的 `head_sha`、非空 `base_ref`/`head_ref`、boolean `is_draft`、`mergeability=mergeable|conflicting|unknown`、`review_state=approved|not_approved|unknown`、`paths_complete`、`changed_paths`、`files_changed>=0`、`additions>=0`、`deletions>=0`。路径必须为 repo-relative slash path，非空、不以 `/` 开头、不含 `.`/`..` segment、排序去重；`paths_complete=false` 时 `changed_paths` 必须为空，`true` 时空数组才表示确无变更路径。 |
+| `change` | closed object：`state=open|closed|merged`、40（SHA-1 repository）或 64（SHA-256 repository）个小写十六进制字符的 `head_sha`、非空 `base_ref`/`head_ref`、boolean `is_draft`、`mergeability=mergeable|conflicting|unknown`、`review_state=approved|not_approved|unknown`、`paths_complete=true`、`changed_paths`、`files_changed>=0`、`additions>=0`、`deletions>=0`。路径必须为 repo-relative slash path，非空、不以 `/` 开头、不含 `.`/`..` segment、排序去重；空 `changed_paths` 唯一表示已完整读取且无变更路径。 |
 | `checks` | closed object：`conclusion=success|failure|pending|unknown`、排序去重 `failed_jobs`、非空 `external_url`、`flaky_retries_used>=0`；job 为 closed `{id,name,web_url,allow_failure}`，`id` 非空且排序 key 为 `(id,name)`。`pending` 时必有 `pending_started_at_ms>=0`、`observed_at_ms>=pending_started_at_ms`、`pending_timed_out`，其他结论三字段均为 null；`failure` 时必有 `triage`，否则为 null。 |
 | `checks.triage` | closed object：`classification=flaky|real_failure|infrastructure|unknown`、`retry_check_id`、closed `source`；仅 failure 可出现。`classification=flaky` 时 retry ID 必须非空且精确命中 `failed_jobs` 中 `allow_failure=false` 的项；其他分类必须为 null。`source` 是 `kind=brain`（非空 logical call/prompt/schema version）或 `kind=fallback`（非空 logical call/version/reason），字段与 [`brain.md` §10.3](brain.md) 同源。 |
 | `effective_policy` | [`policy.md` §3.3](policy.md) 的 `EffectivePolicyV1` canonical JSON，且只接受该 closed shape：`schema_version`、`protected_paths.{hard,soft,soft_exceptions}`、`review_policy`、`risky_review_threshold`、`auto_merge`、`checks_pending_timeout_ms`、`flaky_retry_limit`。不得添加未知字段或将 `soft_exceptions` 另投影为 remembered-exceptions 字段。 |
@@ -69,7 +69,7 @@ cache key       = (gate_input_hash, gate_version)
 | `risk` | `brain.md` §9.2–§9.3 的 closed T3 object：整数 `risk_score`（0–100）、排序去重 `risk_points`、`rationale`、以及 brain/fallback source；不得省略来源。 |
 | `one_time_exemptions` | 排序去重数组；每项为 closed object `{run_id,head_sha,rule_id,matched_paths_digest}`，digest 为 64 小写十六进制。每项 run/head 必须等于 `identity.run_id`/`change.head_sha`。 |
 
-整数均为 JSON integer，不接受浮点、NaN 或 Infinity；时间均为 Unix ms。对象 key 词典序、数组按本表指定的稳定 key 排序后按 [`config.md` §4](config.md) canonical 化。任何交叉约束失败、未知字段、未知枚举或无法完整取得路径，均拒绝建立 snapshot，转 fail-closed 输入错误而非把缺失降格为绿灯。
+整数均为 JSON integer，不接受浮点、NaN 或 Infinity；时间均为 Unix ms。对象 key 词典序、数组按本表指定的稳定 key 排序后按 [`config.md` §4](config.md) canonical 化。`paths_complete=false` 不是 `GateInputV1` 的合法表示：组装器在调用纯函数及建立 snapshot **之前**唯一返回 `GateInputAssemblyErrorV1{code:"paths_incomplete",field:"change.changed_paths"}`，不创建 verdict、evaluation、cache 或后继动作。任何其他交叉约束失败、未知字段或未知枚举同样拒绝建立 snapshot；它们是 schema contract error，不得降格为绿灯。`gate-input-v1-invalid.json` 必须包含 `paths_complete=false`，`gate-input-v1-valid.json` 必须只包含 `paths_complete=true`。
 
 ### 2.3 `VerdictV1` 闭合并集（G2）
 
@@ -77,6 +77,7 @@ cache key       = (gate_input_hash, gate_version)
 
 | `kind` / `code` | 必需 payload | 后继 |
 |---|---|---|
+| `failed` / `change_not_open` | `change_state=closed|merged` | 按已冻结外部事实终止；无 Interrupt |
 | `failed` / `hard_guardrail` | `rule_id`、排序 `matched_paths` | Run failed；无 Interrupt |
 | `wait_checks` / `checks_pending` | `external_url`、`pending_started_at_ms` | 等待重新观测 |
 | `hitl` / `checks_timeout` | `external_url`、`pending_started_at_ms` | `failure_review` Interrupt |
@@ -90,7 +91,7 @@ cache key       = (gate_input_hash, gate_version)
 | `ready` / `no_auto_merge` | `reason=policy_disabled|draft` | 无 merge operation |
 | `hitl` / `input_unknown` | `field`、`reason` | fail-closed 人工路径 |
 
-`retry_checks` 仅当 failure/`flaky`、合法 `retry_check_id` 且 `flaky_retries_used < flaky_retry_limit` 命中；`pending_timed_out=true` 返回 `hitl/checks_timeout`，unknown Checks 和未定义/耗尽的 triage 均不得返回 wait/retry。canonical fixtures 至少覆盖上表每一分支、同 SHA Checks 漂移 cache miss、路径不完整和每条交叉约束反例。
+`change.state=closed|merged` 必须在所有其他判定之前分别唯一返回 `failed/change_not_open`，不得继续匹配 paths、Checks、review 或 merge。`retry_checks` 仅当 failure/`flaky`、合法 `retry_check_id` 且 `flaky_retries_used < flaky_retry_limit` 命中；`pending_timed_out=true` 返回 `hitl/checks_timeout`，unknown Checks 和未定义/耗尽的 triage 均不得返回 wait/retry。canonical fixtures 至少覆盖上表每一分支、`closed` 与 `merged` 各一例、同 SHA Checks 漂移 cache miss，以及每条交叉约束反例；路径不完整只覆盖组装器的 invalid fixture，不进入 Gate fixture。
 
 ### 2.4 缓存与回放
 
@@ -102,10 +103,11 @@ cache key       = (gate_input_hash, gate_version)
 
 下列是逻辑顺序；为保持纯函数，T3/T5 和 Forge 读取由调用方先完成并冻结。前一阶段产生终局结果时不得继续执行后续阶段或绕过它。
 
-1. **`protected_paths`（G3）。** matcher 和 pattern/path normalization 只按 [`policy.md` §2.1](policy.md) 执行；规则唯一来自 `EffectivePolicyV1.protected_paths`，其中 hard 已包含 [`policy.md` §3.2](policy.md) 的内建集合。Gate 不接受 `{rule_id,pattern,level}`、独立默认 CI 清单或其他 policy 投影。为 verdict、豁免和 Ledger 特征提供稳定身份时，Gate 从已规范化 pattern 确定性派生 `rule_id`：hard 为 `hard:<pattern>`，soft 为 `soft:<pattern>`；该 ID 不属于 `EffectivePolicyV1`，也不改变其 hash。命中按 `(rule_id, matched_path)` 词典序排序；任一 hard 命中优先于全部 soft，多个 soft 则选择首个未被同一路径集合的一次性豁免覆盖、且未被任一 `soft_exceptions` pattern 匹配的 rule。路径不完整或 matcher/policy 无效返回 `input_unknown`，绝不据空数组放行。hard 命中立即返回 failed；soft 命中且没有本次有效豁免，返回 `guardrail_violation` HITL。
-2. **Checks。** success 才进入下一阶段；pending 未超时返回等待结果，pending 已超时转 HITL。failure 使用冻结的 T5 分类：仅 `flaky` 且尚有有效重试额度可请求确定性重试；真实失败、基础设施失败、T5 不可用/超预算或任何未知分类均转 `failure_review` HITL。Gate 不自行重试或调用 T5。
-3. **review policy。** `always` 在冻结的有效审查未满足时转 `code_review` HITL；`risky-only` 只在 `riskScore.risk_score >= effectivePolicy.risky_review_threshold`（确定性高风险兜底固定为 100）、且有效审查尚未满足时转 HITL；`never` 不要求 review。需要审查时，审查状态或平台能力未知不得视为已经满足审查。
-4. **auto merge。** 只有有效策略允许、前述所有阶段全绿、Change 非 draft 且 mergeability 明确可合并时，才返回可创建 `merge_change` 的 verdict。该 operation 必须携带本 verdict 的 `head_sha` 作为 `expected_head_sha`。`auto_merge=false` 或 draft 可返回“门禁全绿但不自动合并”；`auto_merge=true` 时，`mergeability=conflicting` 必须转 `merge_conflict` HITL，`unknown` 必须转显式人工/等待分支，二者都不得冒充全绿结果。合并时远端 CAS 拒绝或 head 已变化，旧 operation 必须 stale/no-op，新 head 必须重新组装快照并过 Gate。
+1. **Change state（G2）。** `change.state=closed|merged` 分别立即返回 `failed/change_not_open`；只有 `open` 才可进入以下阶段。
+2. **`protected_paths`（G3）。** matcher 和 pattern/path normalization 只按 [`policy.md` §2.1](policy.md) 执行；规则唯一来自 `EffectivePolicyV1.protected_paths`，其中 hard 已包含 [`policy.md` §3.2](policy.md) 的内建集合。Gate 不接受 `{rule_id,pattern,level}`、独立默认 CI 清单或其他 policy 投影。为 verdict、豁免和 Ledger 特征提供稳定身份时，Gate 从已规范化 pattern 确定性派生 `rule_id`：hard 为 `hard:<pattern>`，soft 为 `soft:<pattern>`；该 ID 不属于 `EffectivePolicyV1`，也不改变其 hash。命中按 `(rule_id, matched_path)` 词典序排序；任一 hard 命中优先于全部 soft，多个 soft 则选择首个未被同一路径集合的一次性豁免覆盖、且未被任一 `soft_exceptions` pattern 匹配的 rule。matcher/policy 无效返回 `input_unknown`；路径不完整不能进入此函数，绝不据空数组放行。hard 命中立即返回 failed；soft 命中且没有本次有效豁免，返回 `guardrail_violation` HITL。
+3. **Checks。** success 才进入下一阶段；pending 未超时返回等待结果，pending 已超时转 HITL。failure 使用冻结的 T5 分类：仅 `flaky` 且尚有有效重试额度可请求确定性重试；真实失败、基础设施失败、T5 不可用/超预算或任何未知分类均转 `failure_review` HITL。Gate 不自行重试或调用 T5。
+4. **review policy。** `always` 在冻结的有效审查未满足时转 `code_review` HITL；`risky-only` 只在 `riskScore.risk_score >= effectivePolicy.risky_review_threshold`（确定性高风险兜底固定为 100）、且有效审查尚未满足时转 HITL；`never` 不要求 review。需要审查时，审查状态或平台能力未知不得视为已经满足审查。
+5. **auto merge。** 只有有效策略允许、前述所有阶段全绿、Change 非 draft 且 mergeability 明确可合并时，才返回可创建 `merge_change` 的 verdict。该 operation 必须携带本 verdict 的 `head_sha` 作为 `expected_head_sha`。`auto_merge=false` 或 draft 可返回“门禁全绿但不自动合并”；`auto_merge=true` 时，`mergeability=conflicting` 必须转 `merge_conflict` HITL，`unknown` 必须转显式人工/等待分支，二者都不得冒充全绿结果。合并时远端 CAS 拒绝或 head 已变化，旧 operation 必须 stale/no-op，新 head 必须重新组装快照并过 Gate。
 
 硬护栏、未知事实和所有 HITL 分支都不能被后续 review、auto merge 或缓存命中放宽。
 
@@ -113,7 +115,7 @@ cache key       = (gate_input_hash, gate_version)
 
 V0 的 `flaky_retry` 是一次远端 CI rerun，不是重新读取 Checks。它只能由 `retry_checks` verdict 创建 `rerun_checks` outbox operation；Gate/reconciler 不得直接调用 Forge。operation payload 固定含 `run_id`、`change_id`、`head_sha`、`check_run_id`、`retry_no` 和 triage 的 source digest；key 为 `run:<run_id>:checks-rerun:<head_sha>:<check_run_id>:<retry_no>`。写入该 operation 与递增该 head/check 的已消费 retry 数必须同一事务，额度上限以冻结的 `flaky_retry_limit` 判定。
 
-Forge 端口 `RerunCheck(ctx, project, checkRunID, expectedHeadSHA)` 必须在请求中将目标绑定同一 head；适配器无法提供该绑定或 rerun 目标不唯一时返回 `AuthOrCapability`/`SemanticConflict`，不降级调用。该副作用没有可靠 marker 或查询证据，故 `rerun_checks` 是**最多一次调用、非 effectively-once**：首次 worker attempt 的 lease 过期、调用返回丢失或完成事务失败时，operation 直接 `conflict` 并发 `failure_review`，不得 reclaim 后再次调用。仅明确的调用前 transient/rate-limit 可在尚未发出请求时 retry；实际请求已发出即永久记录 attempt result。远端成功只表示已请求 rerun，随后必须重新 `GetChecks` 并为新观测建立新 Gate snapshot；不得把成功响应当作 CI success。
+Forge 端口 `RerunCheck(ctx, project, checkRunID, expectedHeadSHA)` 必须在请求中将目标绑定同一 head；适配器无法提供该绑定或 rerun 目标不唯一时返回 `AuthOrCapability`/`SemanticConflict`，不降级调用。该副作用没有可靠 marker 或查询证据，故 `rerun_checks` 是**最多一次调用、非 effectively-once**。worker 必须在实际 `RerunCheck` 调用前，经 [`storage.md` §8.5](storage.md) 的 `MarkOutboxAttemptRequestStarted` 以当前 lease CAS 插入不可变 request-start 事实；该事务提交后才可发请求。无该事实的明确调用前 transient/rate-limit 可重试；已有该事实的调用返回丢失、完成事务失败或 lease 过期均直接 `conflict` 并发 `failure_review`，不得 reclaim 后再次调用。远端成功只表示已请求 rerun，随后必须重新 `GetChecks` 并为新观测建立新 Gate snapshot；不得把成功响应当作 CI success。
 
 ## 4. 软护栏豁免
 
@@ -152,6 +154,8 @@ Gate/Change reconciler 只接受 M3 `EvaluateSuccess` 已确认的“可创建 C
 - `gate` 在无 Forge/数据库/时钟/文件/Brain 的环境中，对相同冻结输入得到字节等价 verdict；回放集可重跑。
 - 整份输入 hash 与唯一二元缓存键生效：同一 head 下 Checks、review、mergeability、risk（含来源版本）或 certification/effective policy 变化均 cache miss。
 - `.sift/**`、CI 配置和其他 hard rule 命中失败，不能走两种软豁免；soft rule 分别覆盖一次性批准和显式 remembered-policy 路径。
+- `paths_complete=false` 在 Gate 前唯一以 `paths_incomplete` assembly error 拒绝且不落 snapshot；`closed|merged` 分别在所有其他 Gate 阶段前唯一返回 `failed/change_not_open`。
 - Checks、review policy、风险兜底和 auto merge 按 §3 顺序 fail closed；merge 的 head 漂移使旧 operation stale/no-op，远端 CAS 不能以 Gate(A) 合并 B。
+- `rerun_checks` 覆盖调用前崩溃、request-start 后调用中崩溃、调用返回后 complete 前崩溃：仅第一种可产生新 attempt；后两种均 conflict、创建唯一 `failure_review` 且不再调用。
 - 每次 Gate 调用（包括 cache hit）都有新的 evaluation、明确 shadow decision 与 calibration；HITL 时它们和 Interrupt 五件事全有或全无。
 - Change 仅由 M3 可创建事实触发；marker 全状态命中、远端 ID 持久化、已关闭/已合并收敛及无 marker 冲突拒绝均有测试。

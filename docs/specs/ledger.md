@@ -72,7 +72,7 @@ M4 实现的唯一生成源为 `internal/ledger/contract/ledger_v1.go`；它生�
 
 | Gate verdict | shadow decision |
 |---|---|
-| `failed/hard_guardrail`、`hitl/guardrail_violation`、`hitl/failure_review` | `block` |
+| `failed/change_not_open`、`failed/hard_guardrail`、`hitl/guardrail_violation`、`hitl/failure_review` | `block` |
 | `ready/merge`、`ready/no_auto_merge` | `allow` |
 | `wait_checks`、`retry_checks`、`hitl/checks_timeout`、`hitl/code_review`、`hitl/merge_conflict`、`hitl/mergeability_unknown`、`hitl/input_unknown` | `inconclusive` |
 

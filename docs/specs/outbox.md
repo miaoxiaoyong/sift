@@ -97,7 +97,7 @@ executing --fact changed--> stale
 executing --ambiguous ownership--> conflict
 ```
 
-claim 事务必须同时：校验 pending/retryable 到期或 executing lease 过期 → reclaim 时为旧 attempt 插入 `retry/transient:lease_expired` result → 写新 lease owner/expiry → attempt_count+1 → 插入新 immutable `outbox_attempts`。不得先把过期 executing 异步改成 retryable；reclaim 是一次 CAS，旧 owner 随即失去 complete 权。外部执行后 `CompleteOutboxAttempt(expectedLease, outcomeCommand)` 同时插入 immutable result、CAS operation，并按 kind 更新必要投影/事件：Create/Merge 更新 Run/Change 事实，Channel 更新 delivery，auth/capability 隔离项目并建唯一告警，conflict/stale 可原子产生 Interrupt/重算事件/后继 operation。不得先终结 operation、再另事务补领域效果。
+通用 claim 事务必须同时：校验 pending/retryable 到期或 executing lease 过期 → reclaim 时为旧 attempt 插入 `retry/transient:lease_expired` result → 写新 lease owner/expiry → attempt_count+1 → 插入新 immutable `outbox_attempts`。不得先把过期 executing 异步改成 retryable；reclaim 是一次 CAS，旧 owner 随即失去 complete 权。`rerun_checks` 不适用此通用 reclaim，必须按 [`storage.md` §8.5](storage.md) 的 durable request-start 分支收敛。外部执行后 `CompleteOutboxAttempt(expectedLease, outcomeCommand)` 同时插入 immutable result、CAS operation，并按 kind 更新必要投影/事件：Create/Merge 更新 Run/Change 事实，Channel 更新 delivery，auth/capability 隔离项目并建唯一告警，conflict/stale 可原子产生 Interrupt/重算事件/后继 operation。不得先终结 operation、再另事务补领域效果。
 
 lease owner 为 `<daemon_boot_id>:<worker_id>`。执行完成提交前必须仍匹配 owner 且 lease 未被新 owner替换；否则返回 `RejectedStaleWorker`，不插 result。lease 到期不证明外部动作未发生，新 owner 必须先走该 kind 的证据协议。
 
@@ -210,7 +210,7 @@ Payload：
 
 只接受 Gate `retry_checks/flaky_retry` verdict 创建的 payload。`retry_no` 从 1 开始，且 operation key、payload 和 Gate snapshot 的 head/check/retry number 必须完全一致；创建 operation、记录已消费 retry number 和 Gate evaluation 在同一事务提交。worker 调用 [`forge.md` §4.12](forge.md) 的 `RerunCheck` 前，每一次读/调都照常收费。
 
-此 kind 没有 marker 或可查询的 exactly-once 证据。worker 仅可在确认**尚未发出**远端请求时把 transient/rate-limit 结果转 retryable；一旦开始 `RerunCheck`，无论收到成功、错误、进程崩溃或 lease 过期，均不得再次调用。成功后 operation succeeded 并触发重新观测 Checks；`SemanticConflict`/`AuthOrCapability`/调用结果不明均为 conflict，原子创建 `failure_review` Interrupt。reclaim 发现此 kind 的旧 attempt 已标记 request-started 时同样直接 conflict。这一保守规则保证单一 Gate retry number 最多导致一次远端 rerun，宁可人工处理也不突破额度。
+此 kind 没有 marker 或可查询的 exactly-once 证据。worker 在每次实际 `RerunCheck` 前必须调用 [`storage.md` §8.5](storage.md) 的 `MarkOutboxAttemptRequestStarted`；仅在该 lease-CAS 事务成功提交后才能发请求。request-start 不存在时的调用前 transient/rate-limit 才可转 retryable；一旦该不可变事实存在，收到成功、错误、进程崩溃或 lease 过期都不得再次调用。成功后 operation succeeded 并触发重新观测 Checks；`SemanticConflict`/`AuthOrCapability`/调用结果不明均为 conflict，原子创建 `failure_review` Interrupt。reclaim 对已 request-start 的旧 attempt 直接 conflict，不创建新 attempt。这一保守规则保证单一 Gate retry number 最多导致一次远端 rerun，宁可人工处理也不突破额度。
 
 ## 9. Merge Change
 
@@ -302,7 +302,7 @@ M1 必须完整实现通用 claim/complete、退避、immutable attempts/results
 
 1. operation 与领域投影同事务；各写点崩溃只能全有或全无。
 2. payload 创建后数据库 trigger 拒绝修改；同 key 异 digest 为 contract violation。
-3. 过期 executing 可被单 CAS reclaim；claim/lease/complete 拒绝旧 owner，每次已结束尝试有且仅有一个 immutable result。
+3. 过期 executing 可被单 CAS reclaim；claim/lease/complete 拒绝旧 owner，每次已结束尝试有且仅有一个 immutable result。`rerun_checks` 的 request-start 前崩溃可 reclaim；request-start 后 lease 过期必须 conflict 且不得创建新 attempt或第二次调用。
 4. comment/ack/alert 在“远端成功、本地提交前崩溃”后按 marker 收敛，不重复创建。
 5. create Change 全状态 marker 搜索；同 base/head 非本 operation 对象必须 conflict。
 6. merge 的预读相等但远端 CAS mismatch 仍 stale；无 CAS capability 不自动 merge。
