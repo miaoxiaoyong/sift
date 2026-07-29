@@ -24,7 +24,60 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/runtime"
 )
 
+// Run supervises the execution wrapper from outside its process group. This
+// lets it wait for the reaper's confirmation after the execution wrapper is
+// necessarily killed with the rest of that group.
 func Run(ctx context.Context, bootstrapPath string) error {
+	ctx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer stopSignals()
+
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("wrapper: locate supervisor executable: %w", err)
+	}
+	cmd := exec.Command(self, "--run", bootstrapPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("wrapper: start execution wrapper: %w", err)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+
+	var waitErr error
+	select {
+	case waitErr = <-waited:
+	case <-ctx.Done():
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("wrapper: forward termination signal: %w", err)
+		}
+		waitErr = <-waited
+	}
+	reaperResult := filepath.Join(filepath.Dir(bootstrapPath), "reaper-result.json")
+	if !wasKilled(waitErr) {
+		if _, err := os.Stat(reaperResult); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return waitErr
+			}
+			return fmt.Errorf("wrapper: stat reaper result: %w", err)
+		}
+	}
+	if err := waitForReaper(reaperResult); err != nil {
+		return err
+	}
+	return waitErr
+}
+
+func wasKilled(err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false
+	}
+	status, ok := exit.ProcessState.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL
+}
+
+// RunExecution executes the Agent in the child process group owned by Run.
+func RunExecution(ctx context.Context, bootstrapPath string) error {
 	ctx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stopSignals()
 	// The wrapper is the process-group leader even when invoked outside the
@@ -41,6 +94,9 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	}
 	if b.SchemaVersion != 2 || b.ProtocolMajor != controlplane.ProtocolMajor || b.ProtocolMinor != controlplane.ProtocolMinor || b.DaemonVersion != controlplane.Version || b.WrapperVersion != controlplane.Version {
 		return errors.New("wrapper: incompatible bootstrap")
+	}
+	if err := os.Remove(filepath.Join(b.RunDir, "reaper-result.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("wrapper: clear reaper result: %w", err)
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -112,13 +168,11 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	control["updated_at_ms"] = time.Now().UnixMilli()
 	digest, err = writeJSON(filepath.Join(b.RunDir, "control.json"), control)
 	if err != nil {
-		terminateAndReap(cmd)
-		return err
+		return errors.Join(err, terminateAndReap(cmd, b.RunDir))
 	}
 	sp := map[string]any{"run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "agent_identity": ai, "control_digest": digest, "result_digest": nil}
 	if _, err = call(ctx, b.RunDir, "claim.started", map[string]any{"kind": "wrapper_started", "session": session, "permit": permit}, sp); err != nil {
-		terminateAndReap(cmd)
-		return err
+		return errors.Join(err, terminateAndReap(cmd, b.RunDir))
 	}
 	stopHeartbeat := make(chan struct{})
 	defer close(stopHeartbeat)
@@ -129,8 +183,7 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	select {
 	case waitErr = <-waited:
 	case <-ctx.Done():
-		terminateProcessGroup()
-		return ctx.Err()
+		return errors.Join(ctx.Err(), terminateProcessGroup(b.RunDir))
 	}
 	exitCode, signal := resultStatus(waitErr)
 	result := map[string]any{"schema_version": 1, "run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "agent_identity": ai, "exit_code": exitCode, "signal": signal, "finished_at_ms": time.Now().UnixMilli(), "final_head_sha": headSHA(b.WorktreePath), "control_digest": digest}
@@ -140,27 +193,35 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	return waitErr
 }
 
-const terminationGrace = 500 * time.Millisecond
+const (
+	terminationGrace = 500 * time.Millisecond
+	reaperGrace      = 5 * time.Second
+)
 
 // terminateAndReap bounds shutdown of the wrapper process group.
-func terminateAndReap(cmd *exec.Cmd) {
+func terminateAndReap(cmd *exec.Cmd, runDir string) error {
 	go cmd.Wait()
-	terminateProcessGroup()
+	return terminateProcessGroup(runDir)
 }
 
-func terminateProcessGroup() {
+func terminateProcessGroup(runDir string) error {
 	pgid, err := wrapperProcessGroup()
 	if err != nil {
-		return
+		return fmt.Errorf("wrapper: find process group for reaper: %w", err)
 	}
-	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("wrapper: terminate process group: %w", err)
+	}
 	timer := time.NewTimer(terminationGrace)
 	defer timer.Stop()
 	// Reaping the direct child is not proof that its descendants are gone.
 	// Always complete the bounded grace period and then kill the whole group.
 	// The wrapper itself is in that group, so a helper must confirm absence.
 	<-timer.C
-	_ = startProcessGroupReaper(pgid)
+	if err := startProcessGroupReaper(pgid, runDir); err != nil {
+		return fmt.Errorf("wrapper: start process group reaper: %w", err)
+	}
+	return nil
 }
 
 func wrapperProcessGroup() (int, error) {
@@ -175,12 +236,16 @@ func wrapperProcessGroup() (int, error) {
 	return pgid, nil
 }
 
-func startProcessGroupReaper(pgid int) error {
+func startProcessGroupReaper(pgid int, runDir string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	reaper := exec.Command(self, "--reap-process-group", strconv.Itoa(pgid))
+	resultPath := filepath.Join(runDir, "reaper-result.json")
+	if err := runtime.WriteControlFile(resultPath, []byte(`{"pending":true}`)); err != nil {
+		return fmt.Errorf("wrapper: record pending reaper: %w", err)
+	}
+	reaper := exec.Command(self, "--reap-process-group", strconv.Itoa(pgid), resultPath)
 	reaper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return reaper.Start()
 }
@@ -188,14 +253,30 @@ func startProcessGroupReaper(pgid int) error {
 // ReapProcessGroup sends SIGKILL to pgid, then proves its absence with bounded
 // kill(-pgid, 0) probes. It runs in a separate process group because SIGKILL
 // necessarily terminates the wrapper which owns the target group.
-func ReapProcessGroup(pgid int) error {
+func ReapProcessGroup(pgid int, resultPath string) (err error) {
+	defer func() {
+		if resultPath == "" {
+			return
+		}
+		result := struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error,omitempty"`
+		}{OK: err == nil}
+		if err != nil {
+			result.Error = err.Error()
+		}
+		data, _ := json.Marshal(result)
+		if writeErr := runtime.WriteControlFile(resultPath, data); writeErr != nil && err == nil {
+			err = fmt.Errorf("wrapper: record reaper result: %w", writeErr)
+		}
+	}()
 	if pgid <= 0 {
 		return errors.New("wrapper: invalid process group")
 	}
 	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("wrapper: kill process group: %w", err)
 	}
-	deadline := time.Now().Add(terminationGrace)
+	deadline := time.Now().Add(reaperGrace)
 	for {
 		err := syscall.Kill(-pgid, 0)
 		if errors.Is(err, syscall.ESRCH) {
@@ -206,6 +287,38 @@ func ReapProcessGroup(pgid int) error {
 		}
 		if time.Now().After(deadline) {
 			return errors.New("wrapper: process group remained after SIGKILL")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForReaper(path string) error {
+	deadline := time.Now().Add(reaperGrace + terminationGrace)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			var result struct {
+				OK      bool   `json:"ok"`
+				Pending bool   `json:"pending"`
+				Error   string `json:"error"`
+			}
+			if err := json.Unmarshal(data, &result); err != nil {
+				return fmt.Errorf("wrapper: decode reaper result: %w", err)
+			}
+			if result.Pending {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			} else if !result.OK {
+				return fmt.Errorf("wrapper: process group reaper failed: %s", result.Error)
+			} else {
+				return nil
+			}
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("wrapper: read reaper result: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return errors.New("wrapper: process group reaper did not confirm completion")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

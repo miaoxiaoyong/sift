@@ -16,12 +16,19 @@ func main() {
 		fmt.Println(controlplane.Version)
 		return
 	}
-	if len(os.Args) == 3 && os.Args[1] == "--reap-process-group" {
+	if len(os.Args) == 4 && os.Args[1] == "--reap-process-group" {
 		pgid, err := strconv.Atoi(os.Args[2])
 		if err == nil {
-			err = wrapper.ReapProcessGroup(pgid)
+			err = wrapper.ReapProcessGroup(pgid, os.Args[3])
 		}
 		if err != nil {
+			fmt.Fprintln(os.Stderr, "sift-agent-wrapper:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == "--run" {
+		if err := wrapper.RunExecution(context.Background(), os.Args[2]); err != nil {
 			fmt.Fprintln(os.Stderr, "sift-agent-wrapper:", err)
 			os.Exit(1)
 		}

@@ -104,12 +104,12 @@ func TestProductionWrapperReapsTERMIgnoringGroupAfterStartedFailure(t *testing.T
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	pgid := cmd.Process.Pid
+	pgid := executionWrapperPGID(t, filepath.Join(runDir, "control.json"))
 	assertProcessInGroup(t, filepath.Join(runDir, "descendant.pid"), pgid)
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("wrapper unexpectedly succeeded")
 	}
-	waitForGroupAbsence(t, pgid)
+	assertGroupAbsent(t, pgid)
 }
 
 func TestProductionWrapperReapsTERMIgnoringAgentOnTerminationSignal(t *testing.T) {
@@ -125,7 +125,7 @@ func TestProductionWrapperReapsTERMIgnoringAgentOnTerminationSignal(t *testing.T
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	pgid := cmd.Process.Pid
+	pgid := executionWrapperPGID(t, filepath.Join(runDir, "control.json"))
 	deadline := time.Now().Add(5 * time.Second)
 	started := false
 	for time.Now().Before(deadline) {
@@ -149,7 +149,33 @@ func TestProductionWrapperReapsTERMIgnoringAgentOnTerminationSignal(t *testing.T
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("wrapper unexpectedly succeeded")
 	}
-	waitForGroupAbsence(t, pgid)
+	assertGroupAbsent(t, pgid)
+}
+
+func executionWrapperPGID(t *testing.T, controlPath string) int {
+	t.Helper()
+	return executionWrapperPID(t, controlPath)
+}
+
+func executionWrapperPID(t *testing.T, controlPath string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(controlPath)
+		if err == nil {
+			var control struct {
+				WrapperIdentity struct {
+					PID int `json:"pid"`
+				} `json:"wrapper_identity"`
+			}
+			if json.Unmarshal(data, &control) == nil && control.WrapperIdentity.PID > 0 {
+				return control.WrapperIdentity.PID
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("execution wrapper did not publish identity")
+	return 0
 }
 
 func assertProcessInGroup(t *testing.T, pidPath string, pgid int) {
@@ -160,7 +186,8 @@ func assertProcessInGroup(t *testing.T, pidPath string, pgid int) {
 		if err == nil {
 			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 			if err != nil {
-				t.Fatalf("parse descendant pid: %v", err)
+				time.Sleep(10 * time.Millisecond)
+				continue
 			}
 			got, err := syscall.Getpgid(pid)
 			if err != nil {
@@ -176,21 +203,20 @@ func assertProcessInGroup(t *testing.T, pidPath string, pgid int) {
 	t.Fatal("TERM-ignoring descendant was not started")
 }
 
-func waitForGroupAbsence(t *testing.T, pgid int) {
+func assertGroupAbsent(t *testing.T, pgid int) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for {
-		err := syscall.Kill(-pgid, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		if err != nil {
-			t.Fatalf("probe process group %d: %v", pgid, err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("process group %d still exists after wrapper exit", pgid)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := syscall.Kill(-pgid, 0); err != syscall.ESRCH {
+		t.Fatalf("process group %d exists at wrapper return: %v", pgid, err)
+	}
+}
+
+func TestReapProcessGroupRecordsFailure(t *testing.T) {
+	result := filepath.Join(t.TempDir(), "reaper-result.json")
+	if err := ReapProcessGroup(0, result); err == nil {
+		t.Fatal("reaper unexpectedly succeeded")
+	}
+	if err := waitForReaper(result); err == nil {
+		t.Fatal("supervisor did not observe reaper failure")
 	}
 }
 
@@ -218,7 +244,7 @@ func TestProductionWrapperKeepsAgentInWrapperProcessGroup(t *testing.T) {
 				} `json:"agent_identity"`
 			}
 			if json.Unmarshal(data, &control) == nil && control.AgentIdentity != nil {
-				wrapperPGID, err1 := syscall.Getpgid(cmd.Process.Pid)
+				wrapperPGID, err1 := syscall.Getpgid(executionWrapperPID(t, filepath.Join(runDir, "control.json")))
 				agentPGID, err2 := syscall.Getpgid(control.AgentIdentity.PID)
 				if err1 != nil || err2 != nil {
 					t.Fatalf("get process groups: %v %v", err1, err2)
