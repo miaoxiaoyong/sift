@@ -12,6 +12,11 @@ import (
 // GateEvaluationRecord is the durable result of one invocation of the pure
 // Gate. SnapshotJSON and VerdictJSON are already canonicalized by gate; this
 // package deliberately does not re-evaluate them.
+type GateBrainInputLink struct {
+	LogicalCallID string
+	Touchpoint    string
+}
+
 type GateEvaluationRecord struct {
 	RunID, GateInputHash, GateVersion string
 	SnapshotSchemaVersion             int
@@ -21,6 +26,7 @@ type GateEvaluationRecord struct {
 	RiskSourceVersion                 string
 	VerdictDigest, ShadowDecision     string
 	FeaturesJSON                      json.RawMessage
+	BrainInputLinks                   []GateBrainInputLink
 	CacheHit                          bool
 	NowMS                             int64
 }
@@ -37,6 +43,13 @@ func (r GateEvaluationRecord) validate() error {
 	}
 	if r.ShadowDecision != "allow" && r.ShadowDecision != "block" && r.ShadowDecision != "inconclusive" {
 		return errors.New("storage: invalid gate shadow decision")
+	}
+	seen := make(map[string]bool, len(r.BrainInputLinks))
+	for _, link := range r.BrainInputLinks {
+		if link.LogicalCallID == "" || (link.Touchpoint != "T3" && link.Touchpoint != "T5") || seen[link.LogicalCallID] {
+			return errors.New("storage: invalid gate brain input links")
+		}
+		seen[link.LogicalCallID] = true
 	}
 	return nil
 }
@@ -110,6 +123,18 @@ func recordGateEvaluationTxWithIDs(ctx context.Context, tx *sql.Tx, r GateEvalua
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM gate_input_snapshots WHERE gate_input_hash=?`, r.GateInputHash).Scan(&out.SnapshotID); err != nil {
 		return out, err
+	}
+	for _, link := range r.BrainInputLinks {
+		var touchpoint, status string
+		if err := tx.QueryRowContext(ctx, `SELECT touchpoint, status FROM brain_calls WHERE id=?`, link.LogicalCallID).Scan(&touchpoint, &status); err != nil {
+			return out, err
+		}
+		if touchpoint != link.Touchpoint || status == BrainCallRunning {
+			return out, errors.New("storage: gate brain input link must reference a terminal matching call")
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO brain_gate_input_links (logical_call_id,gate_input_snapshot_id,touchpoint,created_at_ms) VALUES (?,?,?,?) ON CONFLICT(logical_call_id,gate_input_snapshot_id) DO NOTHING`, link.LogicalCallID, out.SnapshotID, link.Touchpoint, r.NowMS); err != nil {
+			return out, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO gate_cache (gate_input_hash,gate_version,snapshot_id,verdict_json,verdict_digest,created_at_ms) VALUES (?,?,?,?,?,?) ON CONFLICT(gate_input_hash,gate_version) DO NOTHING`, r.GateInputHash, r.GateVersion, out.SnapshotID, string(r.VerdictJSON), r.VerdictDigest, r.NowMS); err != nil {
 		return out, err

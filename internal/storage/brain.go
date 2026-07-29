@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-
-	"github.com/miaoxiaoyong/sift/internal/decode"
 )
 
 // Brain write/read ports for specs/storage.md §10.1. The three-table model
@@ -654,81 +652,11 @@ func (d *DB) TokenConsumed(ctx context.Context, bucketStartMS int64) (int64, err
 	return consumed, nil
 }
 
-// ExportBrainCallsJSONL writes the replay records of storage.md §10.8: one
-// brain_call record per logical call carrying attempts ordered by
-// provider_attempt, sorted by (recorded_at_ms, record_type, record_id).
+// ExportBrainCallsJSONL exports Brain replay schema v2, including every real
+// Gate-input association. ExportReplayJSONL additionally interleaves Gate
+// evaluation records in stable chronological order.
 func (d *DB) ExportBrainCallsJSONL(ctx context.Context, w io.Writer) error {
-	rows, err := d.db.QueryContext(ctx,
-		`SELECT `+brainCallColumns+` FROM brain_calls ORDER BY started_at_ms, id`)
-	if err != nil {
-		return err
-	}
-	// The write pool is pinned to one connection: collect all calls before
-	// issuing per-call attempt queries.
-	var calls []BrainCall
-	for rows.Next() {
-		call, err := scanBrainCall(rows)
-		if err != nil {
-			rows.Close()
-			return err
-		}
-		calls = append(calls, call)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	for _, call := range calls {
-		attempts, err := d.BrainCallAttempts(ctx, call.ID)
-		if err != nil {
-			return err
-		}
-		record := map[string]any{
-			"record_type":            "brain_call",
-			"schema_version":         1,
-			"record_id":              call.ID,
-			"recorded_at_ms":         call.StartedAtMS,
-			"scope":                  call.Scope,
-			"subject_key":            call.SubjectKey,
-			"touchpoint":             call.Touchpoint,
-			"call_seq":               call.CallSeq,
-			"prompt_version":         call.PromptVersion,
-			"output_schema_version":  call.OutputSchemaVersion,
-			"status":                 call.Status,
-			"selected_attempt_no":    call.SelectedAttemptNo,
-			"fallback_reason":        nullable(call.FallbackReason),
-			"input":                  json.RawMessage(call.InputJSON),
-			"input_digest":           call.InputDigest,
-			"validated_output":       rawOrNull(call.ValidatedOutputJSON),
-			"gate_input_snapshot_id": nil,
-		}
-		list := make([]any, 0, len(attempts))
-		for _, a := range attempts {
-			list = append(list, map[string]any{
-				"provider_attempt":     a.ProviderAttempt,
-				"outcome":              a.Outcome,
-				"provider_error_code":  nullable(a.ProviderErrorCode),
-				"raw_output":           a.RawOutputText,
-				"raw_output_digest":    a.RawOutputDigest,
-				"raw_output_bytes":     a.RawOutputBytes,
-				"raw_output_truncated": a.RawOutputTruncated,
-				"input_tokens":         a.InputTokens,
-				"output_tokens":        a.OutputTokens,
-				"started_at_ms":        a.StartedAtMS,
-				"finished_at_ms":       a.FinishedAtMS,
-			})
-		}
-		record["attempts"] = list
-		line, err := decode.Canonical(record)
-		if err != nil {
-			return err
-		}
-		if _, err := w.Write(append(line, '\n')); err != nil {
-			return err
-		}
-	}
-	return nil
+	return d.ExportBrainCallsJSONLV2(ctx, w)
 }
 
 func rawOrNull(b []byte) any {

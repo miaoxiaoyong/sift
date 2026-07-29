@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,59 @@ func TestRecordGateEvaluationAlwaysAppendsCalibration(t *testing.T) {
 	assertCount(t, db, "gate_evaluations", 2)
 	assertCount(t, db, "calibration_entries", 2)
 	assertCount(t, db, "ledger_entries", 2)
+}
+
+func TestExportReplayJSONLUsesFrozenGateAndLinkedBrainTrace(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	if err := db.SeedProjectForTest(ctx, "cfg", "project", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedForgeRunForTest(ctx, "run", "project", "cfg", "42", testNow); err != nil {
+		t.Fatal(err)
+	}
+	call, err := db.ReserveBrainCall(ctx, ReserveBrainCallCmd{Scope: BrainScopeRun, SubjectKey: "run:run", RunID: "run", Touchpoint: "T3", PromptVersion: "T3/v1", OutputSchemaVersion: 1, InputJSON: []byte(`{"run_id":"run"}`), InputDigest: testCallIDDigest, StartedAtMS: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.RecordBrainAttempt(ctx, BrainAttemptCmd{CallID: call.ID, ProviderAttempt: 0, Outcome: BrainAttemptFallback, RequestDigest: testCallIDDigest, StartedAtMS: testNow, FinishedAtMS: testNow, TokenLimit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinalizeBrainCall(ctx, FinalizeBrainCallCmd{CallID: call.ID, Status: BrainCallFallback, FallbackReason: "provider_disabled", FinishedAtMS: testNow}); err != nil {
+		t.Fatal(err)
+	}
+	r := gateRecord(testNow)
+	r.BrainInputLinks = []GateBrainInputLink{{LogicalCallID: call.ID, Touchpoint: "T3"}}
+	if _, err := db.RecordGateEvaluation(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	if err := db.ExportReplayJSONL(ctx, &out); err != nil {
+		t.Fatal(err)
+	}
+	var gateRecord, brainRecord map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record["record_type"] == "gate" {
+			gateRecord = record
+		} else if record["record_type"] == "brain_call" {
+			brainRecord = record
+		}
+	}
+	if gateRecord == nil || gateRecord["input"].(map[string]any)["schema_version"] != float64(1) {
+		t.Fatalf("frozen gate record = %v", gateRecord)
+	}
+	if brainRecord == nil || brainRecord["schema_version"] != float64(2) {
+		t.Fatalf("linked brain record = %v", brainRecord)
+	}
+	ids := brainRecord["gate_input_snapshot_ids"].([]any)
+	if len(ids) != 1 {
+		t.Fatalf("linked snapshot IDs = %v", ids)
+	}
 }
 
 func TestGateHITLIsAtomicWithCalibration(t *testing.T) {

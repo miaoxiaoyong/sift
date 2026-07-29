@@ -410,9 +410,9 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 4.5 回放集
 
-- [ ] `SELECT → JSONL` 导出当时冻结的 Gate 快照，不拼当前数据
-- [ ] 导出独立 Brain trace；仅真实参与 Gate 输入时携可空 snapshot ID
-- [ ] 导出后用同一 Gate 函数/Brain trace runner 重放；可量化漏放/误拦变化
+- [x] `SELECT → JSONL` 导出当时冻结的 Gate 快照，不拼当前数据（`storage.ExportReplayJSONL`）
+- [x] 导出独立 Brain trace；仅真实参与 Gate 输入时携可空 snapshot ID（`brain_gate_input_links` + Brain JSONL v2）
+- [x] 导出后用同一 Gate 函数/Brain trace runner 重放；可量化漏放/误拦变化（`internal/replay`）
 
 ### 先写 spec
 
