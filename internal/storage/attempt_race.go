@@ -126,7 +126,7 @@ func (d *DB) ResolveAttemptRace(ctx context.Context, cmd AttemptRaceCommand) (st
 		} else if phase != "spawning" {
 			return "", ErrHandoffConflict
 		} else {
-			if _, err = tx.ExecContext(ctx, `UPDATE attempts SET phase='running',agent_pid=?,agent_started_at_ms=?,agent_executable=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND phase='spawning'`, cmd.Agent.PID, cmd.Agent.StartedAtMS, cmd.Agent.Executable, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE attempts SET phase='running',agent_pid=?,agent_started_at_ms=?,agent_executable=?,heartbeat_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND phase='spawning'`, cmd.Agent.PID, cmd.Agent.StartedAtMS, cmd.Agent.Executable, cmd.NowMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
 				return "", err
 			}
 			if RunStatus(status) != RunRunning {

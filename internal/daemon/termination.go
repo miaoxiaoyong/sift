@@ -281,6 +281,7 @@ func (c *TerminationCoordinator) resolveLateFact(ctx context.Context, a storage.
 		// result.json. Recovery must still feed that started fact through the
 		// same CAS arbiter rather than silently terminating it.
 		var control struct {
+			AgentIdentity    attemptIdentityJSON `json:"agent_identity"`
 			Agent            attemptIdentityJSON `json:"agent"`
 			AgentPID         int64               `json:"agent_pid"`
 			AgentStartedAtMS int64               `json:"agent_started_at_ms"`
@@ -293,7 +294,10 @@ func (c *TerminationCoordinator) resolveLateFact(ctx context.Context, a storage.
 		if json.Unmarshal(data, &control) != nil {
 			return "", nil
 		}
-		agent := storage.AgentIdentity{PID: control.Agent.PID, StartedAtMS: control.Agent.StartedAtMS, Executable: control.Agent.Executable}
+		agent := storage.AgentIdentity{PID: control.AgentIdentity.PID, StartedAtMS: control.AgentIdentity.StartedAtMS, Executable: control.AgentIdentity.Executable}
+		if agent.PID == 0 {
+			agent = storage.AgentIdentity{PID: control.Agent.PID, StartedAtMS: control.Agent.StartedAtMS, Executable: control.Agent.Executable}
+		}
 		if agent.PID == 0 {
 			agent = storage.AgentIdentity{PID: control.AgentPID, StartedAtMS: control.AgentStartedAtMS, Executable: control.AgentExecutable}
 		}

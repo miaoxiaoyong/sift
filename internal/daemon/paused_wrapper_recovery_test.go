@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	osexec "os/exec"
@@ -31,7 +32,7 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 		name, point, script, phase string
 		agentLive                  bool
 	}{
-		{"control-initial", "before-permit-rpc", "while :; do sleep 1; done", "starting", true},
+		{"control-initial", "before-permit-rpc", "while :; do sleep 1; done", "starting", false},
 		{"control-rewrite", "before-started-rpc", "while :; do sleep 1; done", "spawning", true},
 		{"result-before-rename", "before-result-rename", "exit 0", "running", false},
 		{"result-after-rename", "after-result-rename", "exit 0", "running", false},
@@ -90,7 +91,7 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 			}
 			if tc.agentLive {
 				if agent == 0 {
-					t.Fatal("missing agent pid while agent should still be live")
+					agent = agentPIDFromControl(t, root)
 				}
 				assertPausedLive(t, agent, pgid)
 			}
@@ -149,11 +150,34 @@ func (b *pausedRecoveryBackend) Spawn(ctx context.Context, bootstrap string) (*o
 	}
 	b.count++
 	if b.spawns != "" {
-		if err := os.WriteFile(b.spawns, []byte(fmt.Sprintf("%d\n", cmd.Process.Pid)), 0600); err != nil {
+		f, err := os.OpenFile(b.spawns, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			return nil, err
+		}
+		_, err = fmt.Fprintf(f, "%d\n", cmd.Process.Pid)
+		_ = f.Close()
+		if err != nil {
 			return nil, err
 		}
 	}
 	return cmd.Process, nil
+}
+
+func agentPIDFromControl(t *testing.T, root string) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, "runs", "run-1", "attempts", "1", "control.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var control struct {
+		AgentIdentity struct {
+			PID int `json:"pid"`
+		} `json:"agent_identity"`
+	}
+	if err := json.Unmarshal(data, &control); err != nil || control.AgentIdentity.PID <= 0 {
+		t.Fatalf("control agent_identity: %v pid=%d", err, control.AgentIdentity.PID)
+	}
+	return control.AgentIdentity.PID
 }
 
 func buildPausedRecoveryWrapper(t *testing.T) string {

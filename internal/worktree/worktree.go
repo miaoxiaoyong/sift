@@ -4,6 +4,8 @@ package worktree
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,24 +131,30 @@ func (m *Manager) revListCount(ctx context.Context, dir, spec string) (int, erro
 
 // ReadResult decodes the wrapper result file without accepting unknown fields.
 func ReadResult(path string) (attempt.Result, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return attempt.Result{}, err
 	}
-	defer f.Close()
 	var wire struct {
-		ExitCode         *int             `json:"exit_code"`
-		Signal           string           `json:"signal"`
-		FinalHeadSHA     string           `json:"final_head_sha"`
-		Digest           string           `json:"digest"`
-		FinishedAt       string           `json:"finished_at"`
-		FinishedAtMS     int64            `json:"finished_at_ms"`
-		Agent            attempt.Identity `json:"agent"`
-		AgentPID         int              `json:"agent_pid"`
-		AgentStartedAtMS int64            `json:"agent_started_at_ms"`
-		AgentExecutable  string           `json:"agent_executable"`
+		SchemaVersion     int              `json:"schema_version"`
+		RunID             string           `json:"run_id"`
+		AttemptNo         int              `json:"attempt_no"`
+		Generation        int              `json:"generation"`
+		WrapperInstanceID string           `json:"wrapper_instance_id"`
+		AgentIdentity     attempt.Identity `json:"agent_identity"`
+		ExitCode          *int             `json:"exit_code"`
+		Signal            *string          `json:"signal"`
+		FinalHeadSHA      string           `json:"final_head_sha"`
+		ControlDigest     string           `json:"control_digest"`
+		Digest            string           `json:"digest"`
+		FinishedAt        string           `json:"finished_at"`
+		FinishedAtMS      int64            `json:"finished_at_ms"`
+		Agent             attempt.Identity `json:"agent"`
+		AgentPID          int              `json:"agent_pid"`
+		AgentStartedAtMS  int64            `json:"agent_started_at_ms"`
+		AgentExecutable   string           `json:"agent_executable"`
 	}
-	dec := json.NewDecoder(f)
+	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&wire); err != nil {
 		return attempt.Result{}, fmt.Errorf("worktree: decode result: %w", err)
@@ -154,15 +162,28 @@ func ReadResult(path string) (attempt.Result, error) {
 	var finished time.Time
 	if wire.FinishedAtMS > 0 {
 		finished = time.UnixMilli(wire.FinishedAtMS)
-	} else {
+	} else if wire.FinishedAt != "" {
 		parsed, parseErr := time.Parse(time.RFC3339Nano, wire.FinishedAt)
 		if parseErr != nil {
 			return attempt.Result{}, fmt.Errorf("worktree: invalid finished_at: %w", parseErr)
 		}
 		finished = parsed
 	}
-	if wire.Agent == (attempt.Identity{}) {
-		wire.Agent = attempt.Identity{PID: wire.AgentPID, StartedAtMS: wire.AgentStartedAtMS, Executable: wire.AgentExecutable}
+	agent := wire.AgentIdentity
+	if agent == (attempt.Identity{}) {
+		agent = wire.Agent
 	}
-	return attempt.Result{ExitCode: wire.ExitCode, Signal: wire.Signal, FinalHeadSHA: wire.FinalHeadSHA, Digest: wire.Digest, FinishedAt: finished, Agent: wire.Agent}, nil
+	if agent == (attempt.Identity{}) {
+		agent = attempt.Identity{PID: wire.AgentPID, StartedAtMS: wire.AgentStartedAtMS, Executable: wire.AgentExecutable}
+	}
+	digest := wire.Digest
+	if digest == "" {
+		sum := sha256.Sum256(data)
+		digest = hex.EncodeToString(sum[:])
+	}
+	signal := ""
+	if wire.Signal != nil {
+		signal = *wire.Signal
+	}
+	return attempt.Result{ExitCode: wire.ExitCode, Signal: signal, FinalHeadSHA: wire.FinalHeadSHA, Digest: digest, FinishedAt: finished, Agent: agent}, nil
 }
