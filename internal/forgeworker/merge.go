@@ -11,11 +11,12 @@ import (
 )
 
 type mergeChangePayload struct {
-	ProjectID       string `json:"project_id"`
-	RunID           string `json:"run_id"`
-	ChangeID        string `json:"change_id"`
-	ExpectedHeadSHA string `json:"expected_head_sha"`
-	Method          string `json:"method"`
+	ProjectID        string `json:"project_id"`
+	RunID            string `json:"run_id"`
+	ChangeID         string `json:"change_id"`
+	GateEvaluationID string `json:"gate_evaluation_id"`
+	ExpectedHeadSHA  string `json:"expected_head_sha"`
+	Method           string `json:"method"`
 }
 
 // MergeWorker is the sole consumer of Gate-authorized merge_change operations.
@@ -39,7 +40,7 @@ func (w *MergeWorker) RunOnce(ctx context.Context) error {
 		return err
 	}
 	var p mergeChangePayload
-	if err := json.Unmarshal(c.Payload, &p); err != nil || p.ProjectID == "" || p.RunID == "" || p.ChangeID == "" || p.ExpectedHeadSHA == "" || p.Method == "" {
+	if err := json.Unmarshal(c.Payload, &p); err != nil || p.ProjectID == "" || p.RunID == "" || p.ChangeID == "" || p.GateEvaluationID == "" || p.ExpectedHeadSHA == "" || p.Method == "" {
 		if err == nil {
 			err = errors.New("invalid merge_change payload")
 		}
@@ -61,15 +62,23 @@ func (w *MergeWorker) RunOnce(ctx context.Context) error {
 	if current.State != forge.ChangeOpen || current.HeadSHA != p.ExpectedHeadSHA {
 		return w.finish(ctx, *c, storage.OperationStale, "", "head changed or change is no longer open", mergeEvidence(current), now)
 	}
-	merged, err := w.Client.MergeChange(ctx, ref, p.ChangeID, p.ExpectedHeadSHA, p.Method)
-	if err != nil {
+	if _, err := w.Client.MergeChange(ctx, ref, p.ChangeID, p.ExpectedHeadSHA, p.Method); err != nil {
 		var classified *forge.ClassifiedError
 		if errors.As(err, &classified) && errors.Is(err, forge.ErrSemanticConflict) {
 			return w.finish(ctx, *c, storage.OperationStale, "", classified.Summary, nil, now)
 		}
 		return w.classified(ctx, *c, err, now)
 	}
-	return w.finish(ctx, *c, storage.OperationSucceeded, "", "", mergeEvidence(merged), now)
+	// A merge response is not terminal evidence: persist only a fresh,
+	// authoritative observation of the expected Gate head.
+	terminal, err := w.Client.GetChange(ctx, ref, p.ChangeID)
+	if err != nil {
+		return w.classified(ctx, *c, err, now)
+	}
+	if terminal.State != forge.ChangeMerged || terminal.HeadSHA != p.ExpectedHeadSHA {
+		return w.finish(ctx, *c, storage.OperationConflict, storage.ErrorSemanticConflict, "merge terminal state does not match Gate authorization", mergeEvidence(terminal), now)
+	}
+	return w.finish(ctx, *c, storage.OperationSucceeded, "", "", mergeEvidence(terminal), now)
 }
 
 func (w *MergeWorker) finish(ctx context.Context, c storage.ClaimedOperation, state storage.OperationState, class storage.ErrorClass, summary string, evidence json.RawMessage, now time.Time) error {

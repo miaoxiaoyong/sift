@@ -82,12 +82,12 @@ func (r *Reconciler) reconcile(ctx context.Context, c storage.GateCandidate, now
 		return err
 	}
 	features, _ := json.Marshal(map[string]any{"run": map[string]string{"kind": c.TaskKind}, "change": map[string]string{"id": after.ID, "head_sha": after.HeadSHA}})
-	verdict, err := r.record(ctx, c, in, features, now)
+	verdict, recorded, err := r.record(ctx, c, in, features, now)
 	if err != nil {
 		return err
 	}
 	if verdict.Kind == "ready" && verdict.Code == "merge" {
-		return EnqueueMergeChange(ctx, r.DB, in, verdict, "merge", now.UnixMilli())
+		return EnqueueMergeChange(ctx, r.DB, in, verdict, recorded.EvaluationID, "merge", now.UnixMilli())
 	}
 	return nil
 }
@@ -183,21 +183,21 @@ func (r *Reconciler) t5(ctx context.Context, c storage.GateCandidate, change for
 	return Triage{Classification: string(out.Classification), RetryCheckID: out.RetryCheckID, Source: sourceGate(out.Source)}, gateJobs, nil
 }
 
-func (r *Reconciler) record(ctx context.Context, c storage.GateCandidate, in Input, features json.RawMessage, now time.Time) (Verdict, error) {
+func (r *Reconciler) record(ctx context.Context, c storage.GateCandidate, in Input, features json.RawMessage, now time.Time) (Verdict, storage.RecordedGateEvaluation, error) {
 	v, err := Evaluate(in)
 	if err != nil {
-		return Verdict{}, err
+		return Verdict{}, storage.RecordedGateEvaluation{}, err
 	}
 	if v.Kind != "hitl" {
-		got, _, err := EvaluateAndRecord(ctx, r.DB, in, false, features, now.UnixMilli())
-		return got, err
+		got, recorded, err := EvaluateAndRecord(ctx, r.DB, in, false, features, now.UnixMilli())
+		return got, recorded, err
 	}
 	cmd, err := interruptCommand(c, in, v, r.Attention, now.UnixMilli())
 	if err != nil {
-		return Verdict{}, err
+		return Verdict{}, storage.RecordedGateEvaluation{}, err
 	}
-	got, _, _, err := EvaluateRecordAndEmitInterrupt(ctx, r.DB, in, false, features, cmd)
-	return got, err
+	got, recorded, _, err := EvaluateRecordAndEmitInterrupt(ctx, r.DB, in, false, features, cmd)
+	return got, recorded, err
 }
 
 func sourceGate(s brain.BrainSource) Source {
@@ -206,11 +206,26 @@ func sourceGate(s brain.BrainSource) Source {
 func boolp(v bool) *bool { return &v }
 
 func readBasePolicy(ctx context.Context, repo, base string) (policy.BasePolicy, error) {
-	out, err := exec.CommandContext(ctx, "git", "-C", repo, "show", base+":.sift/policy.yaml").Output()
+	sha, err := exec.CommandContext(ctx, "git", "-C", repo, "rev-parse", "--verify", base+"^{commit}").Output()
 	if err != nil {
+		return policy.BasePolicy{}, fmt.Errorf("read base policy %q: resolve base: %w", base, err)
+	}
+	object := strings.TrimSpace(string(sha))
+	out, err := exec.CommandContext(ctx, "git", "-C", repo, "show", object+":.sift/policy.yaml").Output()
+	if err == nil {
+		return policy.Parse(out)
+	}
+	// A missing policy is normal, but only after the base commit has been
+	// resolved. ls-tree itself must succeed; its empty result is the only
+	// missing-file case, so repository/read failures cannot fail open.
+	listed, listErr := exec.CommandContext(ctx, "git", "-C", repo, "ls-tree", "--name-only", object, "--", ".sift/policy.yaml").Output()
+	if listErr != nil {
+		return policy.BasePolicy{}, fmt.Errorf("read base policy %q: inspect policy path: %w", object, listErr)
+	}
+	if strings.TrimSpace(string(listed)) == "" {
 		return policy.Missing(), nil
 	}
-	return policy.Parse(out)
+	return policy.BasePolicy{}, fmt.Errorf("read base policy %q: git show: %w", object, err)
 }
 func changedPaths(diff string) []string {
 	seen := map[string]bool{}

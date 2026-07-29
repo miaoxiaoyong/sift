@@ -3,6 +3,7 @@ package intake
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -80,6 +81,52 @@ func TestReconcilerOnceExternalMergeCompletesWaitingHuman(t *testing.T) {
 	}
 	if facts != 1 || decisions != 1 {
 		t.Fatalf("external merge audit facts=%d human decisions=%d, want 1 each", facts, decisions)
+	}
+}
+
+func TestReconcilerClassifiesSucceededGateMergeWithoutBypass(t *testing.T) {
+	db, project := reconcilerDB(t, "sift-merge")
+	fc := forge.NewFake()
+	addIssue(fc, project.Ref, "1", forge.IssueOpen)
+	change := fc.AddChange(project.Ref, "c1", "head1")
+	seedWaitingRun(t, db, project, "run-merge", "1", "c1")
+	payload, err := json.Marshal(map[string]string{"project_id": project.ID, "run_id": "run-merge", "change_id": "c1", "gate_evaluation_id": "ge-1", "expected_head_sha": "head1", "method": "merge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.EnqueueOperation(context.Background(), storage.Operation{Key: storage.MergeChangeOperationKey("run-merge", "head1"), Kind: storage.OperationMergeChange, RunID: "run-merge", Payload: payload}, reconcilerNow); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := db.ClaimOutboxOperationKindProject(context.Background(), "test", storage.OperationMergeChange, project.ID, reconcilerNow, 1000)
+	if err != nil || claim == nil {
+		t.Fatalf("claim merge: %#v, %v", claim, err)
+	}
+	if err := db.CompleteOutboxAttempt(context.Background(), *claim, storage.CompleteOutcome{State: storage.OperationSucceeded, NowMS: reconcilerNow + 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fc.InjectMerged(project.Ref, "c1", time.UnixMilli(reconcilerNow)); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, db, fc, project)
+	run, err := db.Run(context.Background(), "run-merge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != storage.RunDone || run.GateBypassed || run.ChangeID != change.ID {
+		t.Fatalf("run after Sift merge = %+v, want done without bypass", run)
+	}
+	var decisions int
+	check, err := sql.Open("sqlite", db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	if err := check.QueryRow(`SELECT COUNT(*) FROM ledger_entries WHERE run_id='run-merge' AND entry_kind='human_decision'`).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 0 {
+		t.Fatalf("Sift merge wrote manual decision count=%d", decisions)
 	}
 }
 

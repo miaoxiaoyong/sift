@@ -13,7 +13,7 @@ import (
 
 func enqueueMerge(t *testing.T, db *storage.DB, head string) {
 	t.Helper()
-	p, err := json.Marshal(mergeChangePayload{ProjectID: "p1", RunID: "r1", ChangeID: "c1", ExpectedHeadSHA: head, Method: "merge"})
+	p, err := json.Marshal(mergeChangePayload{ProjectID: "p1", RunID: "r1", ChangeID: "c1", GateEvaluationID: "gate-" + head, ExpectedHeadSHA: head, Method: "merge"})
 	if err != nil {
 		t.Fatal(err)
 	}

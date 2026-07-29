@@ -3,6 +3,7 @@ package gate_test
 import (
 	"bytes"
 	"context"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,11 +56,12 @@ func TestReconcilerPhaseEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			client := phaseForge{path: tc.path, checks: tc.checks, drift: tc.drift}
+			repo := initPolicyRepo(t)
 			brainCfg := config.Brain{Executable: "fake", DailyTokenLimit: 100, MaxInputBytes: 1 << 20, MaxRawOutputBytes: 1 << 20}
 			if tc.disabled {
 				brainCfg.Executable = ""
 			}
-			r := &gate.Reconciler{DB: db, Forge: &client, Brain: brain.NewShell(db, brainCfg, &brain.FakeProvider{Responses: tc.responses}, func() time.Time { return now }), ProjectID: "p", Project: forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo-p"}, Repo: t.TempDir(), Defaults: config.GateDefaults{ReviewPolicy: config.ReviewPolicyNever, RiskyReviewThreshold: 100, AutoMerge: true, ChecksPendingTimeout: time.Hour, FlakyRetryLimit: 1}, Attention: config.Attention{DayTimezone: "UTC", DailyQuota: config.DailyQuota{Low: 3, Normal: 3, High: 3}, MaxEscalations: 1}, Now: func() time.Time { return now }}
+			r := &gate.Reconciler{DB: db, Forge: &client, Brain: brain.NewShell(db, brainCfg, &brain.FakeProvider{Responses: tc.responses}, func() time.Time { return now }), ProjectID: "p", Project: forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo-p"}, Repo: repo, Defaults: config.GateDefaults{ReviewPolicy: config.ReviewPolicyNever, RiskyReviewThreshold: 100, AutoMerge: true, ChecksPendingTimeout: time.Hour, FlakyRetryLimit: 1}, Attention: config.Attention{DayTimezone: "UTC", DailyQuota: config.DailyQuota{Low: 3, Normal: 3, High: 3}, MaxEscalations: 1}, Now: func() time.Time { return now }}
 			if err := r.ReconcileOnce(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -104,6 +106,17 @@ func TestReconcilerPhaseEvidence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func initPolicyRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "main"}, {"config", "user.email", "test@example.invalid"}, {"config", "user.name", "Sift test"}, {"commit", "--allow-empty", "-m", "initial"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return repo
 }
 
 type phaseForge struct {

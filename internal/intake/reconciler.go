@@ -85,12 +85,18 @@ func (r *Reconciler) reconcileProject(ctx context.Context, project Project, now 
 			}
 			switch change.State {
 			case forge.ChangeMerged:
-				if err := r.recordExternalMerge(ctx, candidate, change, now); err != nil {
+				siftMerge, err := r.DB.IsSiftMerge(ctx, candidate.RunID, change.ID, change.HeadSHA)
+				if err != nil {
 					return err
+				}
+				if !siftMerge {
+					if err := r.recordExternalMerge(ctx, candidate, change, now); err != nil {
+						return err
+					}
 				}
 				if _, err := r.DB.TransitionRun(ctx, candidate.RunID, candidate.Version, storage.DomainCommand{
 					To: storage.RunDone, Source: storage.SourceForge, ChangeID: change.ID,
-					ChangeURL: change.URL, ChangeHeadSHA: change.HeadSHA, GateBypassed: true,
+					ChangeURL: change.URL, ChangeHeadSHA: change.HeadSHA, GateBypassed: !siftMerge,
 					OccurredAtMS: now.UnixMilli(),
 				}); err != nil && !errors.Is(err, storage.ErrRejectedStale) {
 					return err
@@ -131,15 +137,10 @@ func (r *Reconciler) recordExternalMerge(ctx context.Context, c storage.ReverseS
 	if err != nil {
 		return err
 	}
-	bound, err := r.DB.BindExternalDecisionForHead(ctx, factID, c.RunID, change.HeadSHA, now.UnixMilli())
-	if err != nil {
-		return err
-	}
 	_, err = r.DB.RecordHumanDecision(ctx, storage.RecordHumanDecisionCmd{Action: storage.DecisionManualMerge, ForgeFactEventID: factID, NowMS: now.UnixMilli(), Certification: r.Certification})
 	if err != nil {
 		return err
 	}
-	_ = bound // binding controls settlement inside RecordHumanDecision; both paths retain the fact.
 	return nil
 }
 
