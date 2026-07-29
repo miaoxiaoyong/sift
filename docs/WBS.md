@@ -261,22 +261,22 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 3.1 ExecutionBackend、launcher 与 wrapper
 
-- [ ] `process` backend 只负责启动 wrapper；Agent 恒由 wrapper 直接 spawn 到其进程组
-- [ ] Agent 启动只经一个 launcher 函数，V0 为恒等实现；不得绕过该接缝
+- [x] `process` backend 只负责启动 wrapper；Agent 恒由 wrapper 直接 spawn 到其进程组
+- [x] Agent 启动只经一个 launcher 函数，V0 为恒等实现；不得绕过该接缝
 - [x] daemon 只从自身安装目录解析同版本 wrapper，不从 `PATH` 猜；wrapper/daemon 主版本不一致拒绝
-- [ ] Agent 环境只注入非机密 `SIFT_RUN_DIR`；bootstrap/run token 不进 argv 或环境变量
-- [ ] 逐条实现 DESIGN §8.4 wrapper 契约，控制文件用 temp + fsync + rename
+- [x] Agent 环境只注入非机密 `SIFT_RUN_DIR`；bootstrap/run token 不进 argv 或环境变量
+- [x] 逐条实现 DESIGN §8.4 wrapper 契约，控制文件用 temp + fsync + rename
 
-> 证据（PR #109 / #107）：`internal/runtime/runtime.go`——`ProcessBackend` 仅 spawn wrapper 且 `Setpgid`、唯一 `Launcher`/`DirectLauncher` V0 恒等、`ResolveWrapper` 仅从 daemon 安装目录解析并按完整版本拒绝；`internal/runtime/files.go`——`WriteControlFile` 走 temp+fsync+rename+目录 sync、`0600`；`cmd/sift-agent-wrapper/main.go`——`--version` 同版本握手。注：wrapper 主体仍为 M1 bootstrap stub，agent 进程组 spawn 经 `DirectLauncher` 单一接缝预留；控制面 acquire/permit/started 接线属 §3.2，此处不勾。
+> 证据（PR #109 / #107 及后续 P1 关闭链）：`internal/runtime/runtime.go` 的 `ProcessBackend` 仅 spawn wrapper，`Launcher`/`DirectLauncher` 是唯一 Agent 启动接缝，环境仅含 `SIFT_RUN_DIR`；`internal/wrapper/wrapper.go` 的生产状态机完成 bootstrap 读后删除、acquire/permit/started、control/heartbeat/result、信号转发与进程组回收；`internal/runtime/files.go` 的控制文件走 temp+fsync+rename+目录 sync、`0600`。`TestProductionWrapperKeepsAgentInWrapperProcessGroup`、`TestProductionWrapperReplaysLostPermitResponseWithSameParameters` 与 `TestLaunchWorkerWrapperCrashSuite` 覆盖生产拓扑、重放和崩溃链。
 
 #### 3.2 Spawn handoff 与控制面最终接线
 
-- [ ] 逐步实现 ADR-010 的 operation lease、acquire/session、permit、spawning handoff、started 证据
-- [ ] wrapper 不写 DB；permit 的重放不得再次进入 spawn
+- [x] 逐步实现 ADR-010 的 operation lease、acquire/session、permit、spawning handoff、started 证据
+- [x] wrapper 不写 DB；permit 的重放不得再次进入 spawn
 - [x] `spawning` 期间不可换 owner；fencing 不能替代旧执行者消失证明
 - [x] V10a wrapper 段：跨 instance/session/permit/generation 使用全部拒绝
 
-> 证据（PR #115）：`internal/storage/handoff.go`——`AcquireLaunchClaim`/`PermitSpawn`/`ConfirmStarted` 三个 DB-only 写端口串联 operation lease + acquire/session（pending→`starting`）、一次性不可换 permit（`starting`→`spawning`）、started 证据（`spawning`→`running`），均只校验 wrapper 身份（PID+started_at_ms+executable+pgid），不依赖 fencing；permit 重放对相同元组为提交幂等 no-op、换 permit/owner 返 `ErrHandoffConflict`，`spawning` 期换 wrapper 即拒。`internal/controlplane/handoff.go`——`claim.acquire`/`claim.permit_spawn`/`claim.started` 三动词按 auth kind 与 `onlyKeys` 严格分诊，wrapper 仅经 RPC 调用，不写 DB。`internal/runtime/handoff.go`——`PermitGate.SpawnOnce` 在 wrapper 本地一次性消费 permit，重放不得再次进入 OS spawn。跨 instance/session/permit/generation 全部映射为 `unauthorized`/`stale`/`conflict`；#144/PR #146 起这些拒绝经 `handoffFailure`→`RecordHandoffSecurityEvent` 记 `security.handoff_rejected` 安全事件（证据见 §3.4）。覆盖 `TestHandoffPermitReplayAndStartedEvidence`。注：受控终止/完整恢复矩阵（§3.4/3.7）与「control nonce→PGID 终止取证」未含在本片，对应门禁项保持 `[ ]`。
+> 证据（PR #115）：`internal/storage/handoff.go`——`AcquireLaunchClaim`/`PermitSpawn`/`ConfirmStarted` 三个 DB-only 写端口串联 operation lease + acquire/session（pending→`starting`）、一次性不可换 permit（`starting`→`spawning`）、started 证据（`spawning`→`running`），均只校验 wrapper 身份（PID+started_at_ms+executable+pgid），不依赖 fencing；permit 重放对相同元组为提交幂等 no-op、换 permit/owner 返 `ErrHandoffConflict`，`spawning` 期换 wrapper 即拒。`internal/controlplane/handoff.go`——`claim.acquire`/`claim.permit_spawn`/`claim.started` 三动词按 auth kind 与 `onlyKeys` 严格分诊，wrapper 仅经 RPC 调用，不写 DB。`internal/runtime/handoff.go`——`PermitGate.SpawnOnce` 在 wrapper 本地一次性消费 permit，重放不得再次进入 OS spawn。跨 instance/session/permit/generation 全部映射为 `unauthorized`/`stale`/`conflict`；#144/PR #146 起这些拒绝经 `handoffFailure`→`RecordHandoffSecurityEvent` 记 `security.handoff_rejected` 安全事件（证据见 §3.4）。覆盖 `TestHandoffPermitReplayAndStartedEvidence`。后续 P1 关闭链已将这些端口接入生产 launch worker/wrapper，并以 `TestLaunchWorkerWrapperCrashSuite`、`TestLaunchWorkerKilledAtHandoffBoundaries`、`TestProductionWrapperReplaysLostPermitResponseWithSameParameters` 与 paused recovery matrix 覆盖跨崩溃 handoff；完整双后端恢复矩阵仍按 §3.4/M6 单独跟踪。
 
 #### 3.3 Worktree 与成功证据
 
@@ -298,9 +298,9 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 > 证据（PR #129）：`internal/daemon/termination.go`——唯一 `TerminationCoordinator` 是恢复 / 超时 / operator kill·retry 三源到受控终止的应用层桥：`Recover`（启动期、先于 `daemon.Assemble` 起任何 worker）、`Timeout`（supervisor tick 扫持久化 heartbeat 事实，`StaleHeartbeatAttempts`）、`Operator`（`ops.kill`/`ops.retry`）三入口汇入同一私有 `terminate` → `Terminator.Terminate`（§3.7）→ `RecordTerminationObservation`（`internal/storage/termination.go`）。故凡「执行体可能存活却要判 orphaned」一律先经同一受控终止流程，第 3 项勾选。`internal/controlplane/server.go` 经 `SetOperatorAction` 把 kill/retry 限定在 daemon 拥有的回调上、CLI 仍不获 DB 句柄；`RecoveryAttempts` 显式不限 `runs.status`（`failed` Run 仍可持有隔离的存活执行体），覆盖 `TestRecoveryAttemptsIncludesNonterminalAttemptRegardlessOfRunState`、`TestOperatorKillAndRetryDelegateToTerminationCoordinator`。第 5 项已勾：`terminate` 仅在 `result.Absent` 且 `ProcessGroupVerified(agentID)` 为真时才认进程组消失为充分证明，而 `cmd/siftd/main.go` 未注入该谓词（nil），故任何 Agent/version 的进程组消失都不当充分证明、不自动 retry，落 `process_group_unverified` 诊断并经 §3.6 转 `waiting_human` + 隔离。
 >
-> **未完成（不得读作端到端）**：①完整恢复矩阵逐行（DESIGN §10.1 全行）——定向行已由 #144/PR #146 交付：多 wrapper 竞争、旧 generation 苏醒经 `internal/controlplane/handoff.go` 的 `handoffFailure` 调 `RecordHandoffSecurityEvent`（`internal/storage/security.go`，`security.handoff_rejected` 事件、disposition `conflict`/`stale`/`unauthorized`、不存凭据，覆盖 `TestRecordHandoffSecurityEventDoesNotPersistCredentials`）记安全事件；`Recover` 经 `ownerIsLive`（`Inspector.Observe` 校验完整 wrapper 身份）保留 starting/spawning 及 heartbeat 新鲜的 running owner、stale heartbeat 经 `heartbeatStale` 路由进同一 `terminate`（覆盖 `TestRecoverKeepsLiveStartingOwner`、`TestRecoverRoutesStaleHeartbeatThroughTermination`），第 6 项定向行（竞争/generation 苏醒/heartbeat 过期）已交。但全集未齐——`pending` re-dispatch 行（fencing 代次递增 + 重新入队）与后端会话存活观测（§10.1「后端会话在/wrapper 不在」「wrapper 在/后端会话不在」无 backend session liveness 探测）仍留 M6，故第 1 项与第 6 项保持 `[ ]`（定向行已交、全集未齐）。②boot recovery lease barrier 已由 #138 闭合：`StartDaemonBoot` 为每次启动写入一个 recovery completion 为空的新 boot，`cmd/siftd/main.go` 在 `Recover` 成功后才调用 `CompleteStartupRecovery`；`ClaimLaunchOperation` 在同一事务内验证该 boot 的 completion，再租约认领（含过期 lease 回收）。普通 outbox claim 与 kind-scoped claim 均拒绝 `launch_agent`，不能旁路屏障。覆盖 `TestLaunchClaimWaitsForCurrentBootRecoveryBarrier`。③Linux 平台身份探测已由 #133/PR #135 闭合：生产 `Inspector` 为 `runtime.PlatformProcessInspector`——Linux 经 procfs + owner-only `control.json` 独立重建 PID/启动时间/可执行路径/PGID/control nonce hash，任一证据缺失/失配即 live-but-incomplete、`Terminator` fail-closed **不发信号**；Darwin 无 native inspector，统一身份未知走同一冻结路径。第 4 项勾选。另注：第 5 项 `ProcessGroupVerified` 真值分支生产仍不可达——`cmd/siftd/main.go` 未注入该谓词（nil），即便 Linux 上 `Terminate` 已能证消失，协调器仍映射 `process_group_unverified`、确认消失/自动 retry 仍仅测试覆盖；真实资格判定谓词（按 Agent CLI + 版本）属 M6/M7。
+> **未完成（不得读作端到端）**：①完整恢复矩阵逐行（DESIGN §10.1 全行）——定向行已由 #144/PR #146 交付：多 wrapper 竞争、旧 generation 苏醒经 `internal/controlplane/handoff.go` 的 `handoffFailure` 调 `RecordHandoffSecurityEvent`（`internal/storage/security.go`，`security.handoff_rejected` 事件、disposition `conflict`/`stale`/`unauthorized`、不存凭据，覆盖 `TestRecordHandoffSecurityEventDoesNotPersistCredentials`）记安全事件；`Recover` 经 `ownerIsLive`（`Inspector.Observe` 校验完整 wrapper 身份）保留 starting/spawning 及 heartbeat 新鲜的 running owner、stale heartbeat 经 `heartbeatStale` 路由进同一 `terminate`（覆盖 `TestRecoverKeepsLiveStartingOwner`、`TestRecoverRoutesStaleHeartbeatThroughTermination`），第 6 项定向行（竞争/generation 苏醒/heartbeat 过期）已交。但全集未齐——`pending` re-dispatch 已由 `RecoverStartup` + `ApplyStartupRecoveryAction(redispatch)` 及 `TestRecoverStartupRedispatchesPendingAttemptBeforeOpeningBarrier` 闭合；后端会话存活观测（§10.1「后端会话在/wrapper 不在」「wrapper 在/后端会话不在」）依赖尚未实现的 tmux 后端，按验收权威表留 M6，故第 1/6 项保持 `[ ]` 表示完整双后端矩阵尚未最终闭合。②boot recovery lease barrier 已由 #138 闭合：`StartDaemonBoot` 为每次启动写入一个 recovery completion 为空的新 boot，`cmd/siftd/main.go` 在 `Recover` 成功后才调用 `CompleteStartupRecovery`；`ClaimLaunchOperation` 在同一事务内验证该 boot 的 completion，再租约认领（含过期 lease 回收）。普通 outbox claim 与 kind-scoped claim 均拒绝 `launch_agent`，不能旁路屏障。覆盖 `TestLaunchClaimWaitsForCurrentBootRecoveryBarrier`。③Linux 平台身份探测已由 #133/PR #135 闭合：生产 `Inspector` 为 `runtime.PlatformProcessInspector`——Linux 经 procfs + owner-only `control.json` 独立重建 PID/启动时间/可执行路径/PGID/control nonce hash，任一证据缺失/失配即 live-but-incomplete、`Terminator` fail-closed **不发信号**；Darwin 无 native inspector，统一身份未知走同一冻结路径。第 4 项勾选。另注：第 5 项 `ProcessGroupVerified` 真值分支生产仍不可达——`cmd/siftd/main.go` 未注入该谓词（nil），即便 Linux 上 `Terminate` 已能证消失，协调器仍映射 `process_group_unverified`、确认消失/自动 retry 仍仅测试覆盖；真实资格判定谓词（按 Agent CLI + 版本）属 M6/M7。
 >
-> **P1 定向结案（#201 / PR #202，PASS WITH NOTES）**：[第八次定向复审](reviews/2026-07-29-m3-rereview-8-pi-gpt-5.6-sol.md) 确认 paused recovery matrix 已用 outer supervisor、持久 execution wrapper 与 Agent 三面身份、恢复前后存活/空区间及持久 owner/claim/session/permit 投影，关闭 P1-1g5/g6 的“至多一个 owner”证据缺口；精确同步、真实 `SIGSTOP`、生产 `RecoverStartup` 路径和 marker 稳定性未回退。此为窄 P1 证据链，**不新增勾选**：`pending` re-dispatch、backend session liveness、生产 `ProcessGroupVerified`、DESIGN §10.1 其余行及 hooks 基线写入/自动复核（§3.8）仍未完成，分别留 M6/M7 或后续片；故本节第 1/6 项与 M3 V4 门禁继续保持 `[ ]`。
+> **P1 定向结案（#201 / PR #202，PASS WITH NOTES）**：[第八次定向复审](reviews/2026-07-29-m3-rereview-8-pi-gpt-5.6-sol.md) 确认 paused recovery matrix 已用 outer supervisor、持久 execution wrapper 与 Agent 三面身份、恢复前后存活/空区间及持久 owner/claim/session/permit 投影，关闭 P1-1g5/g6 的“至多一个 owner”证据缺口；精确同步、真实 `SIGSTOP`、生产 `RecoverStartup` 路径和 marker 稳定性未回退。该结论关闭 M3 process 段的最后 P1，并支持 §3.1/§3.2 与 M3 V4 首跑门禁勾选；它**不等于完整 V4**：backend session liveness、生产 `ProcessGroupVerified`、DESIGN §10.1 双后端最终矩阵及 hooks 基线写入/自动复核（§3.8）仍分别留 M6/M7 或后续片。阶段门禁裁决见 [M3 phase gate](reviews/2026-07-29-m3-phase-gate-pi-gpt-5.6-sol.md)。
 
 #### 3.5 attempt_resolution、隔离与唯一仲裁
 
@@ -353,7 +353,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### M3 门禁
 
-- [ ] V4 的 process backend、handoff、恢复矩阵、受控终止与资格门控部分通过
+- [x] V4 的 **M3 process 首跑段**（backend、handoff、恢复安全不变量、受控终止与未验证资格 fail-closed 门控）通过；完整双后端矩阵仍按验收权威表在 M6 最终闭合（[M3 phase gate PASS WITH NOTES](reviews/2026-07-29-m3-phase-gate-pi-gpt-5.6-sol.md)）
 - [x] V5a：base/worktree 读取源通过；硬护栏 V5b 留 M4（`TestManagerCreatesIsolatedWorktreeAndReadsBaseOnly` 覆盖 base-only 的 policy/context 读取与 worktree 改写隔离）
 - [x] V10a wrapper 凭据部分通过
 - [x] 每个 PRD reason 均能在无 T4/T6 时生成结构合法、可发布的 fallback Interrupt（`interruptTemplates`/`renderInterrupt` golden/vector 契约）
@@ -366,7 +366,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### 前置
 
-- [ ] M3 门禁通过
+- [x] M3 门禁通过（[phase gate PASS WITH NOTES](reviews/2026-07-29-m3-phase-gate-pi-gpt-5.6-sol.md)；不代表完整 V4/M6 已通过）
 - [ ] 本片开始前先完成下列 spec，而不是把 spec 完成列为本片结束条件
 
 ### 任务
