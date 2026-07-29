@@ -31,6 +31,7 @@ type Daemon struct {
 	Changes     []*forgeworker.ChangeWorker
 	Merges      []*forgeworker.MergeWorker
 	Successes   []*gate.SuccessReconciler
+	Gates       []*gate.Reconciler
 	Replies     []*intake.ReplyConsumer
 	Launch      *launchworker.Worker
 	Now         func() time.Time
@@ -99,6 +100,7 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 				return nil, fmt.Errorf("project %s: gate success worktree manager: %w", p.ID, err)
 			}
 			d.Successes = append(d.Successes, &gate.SuccessReconciler{DB: db, ProjectID: p.ID, Worktrees: worktrees, Now: now})
+			d.Gates = append(d.Gates, &gate.Reconciler{DB: db, Forge: adapter, Brain: brain.NewShell(db, cfg.Brain, brain.SubprocessProvider{Executable: cfg.Brain.Executable, Args: cfg.Brain.Args}, now), ProjectID: p.ID, Project: ref, Repo: p.Repo, Defaults: cfg.GateDefaults, Certification: cfg.Certification, Attention: cfg.Attention, Now: now})
 		}
 		d.Replies = append(d.Replies, &intake.ReplyConsumer{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now})
 	}
@@ -150,6 +152,11 @@ func (d *Daemon) Tick(ctx context.Context) error {
 	for i, w := range d.Changes {
 		if err := w.RunOnce(ctx); err != nil {
 			return fmt.Errorf("change[%d]: %w", i, err)
+		}
+	}
+	for i, r := range d.Gates {
+		if err := r.ReconcileOnce(ctx); err != nil {
+			return fmt.Errorf("gate[%d]: %w", i, err)
 		}
 	}
 	for i, w := range d.Merges {

@@ -724,6 +724,7 @@ func (a *Adapter) GetChecks(ctx context.Context, p ProjectRef, sha string) (Chec
 			return CheckSuite{Conclusion: "unknown"}, nil
 		}
 		var jobs []struct {
+			ID           int64  `json:"id"`
 			Name         string `json:"name"`
 			WebURL       string `json:"web_url"`
 			Status       string `json:"status"`
@@ -736,7 +737,7 @@ func (a *Adapter) GetChecks(ctx context.Context, p ProjectRef, sha string) (Chec
 		suite := CheckSuite{Conclusion: result, ExternalURL: ps[0].WebURL}
 		for _, j := range jobs {
 			if (j.Status == "failed" || j.Status == "canceled") && !j.AllowFailure {
-				suite.FailedJobs = append(suite.FailedJobs, CheckJob{Name: j.Name, WebURL: j.WebURL, AllowFailure: j.AllowFailure})
+				suite.FailedJobs = append(suite.FailedJobs, CheckJob{ID: strconv.FormatInt(j.ID, 10), Name: j.Name, WebURL: j.WebURL, AllowFailure: j.AllowFailure})
 				suite.Conclusion = "failure"
 			}
 		}
@@ -747,6 +748,7 @@ func (a *Adapter) GetChecks(ctx context.Context, p ProjectRef, sha string) (Chec
 	}
 	var checks struct {
 		CheckRuns []struct {
+			ID         int64  `json:"id"`
 			Name       string `json:"name"`
 			Conclusion string `json:"conclusion"`
 			HTMLURL    string `json:"html_url"`
@@ -786,7 +788,7 @@ func (a *Adapter) GetChecks(ctx context.Context, p ProjectRef, sha string) (Chec
 		switch r.Conclusion {
 		case "failure", "cancelled", "timed_out", "action_required":
 			add("failure")
-			suite.FailedJobs = append(suite.FailedJobs, CheckJob{Name: r.Name, WebURL: r.HTMLURL})
+			suite.FailedJobs = append(suite.FailedJobs, CheckJob{ID: strconv.FormatInt(r.ID, 10), Name: r.Name, WebURL: r.HTMLURL})
 		case "", "queued", "in_progress", "pending":
 			add("pending")
 		case "success", "neutral", "skipped":

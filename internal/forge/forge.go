@@ -97,8 +97,8 @@ type Comment struct {
 	CreatedAt        time.Time
 }
 type CheckJob struct {
-	Name, WebURL string
-	AllowFailure bool
+	ID, Name, WebURL string
+	AllowFailure     bool
 }
 type CheckSuite struct {
 	Conclusion  string
