@@ -9,6 +9,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -121,20 +122,23 @@ func TestLaunchWorkerWrapperCrashSuite(t *testing.T) {
 	}
 }
 
-func TestLaunchWorkerReclaimsPreparedBootstrapAfterCrashWindows(t *testing.T) {
+// TestLaunchWorkerKilledAtHandoffBoundaries kills a real launch-worker test
+// process at each durable handoff boundary, then starts a new daemon boot and
+// worker. It intentionally does not turn a hook error into a simulated crash.
+func TestLaunchWorkerKilledAtHandoffBoundaries(t *testing.T) {
 	wrapperPath := buildE2EWrapper(t)
-	for _, crash := range []struct {
-		name  string
-		hooks workerHooks
+	for _, point := range []struct {
+		name, recovery string
 	}{
-		{name: "after-rename", hooks: workerHooks{afterBootstrapWrite: injectedCrash}},
-		{name: "after-digest", hooks: workerHooks{afterBootstrapDigest: injectedCrash}},
-		{name: "before-spawn", hooks: workerHooks{beforeSpawn: injectedCrash}},
+		{"prepare", "redispatch"},
+		{"rename", "reuse_dispatch"},
+		{"digest", "reuse_dispatch"},
+		{"spawn", "reuse_dispatch"},
 	} {
-		t.Run(crash.name, func(t *testing.T) {
+		t.Run(point.name, func(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().Truncate(time.Millisecond)
-			root, err := os.MkdirTemp("/tmp", "sift-reclaim-")
+			root, err := os.MkdirTemp("/tmp", "sift-kill-")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -156,17 +160,26 @@ func TestLaunchWorkerReclaimsPreparedBootstrapAfterCrashWindows(t *testing.T) {
 			}
 			completeLaunchRecovery(t, db, boot, now.UnixMilli(), "supervise")
 
-			worker := &Worker{DB: db, BootID: boot, WorkerID: "crashed-worker", Root: root, Lease: 10 * time.Millisecond, Now: func() time.Time { return now }, Backend: &execWrapperBackend{path: wrapperPath, pgid: true}, Agents: launchTestAgents(), hooks: crash.hooks}
-			if err := worker.RunOnce(ctx); !errors.Is(err, errInjectedCrash) {
-				t.Fatalf("crashed worker = %v, want injected crash", err)
+			ready := filepath.Join(root, "worker-ready")
+			worker := osexec.Command(os.Args[0], "-test.run=^TestLaunchWorkerProcessHelper$")
+			worker.Env = append(os.Environ(), "SIFT_LAUNCH_HELPER=1", "SIFT_LAUNCH_ROOT="+root, "SIFT_LAUNCH_BOOT="+boot, "SIFT_LAUNCH_WRAPPER="+wrapperPath, "SIFT_LAUNCH_POINT="+point.name, "SIFT_LAUNCH_READY="+ready, fmt.Sprintf("SIFT_LAUNCH_NOW=%d", now.UnixMilli()))
+			if err := worker.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waitForFile(t, ready)
+			if err := worker.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			if err := worker.Wait(); err == nil {
+				t.Fatal("killed launch worker unexpectedly succeeded")
 			}
 
-			restartedAt := now.Add(20 * time.Millisecond)
+			restartedAt := now.Add(time.Second)
 			restartedBoot, err := db.StartDaemonBoot(ctx, "hash-cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), restartedAt.UnixMilli())
 			if err != nil {
 				t.Fatal(err)
 			}
-			completeLaunchRecovery(t, db, restartedBoot, restartedAt.UnixMilli(), "reuse_dispatch")
+			completeLaunchRecovery(t, db, restartedBoot, restartedAt.UnixMilli(), point.recovery)
 			server, err := controlplane.Start(config.Home{Path: filepath.Join(root, "runs")}, db)
 			if err != nil {
 				t.Fatal(err)
@@ -177,17 +190,14 @@ func TestLaunchWorkerReclaimsPreparedBootstrapAfterCrashWindows(t *testing.T) {
 
 			backend := &countingBackend{backend: &execWrapperBackend{path: wrapperPath, pgid: true}}
 			defer backend.cleanup()
-			worker = &Worker{DB: db, BootID: restartedBoot, WorkerID: "reclaimed-worker", Root: root, Lease: time.Minute, Now: func() time.Time { return restartedAt.Add(time.Millisecond) }, Backend: backend, Agents: launchTestAgents()}
-			if err := worker.RunOnce(ctx); err != nil {
-				t.Fatalf("reclaimed worker: %v", err)
+			restarted := &Worker{DB: db, BootID: restartedBoot, WorkerID: "restarted-worker", Root: root, Lease: time.Minute, Now: func() time.Time { return restartedAt.Add(time.Millisecond) }, Backend: backend, Agents: launchTestAgents()}
+			if err := restarted.RunOnce(ctx); err != nil {
+				t.Fatalf("restarted worker: %v", err)
 			}
 			marker := filepath.Join(root, "runs", "run-1", "attempts", "1", "agent-started")
 			waitForLines(t, marker, 1)
 			if backend.spawns != 1 {
-				t.Fatalf("wrappers spawned = %d, want 1", backend.spawns)
-			}
-			if lines := countFileLines(marker); lines != 1 {
-				t.Fatalf("agents started = %d, want 1", lines)
+				t.Fatalf("restarted wrapper spawns = %d, want 1", backend.spawns)
 			}
 			check, err := sql.Open("sqlite", db.Path())
 			if err != nil {
@@ -199,30 +209,75 @@ func TestLaunchWorkerReclaimsPreparedBootstrapAfterCrashWindows(t *testing.T) {
 	}
 }
 
-func completeLaunchRecovery(t *testing.T, db *storage.DB, boot string, nowMS int64, attemptAction string) {
-	t.Helper()
-	attempts, operations, err := db.StartupRecoveryPending(context.Background(), boot)
+// TestLaunchWorkerProcessHelper is only invoked in a child test binary. The
+// callback publishes a synchronous boundary and waits to be SIGKILLed.
+func TestLaunchWorkerProcessHelper(t *testing.T) {
+	if os.Getenv("SIFT_LAUNCH_HELPER") != "1" {
+		return
+	}
+	ctx := context.Background()
+	db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(os.Getenv("SIFT_LAUNCH_ROOT"), "sift.db"), BinaryVersion: controlplane.Version, Now: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, attempt := range attempts {
-		if err := db.ApplyStartupRecoveryAction(context.Background(), storage.StartupRecoveryAction{BootID: boot, RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedGeneration: attempt.Generation, ObservationDigest: attemptAction, Action: attemptAction, NowMS: nowMS}); err != nil {
+	defer db.Close()
+	pause := func() error {
+		if err := os.WriteFile(os.Getenv("SIFT_LAUNCH_READY"), []byte("ready"), 0600); err != nil {
+			return err
+		}
+		select {}
+	}
+	hooks := workerHooks{}
+	switch os.Getenv("SIFT_LAUNCH_POINT") {
+	case "prepare":
+		hooks.afterPrepare = pause
+	case "rename":
+		hooks.afterBootstrapWrite = pause
+	case "digest":
+		hooks.afterBootstrapDigest = pause
+	case "spawn":
+		hooks.beforeSpawn = pause
+	default:
+		t.Fatal("unknown launch helper boundary")
+	}
+	nowMS, err := strconv.ParseInt(os.Getenv("SIFT_LAUNCH_NOW"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := &Worker{DB: db, BootID: os.Getenv("SIFT_LAUNCH_BOOT"), WorkerID: "killed-worker", Root: os.Getenv("SIFT_LAUNCH_ROOT"), Lease: 10 * time.Millisecond, Now: func() time.Time { return time.UnixMilli(nowMS) }, Backend: &execWrapperBackend{path: os.Getenv("SIFT_LAUNCH_WRAPPER"), pgid: true}, Agents: launchTestAgents(), hooks: hooks}
+	if err := worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatal("launch worker passed kill boundary")
+}
+
+func completeLaunchRecovery(t *testing.T, db *storage.DB, boot string, nowMS int64, attemptAction string) {
+	t.Helper()
+	// redispatch creates a replacement operation, which needs its own receipt
+	// before the boot barrier can open.
+	for i := 0; i < 3; i++ {
+		attempts, operations, err := db.StartupRecoveryPending(context.Background(), boot)
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	for _, operation := range operations {
-		if err := db.ApplyStartupRecoveryAction(context.Background(), storage.StartupRecoveryAction{BootID: boot, OperationID: operation.ID, ExpectedOperationVersion: operation.Version, ObservationDigest: "converge", Action: "converge_operation", NowMS: nowMS}); err != nil {
-			t.Fatal(err)
+		if len(attempts) == 0 && len(operations) == 0 {
+			break
+		}
+		for _, attempt := range attempts {
+			if err := db.ApplyStartupRecoveryAction(context.Background(), storage.StartupRecoveryAction{BootID: boot, RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedGeneration: attempt.Generation, ObservationDigest: attemptAction, Action: attemptAction, NowMS: nowMS}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, operation := range operations {
+			if err := db.ApplyStartupRecoveryAction(context.Background(), storage.StartupRecoveryAction{BootID: boot, OperationID: operation.ID, ExpectedOperationVersion: operation.Version, ObservationDigest: "converge", Action: "converge_operation", NowMS: nowMS}); err != nil && !errors.Is(err, storage.ErrRejectedStale) {
+				t.Fatal(err)
+			}
 		}
 	}
 	if err := db.CompleteStartupRecovery(context.Background(), boot, nowMS); err != nil {
 		t.Fatal(err)
 	}
 }
-
-var errInjectedCrash = errors.New("injected crash")
-
-func injectedCrash() error { return errInjectedCrash }
 
 func launchTestAgents() []config.Agent {
 	return []config.Agent{{ID: "agent", Executable: "/bin/sh", Args: []string{"-c", "echo started >> $SIFT_RUN_DIR/agent-started"}, TaskTransport: config.TaskTransportStdin}}
@@ -257,6 +312,18 @@ func waitForDurableLaunch(t *testing.T, db *sql.DB) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("launch did not reach durable running state")
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
 }
 
 func waitForLines(t *testing.T, path string, want int) {

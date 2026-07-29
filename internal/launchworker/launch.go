@@ -46,6 +46,7 @@ type Worker struct {
 }
 
 type workerHooks struct {
+	afterPrepare         func() error
 	afterBootstrapWrite  func() error
 	afterBootstrapDigest func() error
 	beforeSpawn          func() error
@@ -71,6 +72,11 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	resumed := errors.Is(err, storage.ErrLaunchDispatchPrepared)
 	if err != nil && !resumed {
 		return err
+	}
+	if !resumed && w.hooks.afterPrepare != nil {
+		if err := w.hooks.afterPrepare(); err != nil {
+			return err
+		}
 	}
 	var path string
 	var b []byte

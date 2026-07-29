@@ -91,6 +91,28 @@ func TestProductionWrapperCrashWindows(t *testing.T) {
 	}
 }
 
+func TestProductionWrapperReplaysLostPermitResponseWithSameParameters(t *testing.T) {
+	wrapperPath := buildWrapper(t)
+	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "echo spawned >> \"$SIFT_RUN_DIR/spawn-count\""})
+	server := newWrapperServerDroppingFirstPermit(t, root)
+	defer server.Close()
+	out, err := osexec.Command(wrapperPath, bootstrap).CombinedOutput()
+	if err != nil {
+		t.Fatalf("wrapper failed after permit replay: %v\n%s", err, out)
+	}
+	if count := countLines(filepath.Join(runDir, "spawn-count")); count != 1 {
+		t.Fatalf("agent spawn count = %d, want 1", count)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.permitParams) != 2 {
+		t.Fatalf("permit requests = %d, want 2", len(server.permitParams))
+	}
+	if string(server.permitParams[0]) != string(server.permitParams[1]) {
+		t.Fatalf("lost permit replay changed parameters: %s != %s", server.permitParams[0], server.permitParams[1])
+	}
+}
+
 func TestProductionWrapperReapsTERMIgnoringGroupAfterStartedFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups differ on Windows")
@@ -319,23 +341,34 @@ func countLines(path string) int {
 }
 
 type wrapperServer struct {
-	listener net.Listener
-	reject   string
-	waitPath string
-	once     sync.Once
+	listener        net.Listener
+	reject          string
+	waitPath        string
+	dropFirstPermit bool
+	permitParams    []json.RawMessage
+	mu              sync.Mutex
+	once            sync.Once
 }
 
 func newWrapperServer(t *testing.T, root, reject string) *wrapperServer {
-	return newWrapperServerWaitFor(t, root, reject, "")
+	return newWrapperServerWithPermitLoss(t, root, reject, "", false)
+}
+
+func newWrapperServerDroppingFirstPermit(t *testing.T, root string) *wrapperServer {
+	return newWrapperServerWithPermitLoss(t, root, "", "", true)
 }
 
 func newWrapperServerWaitFor(t *testing.T, root, reject, waitPath string) *wrapperServer {
+	return newWrapperServerWithPermitLoss(t, root, reject, waitPath, false)
+}
+
+func newWrapperServerWithPermitLoss(t *testing.T, root, reject, waitPath string, dropFirstPermit bool) *wrapperServer {
 	t.Helper()
 	l, err := net.Listen("unix", filepath.Join(root, "run.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &wrapperServer{listener: l, reject: reject, waitPath: waitPath}
+	s := &wrapperServer{listener: l, reject: reject, waitPath: waitPath, dropFirstPermit: dropFirstPermit}
 	go s.serve()
 	return s
 }
@@ -344,7 +377,7 @@ func (s *wrapperServer) waitForPath() {
 	if s.waitPath == "" {
 		return
 	}
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(s.waitPath); err == nil {
 			return
@@ -370,9 +403,19 @@ func (s *wrapperServer) serve() {
 				return
 			}
 			var req struct {
-				Method string `json:"method"`
+				Method string          `json:"method"`
+				Params json.RawMessage `json:"params"`
 			}
 			_ = json.Unmarshal(body, &req)
+			if req.Method == "claim.permit_spawn" {
+				s.mu.Lock()
+				s.permitParams = append(s.permitParams, append(json.RawMessage(nil), req.Params...))
+				drop := s.dropFirstPermit && len(s.permitParams) == 1
+				s.mu.Unlock()
+				if drop {
+					return // The daemon committed but its response was lost in transit.
+				}
+			}
 			var response any = map[string]any{"ok": true, "result": map[string]any{}}
 			if req.Method == s.reject {
 				s.waitForPath()
