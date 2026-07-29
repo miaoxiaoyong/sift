@@ -1,12 +1,12 @@
 ---
-status: draft
+status: active
 created: 2026-07-29
 summary: 校准账本、人类决定与类别认证投影契约
 ---
 
 # Ledger 规格
 
-本文定义 M4 校准账本的不可变记录、人类决定的唯一写入口及类别级认证投影。Gate 判定见 [`gate.md`](gate.md)，持久化关系、写端口和事务见 [`storage.md` §10.2–§10.9、§12.6](storage.md)，认证配置见 [`config.md` §3.12](config.md)。本文**保持 `draft`**。
+本文定义 M4 校准账本的不可变记录、人类决定的唯一写入口及类别级认证投影。Gate 判定见 [`gate.md`](gate.md)，持久化关系、写端口和事务见 [`storage.md` §10.2–§10.9、§12.6](storage.md)，认证配置见 [`config.md` §3.12](config.md)。
 
 来源：[PRD §5.6、§5.9、§10.2–§10.3](../PRD.md)、[DESIGN §8.2、§8.5–§8.6](../DESIGN.md)、[ADR-004](../decisions/004-gate-as-pure-function.md)、[WBS M4 §4.4](../WBS.md)。
 
