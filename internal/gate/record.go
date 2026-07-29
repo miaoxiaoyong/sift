@@ -72,11 +72,11 @@ func evaluationRecord(in Input, cacheHit bool, features json.RawMessage, nowMS i
 
 func brainInputLinks(in Input) []storage.GateBrainInputLink {
 	byID := map[string]string{}
-	if source := in.Risk.Source; source.Kind == "brain" && source.LogicalCallID != "" {
+	if source := in.Risk.Source; source.LogicalCallID != "" {
 		byID[source.LogicalCallID] = "T3"
 	}
 	if in.Checks.Triage != nil {
-		if source := in.Checks.Triage.Source; source.Kind == "brain" && source.LogicalCallID != "" {
+		if source := in.Checks.Triage.Source; source.LogicalCallID != "" {
 			byID[source.LogicalCallID] = "T5"
 		}
 	}

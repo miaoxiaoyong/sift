@@ -69,6 +69,31 @@ func (d *DB) SeedLaunchRunForTest(ctx context.Context, runID, projectID, cfgID s
 	return nil
 }
 
+// SeedGateCandidateForTest creates the persisted Change and attempt identity
+// required by the production Gate reconciler.
+func (d *DB) SeedGateCandidateForTest(ctx context.Context, runID, projectID, cfgID, changeID string, nowMS int64) error {
+	if err := d.SeedLaunchRunForTest(ctx, runID, projectID, cfgID, nowMS, "/work"); err != nil {
+		return err
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE runs SET kind='feature', change_id=?, version=1 WHERE id=?`, changeID, runID); err != nil {
+		return fmt.Errorf("storage: seed Gate run: %w", err)
+	}
+	return nil
+}
+
+// SeedCertificationForTest installs a current certified projection for Gate tests.
+func (d *DB) SeedCertificationForTest(ctx context.Context, kind, version string, nowMS int64) error {
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO certifications
+		(task_kind,certification_version,total_samples,negative_samples,leak_count,false_block_count,certified,evidence_digest,updated_at_ms,certification_rules_version,window_start_ms,window_end_ms)
+		VALUES (?,?,0,0,0,0,1,'test',?,?,0,?)`, kind, version, nowMS, version, nowMS); err != nil {
+		return fmt.Errorf("storage: seed certification: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO certification_current(task_kind,certification_version,version,updated_at_ms) VALUES(?,?,1,?)`, kind, version, nowMS); err != nil {
+		return fmt.Errorf("storage: seed current certification: %w", err)
+	}
+	return nil
+}
+
 // SeedReverseSyncRunForTest inserts an active forge run with the remote
 // identity needed by the reverse-sync integration tests.
 func (d *DB) SeedReverseSyncRunForTest(ctx context.Context, runID, projectID, cfgID, issueID, changeID, status string, nowMS int64) error {

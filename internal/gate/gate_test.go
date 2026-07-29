@@ -100,7 +100,7 @@ func TestEvaluateRecordAndEmitInterruptCommitsGateShadowAndHITLTogether(t *testi
 		t.Fatal(err)
 	}
 	in := input(t)
-	in.Risk.Source = Source{Kind: "fallback", LogicalCallID: "t3-call", Version: "T3/fallback/v1", Reason: "provider_disabled"}
+	in.Risk.Source = Source{Kind: "fallback", Version: "T3/fallback/v1", Reason: "provider_disabled"}
 	in.EffectivePolicy.ReviewPolicy = config.ReviewPolicyAlways
 	in.Change.ReviewState = "not_approved"
 	policyJSON, err := canonical(in.EffectivePolicy)
