@@ -14,15 +14,17 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/brain"
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/forge"
+	"github.com/miaoxiaoyong/sift/internal/forgeworker"
 	"github.com/miaoxiaoyong/sift/internal/gate"
+	"github.com/miaoxiaoyong/sift/internal/intake"
 	"github.com/miaoxiaoyong/sift/internal/replay"
 	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/miaoxiaoyong/sift/internal/worktree"
 )
 
-// TestReconcilerPhaseEvidence exercises the production reconciliation boundary,
-// rather than assembling Gate inputs in a component test. The exported traces
-// are then replayed with both production replay runners.
-func TestReconcilerPhaseEvidence(t *testing.T) {
+// TestReconcilerAssemblyEvidence exercises Gate reconciliation inputs and
+// replays their exported traces with the production runners.
+func TestReconcilerAssemblyEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name, path, checks string
 		responses          []brain.FakeResponse
@@ -108,6 +110,171 @@ func TestReconcilerPhaseEvidence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestM4VerticalVerifiedSuccessToExternalMerge exercises the M4 phase path
+// without seeding a Gate candidate or certification: execution evidence is
+// verified, the create worker records the Change, then Gate, HITL, Ledger,
+// certification and both replay formats consume their production records.
+func TestM4VerticalVerifiedSuccessToExternalMerge(t *testing.T) {
+	ctx := context.Background()
+	now := time.UnixMilli(1_700_000_000_000)
+	db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(t.TempDir(), "sift.db"), BinaryVersion: "test", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SeedProjectForTest(ctx, "cfg", "p", now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := initPolicyRepo(t)
+	manager, err := worktree.NewManager(repo, filepath.Join(t.TempDir(), "worktrees"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt, err := manager.Create(ctx, "r", 1, "main", "sift/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "change.txt"), []byte("verified\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "change.txt"}, {"commit", "-m", "verified change"}} {
+		if out, err := exec.Command("git", append([]string{"-C", wt.Path}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	headBytes, err := exec.Command("git", "-C", wt.Path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.TrimSpace(string(headBytes))
+	if err := db.SeedLaunchRunForTest(ctx, "r", "p", "cfg", now.UnixMilli(), wt.Path); err != nil {
+		t.Fatal(err)
+	}
+	q, err := sql.Open("sqlite", db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	if _, err := q.Exec(`UPDATE runs SET kind='feature' WHERE id='r'; UPDATE attempts SET phase='spawning', worktree_path=?, branch_name=?, base_ref='main' WHERE run_id='r'`, wt.Path, wt.Branch); err != nil {
+		t.Fatal(err)
+	}
+	agent := storage.AgentIdentity{PID: 123, StartedAtMS: now.UnixMilli(), Executable: "/test/agent"}
+	zero := 0
+	if _, err := db.ResolveAttemptRace(ctx, storage.AttemptRaceCommand{RunID: "r", AttemptNo: 1, ExpectedGeneration: 1, FactKey: "verified-result", NowMS: now.UnixMilli(), Agent: &agent, Result: &storage.AttemptResult{Agent: agent, ExitCode: &zero, FinalHeadSHA: head, Digest: "result-digest", FinishedAtMS: now.UnixMilli()}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&gate.SuccessReconciler{DB: db, ProjectID: "p", Worktrees: manager, Now: func() time.Time { return now }}).ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo-p"}
+	client := &verticalForge{Fake: forge.NewFake(), head: head}
+	client.AddIssue(ref, forge.Issue{ID: "issue-1", Title: "issue", Body: "body", Author: "author", URL: "https://forge.example/issues/1", State: forge.IssueOpen})
+	if err := (&forgeworker.ChangeWorker{DB: db, Client: client, ProjectID: "p", WorkerID: "create", Lease: time.Minute, Now: func() time.Time { return now }}).RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	run, err := db.Run(ctx, "r")
+	if err != nil || run.ChangeID == "" {
+		t.Fatalf("create worker run=%+v err=%v", run, err)
+	}
+
+	provider := &brain.FakeProvider{Responses: []brain.FakeResponse{{ResultText: `{"risk_score":1,"risk_points":["small"],"rationale":"bounded"}`}, {ResultText: `{"classification":"real_failure","rationale":"real failure"}`}}}
+	brainCfg := config.Brain{Executable: "fake", DailyTokenLimit: 100, MaxInputBytes: 1 << 20, MaxRawOutputBytes: 1 << 20}
+	gateReconciler := &gate.Reconciler{DB: db, Forge: client, Brain: brain.NewShell(db, brainCfg, provider, func() time.Time { return now }), ProjectID: "p", Project: ref, Repo: repo, Defaults: config.GateDefaults{ReviewPolicy: config.ReviewPolicyNever, RiskyReviewThreshold: 100, ChecksPendingTimeout: time.Hour, FlakyRetryLimit: 0}, Certification: config.DefaultConfig().Certification, Attention: config.Attention{DayTimezone: "UTC", DailyQuota: config.DailyQuota{Low: 3, Normal: 3, High: 3}, MaxEscalations: 1}, Now: func() time.Time { return now }}
+	if err := gateReconciler.ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var gates, interrupts int
+	if err := q.QueryRow(`SELECT COUNT(*) FROM gate_evaluations WHERE run_id='r'`).Scan(&gates); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.QueryRow(`SELECT COUNT(*) FROM interrupts WHERE run_id='r' AND status='open'`).Scan(&interrupts); err != nil {
+		t.Fatal(err)
+	}
+	if gates != 1 || interrupts != 1 {
+		t.Fatalf("Gate/Shadow/HITL records=%d/%d, want 1/1", gates, interrupts)
+	}
+	rows, err := q.Query(`SELECT c.touchpoint, COUNT(l.gate_input_snapshot_id) FROM brain_calls c LEFT JOIN brain_gate_input_links l ON l.logical_call_id=c.id WHERE c.run_id='r' AND c.touchpoint IN ('T3','T5') GROUP BY c.id,c.touchpoint`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	links := map[string]int{}
+	for rows.Next() {
+		var touchpoint string
+		var count int
+		if err := rows.Scan(&touchpoint, &count); err != nil {
+			t.Fatal(err)
+		}
+		links[touchpoint] = count
+	}
+	if err := rows.Err(); err != nil || links["T3"] == 0 || links["T5"] == 0 {
+		t.Fatalf("actual T3/T5 Gate snapshot links=%v err=%v", links, err)
+	}
+
+	if _, err := client.InjectMerged(ref, run.ChangeID, now); err != nil {
+		t.Fatal(err)
+	}
+	project := intake.Project{ID: "p", TriggerLabel: "sift", Ref: ref}
+	if err := (&intake.Reconciler{DB: db, Forge: client, Projects: []intake.Project{project}, Certification: config.DefaultConfig().Certification, Now: func() time.Time { return now }}).ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	run, err = db.Run(ctx, "r")
+	if err != nil || run.Status != storage.RunDone || !run.GateBypassed {
+		t.Fatalf("external merge run=%+v err=%v", run, err)
+	}
+	var decisions, settled, certs int
+	if err := q.QueryRow(`SELECT COUNT(*) FROM ledger_entries WHERE run_id='r' AND entry_kind='human_decision'`).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.QueryRow(`SELECT COUNT(*) FROM human_decision_receipts`).Scan(&settled); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.QueryRow(`SELECT COUNT(*) FROM certification_current WHERE task_kind='feature'`).Scan(&certs); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 1 || settled != 1 || certs != 1 {
+		t.Fatalf("Ledger/certification settlement=%d/%d/%d, want 1/1/1", decisions, settled, certs)
+	}
+	var exported bytes.Buffer
+	if err := db.ExportReplayJSONL(ctx, &exported); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replay.ReplayGateJSONL(bytes.NewReader(exported.Bytes())); err != nil {
+		t.Fatalf("Gate replay: %v", err)
+	}
+	if _, err := replay.ReplayBrainJSONL(bytes.NewReader(exported.Bytes()), map[string]brain.TouchpointContract{"T3": brain.T3Contract(), "T5": brain.T5Contract([]brain.T5Job{{ID: "job-1", Name: "test", WebURL: "https://ci.example/job-1"}})}); err != nil {
+		t.Fatalf("Brain replay: %v", err)
+	}
+}
+
+type verticalForge struct {
+	*forge.Fake
+	head string
+}
+
+func (f *verticalForge) CreateChange(ctx context.Context, p forge.ProjectRef, branch, base, title, body string) (forge.Change, error) {
+	if _, err := f.Fake.CreateChange(ctx, p, branch, base, title, body); err != nil {
+		return forge.Change{}, err
+	}
+	return f.GetChange(ctx, p, "1")
+}
+func (f *verticalForge) GetChange(ctx context.Context, p forge.ProjectRef, id string) (forge.Change, error) {
+	c, err := f.Fake.GetChange(ctx, p, id)
+	if err != nil {
+		return c, err
+	}
+	c.URL, c.HeadSHA, c.Mergeability, c.ReviewState = "https://forge.example/"+id, f.head, forge.Mergeable, forge.Approved
+	return c, nil
+}
+func (f *verticalForge) GetChangeDiff(context.Context, forge.ProjectRef, string) (string, error) {
+	return "diff --git a/cmd/a.go b/cmd/a.go\n+++ b/cmd/a.go", nil
+}
+func (f *verticalForge) GetChecks(context.Context, forge.ProjectRef, string) (forge.CheckSuite, error) {
+	return forge.CheckSuite{Conclusion: "failure", ExternalURL: "https://ci.example/run", FailedJobs: []forge.CheckJob{{ID: "job-1", Name: "test", WebURL: "https://ci.example/job-1"}}}, nil
 }
 
 func TestReconcilerPolicyReadErrorMatrixIsolatesOnlyBadProject(t *testing.T) {
