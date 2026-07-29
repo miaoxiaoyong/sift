@@ -72,6 +72,23 @@ func (c *TerminationCoordinator) RecoverStartup(ctx context.Context, bootID stri
 					action = "supervise"
 				}
 			}
+			if action == "frozen" {
+				// A startup freeze is not a standalone attempt update. EmitInterrupt
+				// atomically freezes the attempt with its reason/timestamp, transitions
+				// the Run, charges attention, and queues the visible comment.
+				_, err = c.DB.RecordTerminationObservation(ctx, storage.RecordTerminationObservationCmd{
+					RunID: attempt.RunID, AttemptNo: attempt.AttemptNo,
+					ExpectedRunVersion: attempt.RunVersion, ExpectedGeneration: attempt.Generation,
+					Source: storage.TerminationRecovery, DiagnosticCause: "process_identity_unknown",
+					AttentionDailyQuota: c.AttentionDailyQuota, DayTimezone: c.DayTimezone, NowMS: c.nowMS(),
+				})
+				if err == storage.ErrRejectedStale {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+			}
 			err := c.DB.ApplyStartupRecoveryAction(ctx, storage.StartupRecoveryAction{BootID: bootID, RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedGeneration: attempt.Generation, ObservationDigest: recoveryDigest(attempt, observation), Action: action, NowMS: c.nowMS()})
 			if err != nil && err != storage.ErrRejectedStale {
 				return err

@@ -105,6 +105,86 @@ func TestRecoverStartupClassifiesAttemptBeforeBootBarrier(t *testing.T) {
 	}
 }
 
+func TestRecoverStartupFrozenCandidatesEmitStartupStallBeforeOpeningBarrier(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, root string)
+	}{
+		{
+			name: "corrupt bootstrap",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				path := filepath.Join(root, "runs", "run", "attempts", "1", "bootstrap.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "wide bootstrap permissions",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				path := filepath.Join(root, "runs", "run", "attempts", "1", "bootstrap.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{}`), 0644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "ambiguous control",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				path := filepath.Join(root, "runs", "run", "attempts", "1", "control.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, raw, _, now := seedRecoveryCoordinator(t, "pending", 0)
+			root := t.TempDir()
+			tc.setup(t, root)
+			boot, err := db.StartDaemonBoot(context.Background(), "hash-cfg", "test", 1, 123, now.UnixMilli())
+			if err != nil {
+				t.Fatal(err)
+			}
+			coordinator := &TerminationCoordinator{DB: db, ControlRoot: root, AttentionDailyQuota: recoveryQuota(), Now: func() time.Time { return now }}
+			if err := coordinator.RecoverStartup(context.Background(), boot); err != nil {
+				t.Fatal(err)
+			}
+
+			var state, reason, status string
+			var isolatedAt, completed sql.NullInt64
+			if err := raw.QueryRow(`SELECT a.isolation_state,a.isolation_reason,a.isolated_at_ms,r.status,b.recovery_completed_at_ms FROM attempts a JOIN runs r ON r.id=a.run_id JOIN daemon_boots b ON b.id=? WHERE a.run_id='run' AND a.attempt_no=1`, boot).Scan(&state, &reason, &isolatedAt, &status, &completed); err != nil {
+				t.Fatal(err)
+			}
+			if state != "frozen" || reason != "process_identity_unknown" || !isolatedAt.Valid || status != "waiting_human" || completed.Valid {
+				t.Fatalf("pre-barrier projection = state=%q reason=%q isolated=%v run=%q completed=%v", state, reason, isolatedAt, status, completed)
+			}
+			for _, table := range []string{"interrupts", "budget_entries", "outbox_operations", "interrupt_deliveries"} {
+				var count int
+				if err := raw.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("%s count = %d, %v", table, count, err)
+				}
+			}
+			if err := db.CompleteStartupRecovery(context.Background(), boot, now.UnixMilli()+1); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestRecoverStartupRedispatchesPendingAttemptBeforeOpeningBarrier(t *testing.T) {
 	db, raw, attempt, now := seedRecoveryCoordinator(t, "pending", 0)
 	boot, err := db.StartDaemonBoot(context.Background(), "hash-cfg", "test", 1, 123, now.UnixMilli())

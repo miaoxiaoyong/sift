@@ -87,9 +87,9 @@ func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecovery
 
 	key := ""
 	if attemptTarget {
-		var phase, isolation string
+		var phase, isolation, runStatus string
 		var generation int
-		if err := tx.QueryRowContext(ctx, `SELECT phase,generation,isolation_state FROM attempts WHERE run_id=? AND attempt_no=? AND phase NOT IN ('finished','orphaned')`, cmd.RunID, cmd.AttemptNo).Scan(&phase, &generation, &isolation); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT a.phase,a.generation,a.isolation_state,r.status FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.run_id=? AND a.attempt_no=? AND a.phase NOT IN ('finished','orphaned')`, cmd.RunID, cmd.AttemptNo).Scan(&phase, &generation, &isolation, &runStatus); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrRejectedStale
 			}
@@ -119,11 +119,14 @@ func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecovery
 			}
 		}
 		if cmd.Action == startupRecoveryFreeze {
-			if phase == "pending" && isolation == "none" {
-				if _, err := tx.ExecContext(ctx, `UPDATE attempts SET isolation_state='frozen',updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND phase='pending' AND isolation_state='none'`, cmd.NowMS, cmd.RunID, cmd.AttemptNo, generation); err != nil {
-					return err
-				}
-			} else if isolation != "frozen" {
+			var visible int
+			if isolation != "frozen" || runStatus != string(RunWaitingHuman) {
+				return ErrRejectedStale
+			}
+			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM interrupts WHERE run_id=? AND attempt_no=? AND reason='startup_stall' AND status='open'`, cmd.RunID, cmd.AttemptNo).Scan(&visible); err != nil {
+				return err
+			}
+			if visible != 1 {
 				return ErrRejectedStale
 			}
 		}
