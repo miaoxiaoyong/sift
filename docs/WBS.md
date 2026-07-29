@@ -271,17 +271,21 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 3.2 Spawn handoff 与控制面最终接线
 
-- [ ] 逐步实现 ADR-010 的 operation lease、acquire/session、permit、spawning handoff、started 证据
-- [ ] wrapper 不写 DB；permit 的重放不得再次进入 spawn
-- [ ] `spawning` 期间不可换 owner；fencing 不能替代旧执行者消失证明
-- [ ] V10a wrapper 段：跨 instance/session/permit/generation 使用全部拒绝
+- [x] 逐步实现 ADR-010 的 operation lease、acquire/session、permit、spawning handoff、started 证据
+- [x] wrapper 不写 DB；permit 的重放不得再次进入 spawn
+- [x] `spawning` 期间不可换 owner；fencing 不能替代旧执行者消失证明
+- [x] V10a wrapper 段：跨 instance/session/permit/generation 使用全部拒绝
+
+> 证据（PR #115）：`internal/storage/handoff.go`——`AcquireLaunchClaim`/`PermitSpawn`/`ConfirmStarted` 三个 DB-only 写端口串联 operation lease + acquire/session（pending→`starting`）、一次性不可换 permit（`starting`→`spawning`）、started 证据（`spawning`→`running`），均只校验 wrapper 身份（PID+started_at_ms+executable+pgid），不依赖 fencing；permit 重放对相同元组为提交幂等 no-op、换 permit/owner 返 `ErrHandoffConflict`，`spawning` 期换 wrapper 即拒。`internal/controlplane/handoff.go`——`claim.acquire`/`claim.permit_spawn`/`claim.started` 三动词按 auth kind 与 `onlyKeys` 严格分诊，wrapper 仅经 RPC 调用，不写 DB。`internal/runtime/handoff.go`——`PermitGate.SpawnOnce` 在 wrapper 本地一次性消费 permit，重放不得再次进入 OS spawn。跨 instance/session/permit/generation 全部映射为 `unauthorized`/`stale`/`conflict`。覆盖 `TestHandoffPermitReplayAndStartedEvidence`。注：受控终止/完整恢复矩阵（§3.4/3.7）与「control nonce→PGID 终止取证」未含在本片，对应门禁项保持 `[ ]`。
 
 #### 3.3 Worktree 与成功证据
 
-- [ ] 每 Run 独立 worktree；policy/context 只从 base 读
-- [ ] Sift 的 git 命令强制 `-c core.hooksPath=/dev/null`
-- [ ] 仅成功且身份一致的 `result.json`、冻结 final head、有提交三者齐备时产生“可创建 Change”领域事实；实际创建在 M4
-- [ ] 失败 attempt 与中间提交不得产生 Change 操作
+- [x] 每 Run 独立 worktree；policy/context 只从 base 读
+- [x] Sift 的 git 命令强制 `-c core.hooksPath=/dev/null`
+- [x] 仅成功且身份一致的 `result.json`、冻结 final head、有提交三者齐备时产生“可创建 Change”领域事实；实际创建在 M4
+- [x] 失败 attempt 与中间提交不得产生 Change 操作
+
+> 证据（PR #118）：`internal/worktree/worktree.go`——`Manager.Create` 按 `root/<runID>/<attemptNo>` 建 per-run worktree，`ReadBaseFile` 恒走 `git show <base>:<name>` 从 base 读，worktree 内被改写的 policy/context 不生效；`command()` 在每条 git argv 前置 `-c core.hooksPath=/dev/null`（含 create/remove/read/rev-parse）；`EvaluateSuccess` 要求 exit 0 且无 signal、非空 digest、agent 身份一致、冻结 final head（rev-parse 重校验一致）、`rev-list --count ≥ 1` 四者齐备才返回 `ReadyChange`（领域事实，实际 Change 创建留 M4），任一缺失返 `ErrEvidenceRejected`/`ErrNoCommit`——失败 attempt（exit≠0/有 signal）与中间提交（final head 不匹配）均被拒、不产生 Change 操作。覆盖 `TestManagerCreatesIsolatedWorktreeAndReadsBaseOnly`、`TestEvaluateSuccessRequiresMatchingIdentityHeadAndCommit`。注：成功事实尚未接 Gate/Create Change（M4）；worktree 回收随 §3.5 隔离投影闭合，对应项保持 `[ ]`。
 
 #### 3.4 恢复矩阵与资格门控
 
