@@ -85,7 +85,7 @@ Forge adapter 已对评论/标签事件的 actor 缺失 fail closed；Command �
 
 `reason` 若存在，必须以紧跟 nonce 的单个 ASCII space 开始，去掉这一个分隔 space 后为 1–16384 UTF-8 bytes、不得含 NUL。`text` 同样为 1–16384 UTF-8 bytes、不得含 NUL，且在去掉 `nonce` 后的单个分隔 space 之外**原样**保存；Command 不 trim、折行、Markdown 解析、摘要、翻译或交给 LLM。`ask` 可含换行；它是唯一允许多行 body 的动词。空 reason 不产生 `SemanticMaterialV1`；空 ask text 拒绝。
 
-渲染 Interrupt 时必须把当前可执行评论命令以本节的完整字面量列出；不得只显示 `/sift approve` 而隐藏 Run/nonce。nonce 是公开的防重放关联值，不是 capability secret。
+渲染 Interrupt 时必须把当前可执行评论命令以本节的完整字面量列出；不得只显示 `/sift approve` 而隐藏 Run/nonce。单条与摘要的 option 顺序、完整 renderer 和当前 nonce/version snapshot 以 [`interrupt.md` §8.1](interrupt.md) 为唯一来源；摘要逐成员渲染，绝无摘要级命令。nonce 是公开的防重放关联值，不是 capability secret。
 
 ### 2.5 审批标签
 

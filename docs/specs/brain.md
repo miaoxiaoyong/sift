@@ -427,7 +427,9 @@ T4 在已有的、确定性生成的 Interrupt 候选上调用；它不判断是
 | `reason` | string | PRD 七种 Interrupt reason 之一 |
 | `base_severity` | string | `low | normal | high | critical`；由确定性 `BaseSeverity` 计算 |
 | `min_modality` | string | `voice | text | visual`；由 fallback 契约给出 |
+| `fallback_headline` | string | 1..40 Unicode code points；逐字节等于 [`interrupt.md` §3.1](interrupt.md) 的 canonical headline |
 | `fallback_brief` | string | 1..8192 bytes；[`interrupt.md` §3.2](interrupt.md) 已生成的原始状态文本 |
+| `brief_fragments` | string[] | 1..32 项，按 UTF-8 bytes 排序去重；每项是发射器从冻结 fallback facts 逐字节导出的可展示事实片段，1..1000 bytes、无 Cc/换行 |
 | `links` | array | 0..32 个 closed `{label,target}`，按 `(target,label)` UTF-8 bytes 排序去重；只含发射器已验证链接 |
 | `candidate_options` | array | 1..4 个 closed `{id,label,effect,risk}`；顺序和内容逐字段等于 [`interrupt.md` §3.1](interrupt.md) 对该 reason 的确定性候选集 |
 
@@ -441,15 +443,21 @@ closed object（`additionalProperties:false`）：
 
 | 字段 | 类型 | 约束 |
 |------|------|------|
-| `headline` | string | trim 后 1..40 Unicode code points；不得含 Cc 控制码或换行；独立可朗读 |
-| `conclusion` | string | trim 后 1..1000 bytes；不得含 Cc 控制码或换行 |
-| `key_points` | string[] | 1..3 项；每项 trim 后 1..1000 bytes、无 Cc/换行、去重；按输出顺序即简报中的阅读顺序 |
+| `headline` | string | 必须逐字节等于 input `fallback_headline`；不得含 Cc 控制码或换行 |
+| `conclusion` | string | 必须逐字节等于 input `brief_fragments` 的一项 |
+| `key_points` | string[] | 1..3 项；每项必须逐字节等于 input `brief_fragments` 的一项、去重；按输出顺序即简报中的阅读顺序 |
 | `recommended_option_id` | string | 必须精确命中 input `candidate_options[].id` |
 | `options` | string[] | 1..4 项；必须与 input `candidate_options[].id` **逐项、同序完全相等**，不得重排、添加、删除或重复 |
 
-T4 的自然语言输出只按**纯文本**接纳。确定性 renderer 对 trim 后的 `conclusion`、每个 `key_points` 和 canonical recommended option label 逐项执行 `EscapeT4Text`：按顺序把 `\\`、`` ` ``、`*`、`_`、`[`、`]`、`(`、`)`、`#`、`+`、`-`、`!`、`>`、`<`、`&` 替换为前置反斜杠的字面量，再以固定模板组装 brief。renderer 不解析模型给出的 Markdown、HTML、链接、nonce、outbox marker 或 `/sift` 命令；转义后不得出现可解释的 `<!-- sift-op:` marker。`headline` 以 trim 后纯文本存储，不拼进 brief；任何 Markdown/HTML sink 展示 headline 时同样先执行 `EscapeT4Text`，不得把存储文本当 markup。
+T4 的输出只按**冻结纯文本**接纳：`headline`、`conclusion`、每个 key point 都必须逐字节命中 input 的 `fallback_headline` 或 `brief_fragments`。因此“未冻结事实”的判定不是自然语言猜测：任一未命中值即领域校验失败。确定性 renderer 对 `conclusion`、有序 `key_points` 和 canonical recommended option label 逐项执行 `EscapeT4Text`：按顺序把 `\\`、`` ` ``、`*`、`_`、`[`、`]`、`(`、`)`、`#`、`+`、`-`、`!`、`>`、`<`、`&` 替换为前置反斜杠的字面量。其 `brief_markdown` UTF-8 bytes 必须严格为（`C` 为 escaped conclusion，`P1…Pn` 为 escaped key points，以单个 `；` 拼接，`L` 为 escaped canonical recommended label，`I` 为 canonical ID）：
 
-确定性 renderer 以 `conclusion`、有序 `key_points` 和由 `recommended_option_id` 查得的 canonical label 组装 Interrupt `brief`；以 input 的同序完整候选组装 `Option{id,label,effect,risk}`。LLM 不能输出 `severity`、`reason`、`min_modality`、links、effect 或 risk，不能新增、删除或重排人类动作，不能把 `visual` 改成可语音渲染。领域后校验失败（包括 option ID 不精确、顺序/集合不完整、headline 不可朗读或转义后不满足 sink contract）与 closed decode failure 相同。
+```text
+结论：<C>；要点：<P1>；…；<Pn>；建议：<L>（<I>）
+```
+
+renderer 不 trim、插入换行或解析模型给出的 Markdown、HTML、链接、nonce、outbox marker 或 `/sift` 命令；转义后不得出现可解释的 `<!-- sift-op:` marker。`headline` 原样存储；任何 Markdown/HTML sink 展示 headline 时同样先执行 `EscapeT4Text`，不得把存储文本当 markup。
+
+确定性 renderer 以该模板和由 `recommended_option_id` 查得的 canonical label 组装 Interrupt `brief`；以 input 的同序完整候选组装 `Option{id,label,effect,risk}`。LLM 不能输出 `severity`、`reason`、`min_modality`、links、effect 或 risk，不能新增、删除或重排人类动作，不能把 `visual` 改成可语音渲染。领域后校验失败（包括任何非冻结文本、option ID 不精确、顺序/集合不完整或转义后不满足 sink contract）与 closed decode failure 相同。
 
 T4 的 prompt/schema 初始版本分别为 `T4/v1/<sha256前12位>`、`output_schema_version=1`，按 §2 的独立 bump 规则演进。正常消费者来源是 closed `{kind:"brain",logical_call_id,prompt_version,output_schema_version}`：两个 ID/version string 各为 1..256 bytes，schema version 为正整数，并须逐字段等于 terminal valid T4 call。正常结果和来源只作为本次 Interrupt 的可审计展示来源；不得参与其 generation key、severity、Gate snapshot 或注意力 charge。
 
@@ -506,7 +514,7 @@ closed object：
 | `suggested_downgrade` | boolean | 只作为 [`interrupt.md` §4.2](interrupt.md) 的至多一级降级输入 |
 | `rationale` | string | trim 后 1..2000 bytes，无 Cc 控制码或换行 |
 
-领域后校验还要求：input `candidate.severity=critical` 时只能为 `immediate`；非 critical 的 `immediate` 在 `availability=unavailable` 时无效；`delivery=next_window` 要求非空 `availability.next_window_at_ms` 且 `frozen_at_ms < next_window_at_ms < candidate.expires_at_ms`；`delivery=batch` 与 `next_window` 都不等于取消、关闭或无限 defer。T6 不能输出 severity、quota、reason、options、expires、on-expire、绝对调度时间或任何「不发出」指令。`channel_id` 是选择，不是 Channel 凭据或发布请求。
+领域后校验还要求：按 `suggested_downgrade` 得出的最终 severity 为 `high | critical` 时只能为 `immediate`；非 critical 的 `immediate` 在 `availability=unavailable` 时无效；`delivery=next_window` 要求非空 `availability.next_window_at_ms` 且 `frozen_at_ms < next_window_at_ms < candidate.expires_at_ms`；`delivery=batch` 与 `next_window` 都不等于取消、关闭或无限 defer。T6 不能输出 severity、quota、reason、options、expires、on-expire、绝对调度时间或任何「不发出」指令。`channel_id` 是选择，不是 Channel 凭据或发布请求。
 
 T6 初始版本为 `T6/v1/<sha256前12位>`，`output_schema_version=1`；版本规则同 §2。正常调度来源是 closed `{kind:"brain",logical_call_id,prompt_version,output_schema_version}`，字段类型、terminal-call 一致性与 §11.2 同源但 touchpoint 必须为 T6。正常来源只进入调度关联审计，不能改变 Interrupt generation key、Gate snapshot 或 Ledger 记录。
 
@@ -514,7 +522,7 @@ T6 初始版本为 `T6/v1/<sha256前12位>`，`output_schema_version=1`；版本
 
 provider 禁用、token 阈值、输入超限、schema/domain failure、provider failure 或 recovery 时，不产出 LLM 调度建议。确定性 scheduler 以 v1 常量 `fallback_immediate_min_severity=high` 比较 input candidate severity：`high | critical` 得到 `immediate + default_channel_id`，`low | normal` 得到 `batch + default_channel_id`，且 `suggested_downgrade=false`。它不把 token 耗尽解释为所有候选立即打扰。
 
-正常建议和该兜底均须依序经过：到期/availability 的确定性检查、`Severity(..., suggested_downgrade)`、`EmitInterrupt` 的 generation 去重、注意力收费、非 critical 合批及 critical 熔断，最后才创建 `channel_publish`。配额耗尽只能由发射器合批，不能由 T6、其兜底或 Channel 借支。terminal fallback 的调度来源是 closed `{kind:"fallback",logical_call_id,version:"T6/fallback/v1",reason}`；logical call 一致性同 §11.3，`reason` 只能为 `provider_disabled | token_threshold | input_too_large | invalid_output | provider_error | recovery`。来源只进调度关联审计，不建立 Gate link。
+正常建议和该兜底均须严格依序经过：schema/Channel 兼容性校验 → `Severity(..., suggested_downgrade)` 的最终 severity → `EmitInterrupt` generation 去重、注意力 admission/quota 与 critical fuse → 由冻结 dispatch 写入单条或 batch delivery。只有最后一步才创建 `channel_publish`，且无兼容 Channel 时根本不 reserve T6 call。配额耗尽只能由发射器合批，不能由 T6、其兜底或 Channel 借支。terminal fallback 的调度来源是 closed `{kind:"fallback",logical_call_id,version:"T6/fallback/v1",reason}`；logical call 一致性同 §11.3，`reason` 只能为 `provider_disabled | token_threshold | input_too_large | invalid_output | provider_error | recovery`。来源只进调度关联审计，不建立 Gate link。
 
 ## 13. T7 校准提案与 A7 防火墙
 
