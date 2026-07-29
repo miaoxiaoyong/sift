@@ -28,6 +28,8 @@ type fieldRules struct {
 	maxItems     int  // slice item-count upper bound (0 = unset)
 	itemMinBytes int  // string-slice item byte-length lower bound (0 = unset)
 	itemMaxBytes int  // string-slice item byte-length upper bound (0 = unset)
+	min          *int // integer lower bound
+	max          *int // integer upper bound
 }
 
 func parseRules(tag string) fieldRules {
@@ -58,6 +60,10 @@ func parseRules(tag string) fieldRules {
 					r.itemMinBytes = n
 				case "itemmaxbytes":
 					r.itemMaxBytes = n
+				case "min":
+					r.min = &n
+				case "max":
+					r.max = &n
 				}
 			}
 		}
@@ -82,6 +88,18 @@ func (r fieldRules) MinItems() int     { return r.minItems }
 func (r fieldRules) MaxItems() int     { return r.maxItems }
 func (r fieldRules) ItemMinBytes() int { return r.itemMinBytes }
 func (r fieldRules) ItemMaxBytes() int { return r.itemMaxBytes }
+func (r fieldRules) Min() (int, bool) {
+	if r.min == nil {
+		return 0, false
+	}
+	return *r.min, true
+}
+func (r fieldRules) Max() (int, bool) {
+	if r.max == nil {
+		return 0, false
+	}
+	return *r.max, true
+}
 
 // Keyed is implemented by field types that can distinguish an absent JSON key
 // from a present key carrying JSON null. Fields tagged `keyrequired` must use
@@ -127,8 +145,9 @@ func (n NullString) MarshalJSON() ([]byte, error) {
 	return json.Marshal(n.Value)
 }
 
-// checkFieldConstraints enforces the byte/item bounds declared in the `sift`
-// tag. It runs after required/enum checks; fv is the raw struct field value.
+// checkFieldConstraints enforces the numeric, byte and item bounds declared
+// in the `sift` tag. It runs after required/enum checks; fv is the raw struct
+// field value.
 func checkFieldConstraints(fv reflect.Value, path string, r fieldRules) error {
 	if r.keyRequired {
 		k, ok := fv.Interface().(Keyed)
@@ -156,6 +175,13 @@ func checkFieldConstraints(fv reflect.Value, path string, r fieldRules) error {
 		}
 	}
 	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if min, ok := r.Min(); ok && v.Int() < int64(min) {
+			return &DecodeError{Kind: KindInvalidValue, Field: path, Err: fmt.Errorf("requires at least %d, got %d", min, v.Int())}
+		}
+		if max, ok := r.Max(); ok && v.Int() > int64(max) {
+			return &DecodeError{Kind: KindInvalidValue, Field: path, Err: fmt.Errorf("requires at most %d, got %d", max, v.Int())}
+		}
 	case reflect.String:
 		if err := checkBytes(path, v.String(), r); err != nil {
 			return err

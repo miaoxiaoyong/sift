@@ -163,6 +163,13 @@ func fieldSchema(t reflect.Type, nullable bool, rules decode.FieldRules) map[str
 	}
 	s := typeSchema(t, nullable)
 	switch {
+	case t.Kind() >= reflect.Int && t.Kind() <= reflect.Int64:
+		if min, ok := rules.Min(); ok {
+			s["minimum"] = min
+		}
+		if max, ok := rules.Max(); ok {
+			s["maximum"] = max
+		}
 	case t.Kind() == reflect.String:
 		applyBytes(s, rules.MinBytes(), rules.MaxBytes())
 	case t.Kind() == reflect.Slice || t.Kind() == reflect.Array:

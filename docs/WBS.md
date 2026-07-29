@@ -384,9 +384,9 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 #### 4.2 Brain T3/T5
 
 - [x] 在 `specs/brain.md` 增 T3/T5 schema、提示词版本与兜底
-- [ ] T3 输出风险分与风险点；失败/超预算视为高风险
-- [ ] T5 分类 flaky/真实失败/基础设施问题；失败兜底为 HITL
-- [ ] 两触点复用 M1 调用壳、token 收费与 trace；输出来源/版本进入 Gate 快照
+- [x] T3 输出风险分与风险点；失败/超预算视为高风险
+- [x] T5 分类 flaky/真实失败/基础设施问题；失败兜底为 HITL
+- [x] 两触点复用 M1 调用壳、token 收费与 trace；输出来源/版本进入 Gate 快照
 
 #### 4.3 Gate、Shadow Gate 与 Change 创建
 

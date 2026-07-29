@@ -20,7 +20,7 @@ import (
 // ProtocolClaudeJSONV1 is the V0 provider envelope protocol (brain.md §4).
 const ProtocolClaudeJSONV1 = "claude-json-v1"
 
-//go:embed prompts/T1/v1.md prompts/T1/v1.schema.json prompts/T2/v1.md prompts/T2/v1.schema.json
+//go:embed prompts/T1/v1.md prompts/T1/v1.schema.json prompts/T2/v1.md prompts/T2/v1.schema.json prompts/T3/v1.md prompts/T3/v1.schema.json prompts/T5/v1.md prompts/T5/v1.schema.json
 var promptFS embed.FS
 
 // PromptAsset is one loaded prompt/schema pair with its derived versions.
@@ -43,6 +43,12 @@ func T1Asset() PromptAsset { return mustAsset("T1", 1) }
 
 // T2Asset loads the T2 v1 prompt asset.
 func T2Asset() PromptAsset { return mustAsset("T2", 1) }
+
+// T3Asset loads the T3 v1 prompt asset.
+func T3Asset() PromptAsset { return mustAsset("T3", 1) }
+
+// T5Asset loads the T5 v1 prompt asset.
+func T5Asset() PromptAsset { return mustAsset("T5", 1) }
 
 func mustAsset(touchpoint string, version int) PromptAsset {
 	prompt, err := promptFS.ReadFile(fmt.Sprintf("prompts/%s/v%d.md", touchpoint, version))

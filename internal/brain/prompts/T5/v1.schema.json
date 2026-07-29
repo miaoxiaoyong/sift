@@ -1,0 +1,38 @@
+{
+  "$id": "https://sift.dev/decode/t5_output.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "classification": {
+      "enum": [
+        "flaky",
+        "real_failure",
+        "infrastructure"
+      ],
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string",
+      "x-sift:maxBytes": 2000,
+      "x-sift:minBytes": 1
+    },
+    "retry_check_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-sift:maxBytes": 256
+    }
+  },
+  "required": [
+    "classification",
+    "rationale",
+    "retry_check_id"
+  ],
+  "title": "T5Output",
+  "type": "object",
+  "x-sift": {
+    "decodeMode": "closed",
+    "sourceType": "brain.T5Output"
+  }
+}

@@ -1,4 +1,4 @@
-// Command genschemas regenerates the versioned T1/T2 output schemas
+// Command genschemas regenerates the versioned Brain output schemas
 // (prompts/<touchpoint>/v<N>.schema.json) from the contract structs via
 // schemagen. It is invoked by the //go:generate directive in assets.go; the
 // brain drift test fails if the committed files diverge (brain.md §2: the
@@ -21,6 +21,8 @@ func main() {
 	}{
 		{"prompts/T1", brain.T1Output{}},
 		{"prompts/T2", brain.T2Output{}},
+		{"prompts/T3", brain.T3Output{}},
+		{"prompts/T5", brain.T5Output{}},
 	}
 	for _, t := range targets {
 		tgt, err := schemagen.TargetFor(t.value)

@@ -1,0 +1,36 @@
+{
+  "$id": "https://sift.dev/decode/t3_output.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "rationale": {
+      "type": "string",
+      "x-sift:maxBytes": 2000
+    },
+    "risk_points": {
+      "items": {
+        "type": "string",
+        "x-sift:maxBytes": 1000,
+        "x-sift:minBytes": 1
+      },
+      "maxItems": 10,
+      "type": "array"
+    },
+    "risk_score": {
+      "maximum": 100,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "rationale",
+    "risk_points",
+    "risk_score"
+  ],
+  "title": "T3Output",
+  "type": "object",
+  "x-sift": {
+    "decodeMode": "closed",
+    "sourceType": "brain.T3Output"
+  }
+}

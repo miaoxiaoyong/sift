@@ -59,11 +59,13 @@ type CallParams struct {
 
 // CallResult is the converged outcome of one logical call.
 type CallResult struct {
-	CallID         string
-	CallSeq        int64
-	Status         string // valid | fallback
-	Output         []byte // validated canonical output (valid) or fallback output
-	FallbackReason string
+	CallID              string
+	CallSeq             int64
+	Status              string // valid | fallback
+	Output              []byte // validated canonical output (valid) or fallback output
+	FallbackReason      string
+	PromptVersion       string
+	OutputSchemaVersion int
 }
 
 // Call executes one logical call per brain.md §5.
@@ -90,7 +92,7 @@ func (s *Shell) Call(ctx context.Context, tp TouchpointContract, p CallParams) (
 	if err != nil {
 		return CallResult{}, err
 	}
-	result := CallResult{CallID: reserved.ID, CallSeq: reserved.CallSeq}
+	result := CallResult{CallID: reserved.ID, CallSeq: reserved.CallSeq, PromptVersion: tp.Asset.PromptVersion, OutputSchemaVersion: tp.Asset.OutputSchemaVersion}
 
 	// Pre-flight gates (brain.md §5.2): each physical attempt re-checks; the
 	// input bound is a per-call contract gate (§7.1/§8.1).
