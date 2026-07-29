@@ -1,8 +1,10 @@
 package launchworker
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -89,16 +91,9 @@ func TestLaunchWorkerWrapperCrashSuite(t *testing.T) {
 		t.Fatalf("launch worker: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(marker); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if lines := countFileLines(marker); lines != 1 {
-		t.Fatalf("controlled agent starts = %d, want 1", lines)
-	}
+	// The agent writes its marker asynchronously after the worker has spawned
+	// the wrapper; wait for the durable side effect rather than sampling it.
+	waitForLines(t, marker, 1)
 	var phase, operationState string
 	check, err := sql.Open("sqlite", db.Path())
 	if err != nil {
@@ -209,6 +204,226 @@ func TestLaunchWorkerKilledAtHandoffBoundaries(t *testing.T) {
 	}
 }
 
+// TestLaunchWorkerKilledAfterRealWrapperSpawn covers crash windows which begin
+// only after Backend.Spawn has returned a real wrapper process. Each replacement
+// boot sees both the durable owner and the OS process-group interval before it
+// is allowed to consume launch work.
+func TestLaunchWorkerKilledAfterRealWrapperSpawn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups differ on Windows")
+	}
+	wrapperPath := buildE2EWrapper(t)
+	for _, tc := range []struct {
+		name, executable, script string
+		wait                     func(t *testing.T, root string, db *sql.DB)
+		killOuter                bool
+	}{
+		{"control-initial-write", "/bin/sh", "while :; do sleep 1; done", waitForInitialControl, false},
+		{"control-agent-rewrite", "/bin/sh", "while :; do sleep 1; done", waitForAgentControl, false},
+		{"claim-started", "/bin/sh", "while :; do sleep 1; done", waitForStartedClaim, false},
+		{"result-json", "/bin/sh", "sleep 1; exit 0", waitForResult, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now().Truncate(time.Millisecond)
+			root, err := os.MkdirTemp("/tmp", "sift-post-spawn-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(root, "sift.db"), BinaryVersion: controlplane.Version, Now: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if err := db.SeedProjectForTest(ctx, "cfg", "project", now.UnixMilli()); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.SeedLaunchRunForTest(ctx, "run-1", "project", "cfg", now.UnixMilli(), t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			boot, err := db.StartDaemonBoot(ctx, "hash-cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), now.UnixMilli())
+			if err != nil {
+				t.Fatal(err)
+			}
+			completeLaunchRecovery(t, db, boot, now.UnixMilli(), "supervise")
+			server, err := controlplane.Start(config.Home{Path: filepath.Join(root, "runs")}, db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			serveCtx, cancel := context.WithCancel(ctx)
+			defer func() { cancel(); _ = server.Close() }()
+			go func() { _ = server.Serve(serveCtx) }()
+
+			ready, spawns := filepath.Join(root, "post-spawn-ready"), filepath.Join(root, "wrapper-spawns")
+			worker := osexec.Command(os.Args[0], "-test.run=^TestLaunchWorkerProcessHelper$")
+			worker.Env = append(os.Environ(), "SIFT_LAUNCH_HELPER=1", "SIFT_LAUNCH_POST_SPAWN=1", "SIFT_LAUNCH_ROOT="+root, "SIFT_LAUNCH_BOOT="+boot, "SIFT_LAUNCH_WRAPPER="+wrapperPath, "SIFT_LAUNCH_READY="+ready, "SIFT_LAUNCH_SPAWN_LOG="+spawns, "SIFT_LAUNCH_AGENT="+tc.executable, "SIFT_LAUNCH_AGENT_SCRIPT="+tc.script, fmt.Sprintf("SIFT_LAUNCH_NOW=%d", now.UnixMilli()))
+			if err := worker.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = worker.Process.Kill(); _, _ = worker.Process.Wait() }()
+			waitForFile(t, ready)
+			outerPID := 0
+
+			check, err := sql.Open("sqlite", db.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer check.Close()
+			if tc.killOuter {
+				// Let the execution wrapper pass its control rewrite before pausing
+				// its outer supervisor; the child can then publish result.json.
+				waitForAgentControl(t, root, check)
+				outerPID = spawnedWrapperPID(t, spawns)
+				if err := syscall.Kill(outerPID, syscall.SIGSTOP); err != nil {
+					t.Fatalf("pause outer wrapper before result: %v", err)
+				}
+			}
+			tc.wait(t, root, check)
+			pid, pgid := persistedWrapperIdentity(t, check)
+			if !tc.killOuter {
+				if got, err := syscall.Getpgid(pid); err != nil || got != pgid {
+					t.Fatalf("persisted wrapper identity pid=%d pgid=%d, observed pgid=%d err=%v", pid, pgid, got, err)
+				}
+			}
+			if tc.name == "control-agent-rewrite" {
+				// The old worker is paused in Backend.Spawn while its wrapper and
+				// process group remain live. A new boot and worker must not overlap it.
+				pausedBoot, err := db.StartDaemonBoot(ctx, "hash-cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), now.Add(500*time.Millisecond).UnixMilli())
+				if err != nil {
+					t.Fatal(err)
+				}
+				completeLaunchRecovery(t, db, pausedBoot, now.Add(500*time.Millisecond).UnixMilli(), "supervise")
+				candidate := &countingBackend{backend: &execWrapperBackend{path: wrapperPath, pgid: true}}
+				if err := (&Worker{DB: db, BootID: pausedBoot, WorkerID: "paused-owner-candidate", Root: root, Lease: time.Minute, Backend: candidate, Agents: launchTestAgents()}).RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if candidate.spawns != 0 || countFileLines(spawns) != 1 {
+					t.Fatalf("new owner overlapped paused owner: spawns=%d/%d", countFileLines(spawns), candidate.spawns)
+				}
+			}
+			if tc.killOuter {
+				if err := syscall.Kill(outerPID, syscall.SIGKILL); err != nil {
+					t.Fatalf("kill paused outer wrapper after result: %v", err)
+				}
+			}
+			if !tc.killOuter {
+				if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tc.killOuter {
+				waitForGroupAbsent(t, pgid)
+			}
+			if tc.killOuter {
+				// The recorded execution group completed before result.json; the
+				// paused supervisor is the real post-result process killed above.
+				waitForGroupAbsent(t, pgid)
+			}
+			if err := worker.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = worker.Process.Wait()
+
+			// A restarted worker is an attempted new owner. There is no spawn
+			// permit/claim left to consume after the old wrapper interval ended.
+			restartedAt := now.Add(time.Second)
+			restartedBoot, err := db.StartDaemonBoot(ctx, "hash-cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), restartedAt.UnixMilli())
+			if err != nil {
+				t.Fatal(err)
+			}
+			completeLaunchRecovery(t, db, restartedBoot, restartedAt.UnixMilli(), "supervise")
+			backend := &countingBackend{backend: &execWrapperBackend{path: wrapperPath, pgid: true}}
+			restarted := &Worker{DB: db, BootID: restartedBoot, WorkerID: "replacement", Root: root, Lease: time.Minute, Backend: backend, Agents: launchTestAgents()}
+			if err := restarted.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if backend.spawns != 0 || countFileLines(spawns) != 1 {
+				t.Fatalf("spawn interval count = persisted %d, replacement %d; want one old owner only", countFileLines(spawns), backend.spawns)
+			}
+			assertSingleLaunchOwner(t, check)
+		})
+	}
+}
+
+func spawnedWrapperPID(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(string(bytes.TrimSpace(data)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("wrapper spawn PID %q: %v", data, err)
+	}
+	return pid
+}
+
+func persistedWrapperIdentity(t *testing.T, db *sql.DB) (int, int) {
+	t.Helper()
+	var pid, pgid int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := db.QueryRow(`SELECT wrapper_pid,wrapper_pgid FROM attempts WHERE run_id='run-1'`).Scan(&pid, &pgid); err == nil && pid > 0 && pgid > 0 {
+			return pid, pgid
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("wrapper identity was not durably projected")
+	return 0, 0
+}
+
+func waitForInitialControl(t *testing.T, root string, _ *sql.DB) {
+	t.Helper()
+	waitForFile(t, filepath.Join(root, "runs", "run-1", "attempts", "1", "control.json"))
+}
+
+func waitForAgentControl(t *testing.T, root string, _ *sql.DB) {
+	t.Helper()
+	path := filepath.Join(root, "runs", "run-1", "attempts", "1", "control.json")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var control struct {
+			Agent json.RawMessage `json:"agent_identity"`
+		}
+		if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &control) == nil && string(control.Agent) != "null" && len(control.Agent) != 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("control.json was not rewritten with agent identity")
+}
+
+func waitForStartedClaim(t *testing.T, _ string, db *sql.DB) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var phase string
+		if err := db.QueryRow(`SELECT phase FROM attempts WHERE run_id='run-1'`).Scan(&phase); err == nil && phase == "running" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("claim.started was not durably projected")
+}
+
+func waitForResult(t *testing.T, root string, _ *sql.DB) {
+	t.Helper()
+	waitForFile(t, filepath.Join(root, "runs", "run-1", "attempts", "1", "result.json"))
+}
+
+func waitForGroupAbsent(t *testing.T, pgid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(-pgid, 0); err == syscall.ESRCH {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("old wrapper process group %d remains live", pgid)
+}
+
 // TestLaunchWorkerProcessHelper is only invoked in a child test binary. The
 // callback publishes a synchronous boundary and waits to be SIGKILLed.
 func TestLaunchWorkerProcessHelper(t *testing.T) {
@@ -228,23 +443,33 @@ func TestLaunchWorkerProcessHelper(t *testing.T) {
 		select {}
 	}
 	hooks := workerHooks{}
-	switch os.Getenv("SIFT_LAUNCH_POINT") {
-	case "prepare":
-		hooks.afterPrepare = pause
-	case "rename":
-		hooks.afterBootstrapWrite = pause
-	case "digest":
-		hooks.afterBootstrapDigest = pause
-	case "spawn":
-		hooks.beforeSpawn = pause
-	default:
-		t.Fatal("unknown launch helper boundary")
+	if os.Getenv("SIFT_LAUNCH_POST_SPAWN") != "1" {
+		switch os.Getenv("SIFT_LAUNCH_POINT") {
+		case "prepare":
+			hooks.afterPrepare = pause
+		case "rename":
+			hooks.afterBootstrapWrite = pause
+		case "digest":
+			hooks.afterBootstrapDigest = pause
+		case "spawn":
+			hooks.beforeSpawn = pause
+		default:
+			t.Fatal("unknown launch helper boundary")
+		}
 	}
 	nowMS, err := strconv.ParseInt(os.Getenv("SIFT_LAUNCH_NOW"), 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker := &Worker{DB: db, BootID: os.Getenv("SIFT_LAUNCH_BOOT"), WorkerID: "killed-worker", Root: os.Getenv("SIFT_LAUNCH_ROOT"), Lease: 10 * time.Millisecond, Now: func() time.Time { return time.UnixMilli(nowMS) }, Backend: &execWrapperBackend{path: os.Getenv("SIFT_LAUNCH_WRAPPER"), pgid: true}, Agents: launchTestAgents(), hooks: hooks}
+	backend := &execWrapperBackend{path: os.Getenv("SIFT_LAUNCH_WRAPPER"), pgid: true}
+	agents := launchTestAgents()
+	if os.Getenv("SIFT_LAUNCH_POST_SPAWN") == "1" {
+		backend.ready = os.Getenv("SIFT_LAUNCH_READY")
+		backend.spawnLog = os.Getenv("SIFT_LAUNCH_SPAWN_LOG")
+		backend.block = true
+		agents = []config.Agent{{ID: "agent", Executable: os.Getenv("SIFT_LAUNCH_AGENT"), Args: []string{"-c", os.Getenv("SIFT_LAUNCH_AGENT_SCRIPT")}, TaskTransport: config.TaskTransportStdin}}
+	}
+	worker := &Worker{DB: db, BootID: os.Getenv("SIFT_LAUNCH_BOOT"), WorkerID: "killed-worker", Root: os.Getenv("SIFT_LAUNCH_ROOT"), Lease: 10 * time.Millisecond, Now: func() time.Time { return time.UnixMilli(nowMS) }, Backend: backend, Agents: agents, hooks: hooks}
 	if err := worker.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -351,9 +576,12 @@ func (b *countingBackend) Spawn(ctx context.Context, bootstrap string) (*os.Proc
 func (b *countingBackend) cleanup() { b.backend.cleanup() }
 
 type execWrapperBackend struct {
-	path    string
-	pgid    bool
-	process *os.Process
+	path     string
+	pgid     bool
+	process  *os.Process
+	ready    string
+	spawnLog string
+	block    bool
 }
 
 func (b *execWrapperBackend) Spawn(ctx context.Context, bootstrap string) (*os.Process, error) {
@@ -367,6 +595,19 @@ func (b *execWrapperBackend) Spawn(ctx context.Context, bootstrap string) (*os.P
 		return nil, fmt.Errorf("start wrapper: %w", err)
 	}
 	b.process = cmd.Process
+	if b.spawnLog != "" {
+		if err := appendLine(b.spawnLog, strconv.Itoa(cmd.Process.Pid)); err != nil {
+			return nil, err
+		}
+	}
+	if b.ready != "" {
+		if err := os.WriteFile(b.ready, []byte("ready"), 0600); err != nil {
+			return nil, err
+		}
+	}
+	if b.block {
+		select {}
+	}
 	return cmd.Process, nil
 }
 
@@ -389,6 +630,16 @@ func buildE2EWrapper(t *testing.T) string {
 		t.Fatalf("build wrapper: %v\n%s", err, output)
 	}
 	return path
+}
+
+func appendLine(path, value string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintln(f, value)
+	return err
 }
 
 func countFileLines(path string) int {
