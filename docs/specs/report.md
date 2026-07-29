@@ -21,6 +21,7 @@ summary: Agent Layer 1 上报的 run.sock、事件、去重与配额契约
 5. 接受的 report 至少写一条 append-only `events` 行和一条 `report_receipts` 行。`progress`、`goal`、`completed` 永远只写事件；`blocker` 也不得直接写 `runs.status`，但可按 §5 在同一事务中生成 `agent_blocked` Interrupt。
 6. `completed` 只是完成声明，绝不表示 Run done，也不触发 Change 创建；最终裁定只来自 Layer 2 的进程结果和 Gate。
 7. 鉴权、payload 校验、canonicalization、去重、限流和配额均为确定性代码；LLM 不参与任何一个决定。
+8. 每个 Report 参数均从绑定 Run 创建时冻结的 `runs.config_snapshot_id` 读取：`report.*`、`runtime.retry_multiplier`、`attention.day_timezone` 及由 `EmitInterrupt` 使用的 attention 参数。daemon 当前激活配置只影响新 Run；重启或激活新配置不得改写既有 Run 的 Report 结果或其已存在令牌桶。
 
 ## 2. CLI 与 RPC
 
@@ -32,10 +33,14 @@ sift report <progress|goal|blocker|completed> --key <report-key> --payload <json
 
 `--key` 必填；调用方在同一逻辑上报的所有重试中复用它，而不是每次生成新 key。`--payload` 必须恰为 §3 对应 kind 的 closed JSON object；CLI 不接受 stdin、文件名、任意额外 flag 或未知子命令作为绕过 payload schema 的入口。CLI 在本地先拒绝缺失/不安全的 `SIFT_RUN_DIR`、`control.json`、token 或绑定字段，不尝试任何其他凭据或 socket。
 
-CLI 将 control 文件中的 binding 和调用方字段组成 [`control-plane.md` §5.2](control-plane.md) 的唯一请求：
+CLI 将 control 文件中的 binding 和调用方字段组成 [`control-plane.md` §3.2、§5.2](control-plane.md) 的唯一 Request v1：
 
 ```json
 {
+  "protocol_major": 1,
+  "protocol_minor": 0,
+  "client_version": "0.1.0",
+  "request_id": "0123456789abcdef0123456789abcdef",
   "method": "report.submit",
   "auth": {"kind": "run_token", "token": "<control.json run_token>"},
   "params": {
@@ -86,11 +91,17 @@ payload_digest = SHA-256(canonical JSON of
 | 条件 | 结果 | CLI 行为 |
 |---|---|---|
 | 绑定 attempt 为 `running` | 按 §5 处理 | 正常返回 |
-| 为 `spawning`，且 permit 已签发、`claim.started` 尚未提交 | `not_ready`，仅 details `retry_after_ms` | 只重试这一种结果 |
+| 为 `spawning`，且 permit 已签发、`claim.started` 尚未提交 | `not_ready`，details 为 closed `retry_policy` | 只重试这一种结果 |
 | `pending`、`starting`、`finished`、`orphaned`，或 phase 已越过 | 永久拒绝 | 不重试 |
 | token/binding 跨 Run、attempt 或 generation | `unauthorized` 或 `stale` | 不重试 |
 
-对 `not_ready`，首个等待为 `report.not_ready_initial_delay`，随后按 `runtime.retry_multiplier` 指数增长并封顶 `report.not_ready_max_delay`；累计等待不超过 `report.not_ready_total_timeout`。每次重试复用相同 report key 和 payload。任何其他错误（包括限流、配额冲突及 payload/schema 错误）都不进入该退避循环。
+对 `not_ready`，服务端在每个错误 envelope 的 closed `details` 返回本 Run snapshot 导出的完整策略：
+
+```json
+{"retry_policy":{"initial_delay_ms":100,"multiplier_micros":2000000,"max_delay_ms":1000,"total_timeout_ms":10000}}
+```
+
+四个值均为正整数；`multiplier_micros` 是 `runtime.retry_multiplier × 1,000,000`，范围 `1000000..10000000`。CLI 只接受这一个 schema；缺字段、范围错误或同一退避序列中策略变更均本地失败，不猜默认值、不读 `config.yaml`。首次收到 `not_ready` 时记录单调时钟起点；第 `n` 次等待（从 0 开始）为 `min(max_delay_ms, floor(initial_delay_ms × multiplier_micros^n / 1000000^n))`，且不得使下一次等待后的累计时间超过 `total_timeout_ms`。达到该上限即失败。边界 vector：示例 policy 的等待依次为 `100,200,400,800,1000×8` ms（累计 `9500ms`），下一次 `1000ms` 必须因超过 `10000ms` 拒绝；`initial_delay_ms=1001,max_delay_ms=1000`、缺 `multiplier_micros`、或第二次响应把 `max_delay_ms` 改为 `999` 均为本地失败。每次重试复用相同 report key 和 payload。任何其他错误（包括限流、配额冲突及 payload/schema 错误）都不进入该退避循环。
 
 ## 5. 接受、事件与去重
 
@@ -109,7 +120,7 @@ payload_digest = SHA-256(canonical JSON of
 
 `report` 是 §3 的原 payload；Run 和 attempt 身份由 event 的列承载，不从 Agent payload 复制。receipt 的 `report_kind`、`payload_digest`、`event_id` 和 `received_at_ms` 是事件的审计锚点。事件顺序仅是本地提交顺序，不把 Agent 声称的时间当作事实发生时间。
 
-`blocker` 在 payload 和 attempt 日志引用均可形成 [`interrupt.md` §3](interrupt.md) 的 `agent_blocked` 最小事实时，使用新 receipt 的 ID 作为 `report_id` 调用唯一 `EmitInterrupt` 入口。它不得自行指定 severity、options 或 generation key。无论该 Interrupt 因注意力规则被合批/拒发，report receipt 与事件仍保留；它们不改变 Run 状态。
+`blocker` 在 payload 和 attempt 日志引用均可形成 [`interrupt.md` §3](interrupt.md) 的 `agent_blocked` 最小事实时，预先生成新 receipt ID，并以它作为 `report_id` 调用唯一 `EmitInterrupt` 入口。它不得自行指定 severity、options 或 generation key。该 receipt 的 `direct_interrupt_id`、Report 子配额 entry 和 Interrupt 的 attention entry 一一绑定；注意力日配额合批或 critical fuse 只改变该 Interrupt 的 delivery，receipt、event、两笔 entry、Interrupt 和首发 outbox 仍同事务保留。它们不改变 Run 状态。
 
 ### 5.2 两层去重
 
@@ -124,7 +135,7 @@ payload_digest = SHA-256(canonical JSON of
 
 ### 6.1 上报速率
 
-对非 duplicate、阶段合法的 report，`RecordReport` 使用 [`storage.md` §9.2](storage.md) 的持久化整数令牌桶：
+对非 duplicate、阶段合法的 report，`RecordReport` 从 Run snapshot 读取参数，并使用 [`storage.md` §9.2](storage.md) 的持久化整数令牌桶：
 
 ```text
 kind     = report
@@ -133,31 +144,51 @@ capacity = report.burst
 refill   = report.events_per_minute / 60s
 ```
 
-补充、余数和 CAS 严格按 storage 规格；不得以固定一分钟窗口替代。桶不足时请求以不可重试 `conflict` 拒绝，只写安全事件，不写 receipt/event，也不占用 key。重启不重置桶。
+补充、余数和 CAS 严格按 storage 规格；不得以固定一分钟窗口替代。既有桶的 `capacity_units`、`refill_numerator`、`refill_period_ms` 必须仍等于该 Run snapshot 的导出值；不等时以存储损坏拒绝并记安全事件，绝不按 daemon 当前配置重置。桶不足时请求以不可重试 `conflict` 拒绝，只写安全事件，不写 receipt/event，也不占用 key。重启不重置桶。
 
 ### 6.2 Report 直接致扰的每日子配额
 
-只有实际由 `blocker` report 直接调用 `EmitInterrupt` 的 `agent_blocked` 计入该子配额；`progress`、`goal`、`completed`，以及 Gate、恢复和其他系统事实创建的 Interrupt 一律不计。计数使用：
+只有实际由 `blocker` report 直接调用 `EmitInterrupt` 的 `agent_blocked` 计入该子配额；`progress`、`goal`、`completed`，以及 Gate、恢复和其他系统事实创建的 Interrupt 一律不计。Report charge 的完整不可变 row 为：
 
 ```text
-kind=report, scope=run, scope_id=<run_id>, amount=1
+kind=report
+scope=run
+scope_id=<run_id>
+bucket_start_ms=<snapshot timezone 的本地日 00:00 对应 instant>
+bucket_end_ms=<次日本地日 00:00 对应 instant>
+amount=1
+reason=report_agent_blocked
+run_id=<run_id>
+operation_key=report-interrupt-quota:<receipt_id>
+created_at_ms=<server received_at_ms>
 ```
 
-日桶按 `attention.day_timezone` 切分，limit 为 `report.interrupts_per_run_daily_quota`。该 report entry、attention 入口、receipt/event 和 Interrupt 必须在一笔事务中成功或一笔回滚；重放和语义 duplicate 不重复收费。critical 若由未来扩展的 Report 直接产生，仍计入本子配额，并同时遵守 attention critical fuse。
+`bucket_start_ms <= created_at_ms < bucket_end_ms`；`attention.day_timezone=local` 在 config snapshot 创建时规范化为具体 IANA 名称。日桶按该冻结时区的日历日计算，使用下一本地日的 00:00 作为 exclusive end，故 DST 日可为 23 或 25 小时。新 receipt 的 `report_interrupt_charge_entry_id` 与 `direct_interrupt_id` 均唯一，后者的 `charged_budget_entry_id` 是同一次 `EmitInterrupt` 的唯一 attention entry；这三者把 report charge、receipt 与 Interrupt 固定为一对一。重放和语义 duplicate 不重复收费。critical 若由未来扩展的 Report 直接产生，仍计入本子配额，并同时遵守 attention critical fuse。
 
-当子配额已满，后续会直接致扰的 blocker 不创建 receipt/event/普通 Interrupt，并只追加安全事件。按 `on_interrupt_quota_exceeded=failure_review_once`，系统以 `(run_id, daily_bucket_start_ms)` 为稳定异常键至多发一个 `failure_review`；它说明“Report Interrupt 子配额耗尽”，不接受 Agent 自由文本作为失败事实。该异常仍经过 `EmitInterrupt` 的全局 attention 配额和 critical fuse；若它们拒发，系统只保留安全事件，绝不借支或另开告警旁路。
-
-这条异常键是 Report 专用生成域，不得误用某个 attempt 的 `failure_review` generation key；实现时须将该 domain/version key 同步纳入 [`interrupt.md`](interrupt.md) 的生成键契约。
+当子配额已满，后续会直接致扰的 blocker 不创建 receipt/event/普通 Interrupt，但在同一受限写入口插入唯一 `(run_id, daily_bucket_start_ms)` 的 quota-exhaustion 安全事件记录。该记录的唯一约束而非先查后写保证并发至多一次；它以 [`interrupt.md` §5](interrupt.md) 的 Report 专用 domain/version 调用 `failure_review`。该异常的 facts 固定为 `failure_class=report_interrupt_quota_exhausted`、受控 `failure_evidence_ref=sift://event/<security_event_id>` 与 `recommended_action=review_report_interrupt_quota`，不接受 Agent 自由文本；`attempt_no` 为 NULL。它仍经过 `EmitInterrupt` 的全局 attention 配额和 critical fuse：合批/熔断保留该异常 Interrupt，结构拒发则保留 quota-exhaustion 安全记录和确定性诊断，绝不借支或另开告警旁路。
 
 ## 7. 原子边界与验收
 
-`RecordReport` 是唯一写入口。对一个新、可接受的 report，它以单事务完成 token bucket CAS、receipt、event，以及适用时的 Report 子配额和 `EmitInterrupt`；任一步失败则没有部分可见状态。安全审计与领域 event 分开：被拒绝的 report 绝不伪造成 Agent 已上报的领域事件。
+`RecordReport` 是唯一写入口。下表的领域列都在一笔事务中提交或回滚；`安全审计` 是拒绝的独立、必须在响应前提交的安全事件，绝不伪造成 Agent 已上报的领域 event。安全审计存储不可用时不返回成功。
+
+| 有序结局 | rate token | Report charge | receipt/key、领域 event | 安全审计 | Run | Interrupt / attention / outbox |
+|---|---|---|---|---|---|---|
+| duplicate（两层任一） | 不消费 | 不写 | 复用既有；不占新 key | 不写 | 不变 | 不写 |
+| 普通 `progress`/`goal`/`completed` | 消费 | 不写 | 同事务新 receipt + event | 不写 | 不变 | 不写 |
+| blocker 不能形成最小 facts | 消费 | 不写 | 同事务新 receipt + `report.blocker` event | 同事务诊断 | 不变 | 不写 |
+| blocker facts 完整、子配额可用 | 消费 | 写上述一行 | 同事务新 receipt + event | 不写 | 不变 | 新 `agent_blocked`、一笔 attention entry 和 forge-comment outbox 全部提交 |
+| 上行 attention 合批或 critical fuse | 消费 | 写上述一行 | 同上 | 不写 | 不变 | 同一 Interrupt/attention entry/forge-comment 提交；delivery 标为 batched/held，不另扣或借支 |
+| 子配额已满 | 消费 | 不写 | 不写，key 不占位 | quota-exhaustion 行及其安全 event 提交 | 不变 | 至多一个专用 `failure_review`；若 attention 合批/熔断仍提交该 Interrupt，结构拒发只保留安全记录 |
+| `EmitInterrupt` 结构拒绝（完整 blocker 分支） | 回滚 | 回滚 | 回滚，key 不占位 | 领域回滚后提交拒绝诊断 | 不变 | 回滚 |
+| 事务内部错误 | 回滚 | 回滚 | 回滚，key 不占位 | 存储可用时提交 `report_transaction_failed`；否则 RPC 返回 retryable `internal` | 不变 | 回滚 |
+
+因此 token 在子配额满分支已消费；它是通过两层去重、payload/phase 验证及 rate CAS 后的一次上报尝试，而不是可借此绕开的免费探测。安全 event 与领域 event 的身份、时钟和 source 以 [`storage.md` §7](storage.md) 为准。
 
 M5 至少覆盖：
 
-1. CLI 只读取 run dir 控制文件、只连 `run.sock`；operator token、`siftd.sock` 和 SQLite 均不可作为 fallback。
-2. run token 的跨 Run/attempt/generation、调用 `claim.*`/`ops.*`、以及 `pending`/`starting`/终态上报全部拒绝；仅合法 `spawning` 返回有界 `not_ready`。
+1. CLI 只读取 run dir 控制文件、只连 `run.sock`；完整 Request v1、错误 details schema 与非法 policy 响应均可断言；operator token、`siftd.sock`、SQLite 和 `config.yaml` 均不可作为 fallback。
+2. run token 的跨 Run/attempt/generation、调用 `claim.*`/`ops.*`、以及 `pending`/`starting`/终态上报全部拒绝；仅合法 `spawning` 返回从 Run snapshot 导出的有界 `not_ready`。旧 Run 在重启/新配置后仍使用旧 policy，新 Run 使用新 policy。
 3. 四类 payload 的 closed schema、canonical digest、大小上限和 token 脱敏；`completed` 与所有其他 report 均不改变 `runs.status`。
 4. 同 key 同 digest、同 key 异 digest、窗口内新 key 同语义、窗口到期和 `dedupe_window=0` 分别有可断言结果；所有 duplicate 零收费、零新 event。
-5. `burst=4` 跨固定分钟边界不瞬时超发，重启后桶连续；超限与配额拒绝没有 receipt/event/key 占位。
-6. blocker 的 receipt/event、直接 `agent_blocked`、report 子配额和异常 `failure_review_once` 的并发调用均验证“一次或零次”的事务结果；四个并发触顶者最多产生一条当日异常 Interrupt。
+5. `burst=4` 跨固定分钟边界不瞬时超发，重启后桶连续且不随新配置重置；超限与配额拒绝没有 receipt/event/key 占位。
+6. 覆盖 DST 前后日桶、同 operation key/语义 duplicate、崩溃重放和并发收费；四个并发触顶者最多产生一条当日 quota-exhaustion 记录与 `failure_review`。逐行验证上表，并在每个领域写步骤后注入崩溃，绝不出现部分领域状态。
