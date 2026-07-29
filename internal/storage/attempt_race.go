@@ -11,6 +11,15 @@ import (
 // AttemptRaceCommand normalizes the four inputs which can race with a frozen
 // attempt: wrapper started, recovery started, result evidence, and a human
 // terminal decision.  All of them must use ResolveAttemptRace.
+type AttemptResult struct {
+	Agent        AgentIdentity
+	ExitCode     *int
+	Signal       string
+	FinalHeadSHA string
+	Digest       string
+	FinishedAtMS int64
+}
+
 type AttemptRaceCommand struct {
 	RunID              string
 	AttemptNo          int
@@ -19,6 +28,7 @@ type AttemptRaceCommand struct {
 	FactKey            string
 	NowMS              int64
 	Agent              *AgentIdentity
+	Result             *AttemptResult
 	Reject             bool
 }
 
@@ -34,6 +44,9 @@ const (
 // attempt_resolution. It intentionally does not release isolation: a started
 // fact proves the execution body exists, not that it has disappeared.
 func (d *DB) ResolveAttemptRace(ctx context.Context, cmd AttemptRaceCommand) (string, error) {
+	if cmd.Result != nil && (cmd.Agent == nil || cmd.Result.Agent != *cmd.Agent || cmd.Result.Digest == "" || cmd.Result.FinishedAtMS <= 0 || (cmd.Result.ExitCode == nil) == (cmd.Result.Signal == "") || (cmd.Result.ExitCode != nil && (*cmd.Result.ExitCode < 0 || *cmd.Result.ExitCode > 255))) {
+		return "", ErrHandoffConflict
+	}
 	if cmd.RunID == "" || cmd.AttemptNo < 1 || cmd.ExpectedGeneration < 1 || cmd.FactKey == "" || cmd.NowMS <= 0 || (cmd.Agent == nil && !cmd.Reject) || (cmd.Agent != nil && cmd.Reject) || (cmd.Agent != nil && !validAgent(*cmd.Agent)) {
 		return "", ErrHandoffConflict
 	}
@@ -132,6 +145,17 @@ func (d *DB) ResolveAttemptRace(ctx context.Context, cmd AttemptRaceCommand) (st
 			}
 		}
 	}
+	if cmd.Result != nil {
+		if resolution == "" {
+			if _, err = tx.ExecContext(ctx, `UPDATE attempts SET result_exit_code=?,result_signal=?,final_head_sha=?,result_digest=?,result_observed_at_ms=?,finished_at_ms=?,phase='finished',updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND phase IN ('spawning','running')`, nullableInt(cmd.Result.ExitCode), nullableString(cmd.Result.Signal), nullableString(cmd.Result.FinalHeadSHA), cmd.Result.Digest, cmd.Result.FinishedAtMS, cmd.Result.FinishedAtMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
+				return "", err
+			}
+		} else {
+			if _, err = tx.ExecContext(ctx, `UPDATE attempts SET result_exit_code=?,result_signal=?,final_head_sha=?,result_digest=?,result_observed_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=?`, nullableInt(cmd.Result.ExitCode), nullableString(cmd.Result.Signal), nullableString(cmd.Result.FinalHeadSHA), cmd.Result.Digest, cmd.Result.FinishedAtMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
+				return "", err
+			}
+		}
+	}
 	payload, _ := json.Marshal(map[string]string{"disposition": disposition, "fact_key": cmd.FactKey})
 	if _, err = tx.ExecContext(ctx, `INSERT INTO events(id,run_id,attempt_no,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES (?, ?, ?, 'attempt.race_resolved', 'agent', 1, ?, ?, ?, ?)`, newID(), cmd.RunID, cmd.AttemptNo, string(payload), "attempt-race:"+cmd.FactKey, cmd.NowMS, cmd.NowMS); err != nil {
 		return "", fmt.Errorf("storage: record attempt race: %w", err)
@@ -140,6 +164,20 @@ func (d *DB) ResolveAttemptRace(ctx context.Context, cmd AttemptRaceCommand) (st
 		return "", err
 	}
 	return disposition, nil
+}
+
+func nullableInt(v *int) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func nullableString(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 func closeStartupStallTx(ctx context.Context, tx *sql.Tx, runID string, attemptNo int, reason string, nowMS int64) error {

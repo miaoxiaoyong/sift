@@ -49,6 +49,27 @@ func TestResolveAttemptRaceFactWinsWhileFrozen(t *testing.T) {
 	}
 }
 
+func TestResolveAttemptRacePersistsLateResult(t *testing.T) {
+	db, ctx, version := freezeAttemptForRace(t)
+	exit := 0
+	agent := AgentIdentity{PID: 101, StartedAtMS: testNow + 1, Executable: "/agent"}
+	got, err := db.ResolveAttemptRace(ctx, AttemptRaceCommand{
+		RunID: "run", AttemptNo: 1, ExpectedGeneration: 1, ExpectedRunVersion: version,
+		FactKey: "late-result:digest", NowMS: testNow + 1, Agent: &agent,
+		Result: &AttemptResult{Agent: agent, ExitCode: &exit, Digest: "digest", FinishedAtMS: testNow + 1},
+	})
+	if err != nil || got != AttemptRaceSupersededByFact {
+		t.Fatalf("result = %q, %v", got, err)
+	}
+	var phase, digest string
+	if err := db.db.QueryRow(`SELECT phase,result_digest FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&phase, &digest); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "finished" || digest != "digest" {
+		t.Fatalf("phase/digest = %q/%q", phase, digest)
+	}
+}
+
 func TestResolveAttemptRaceDecisionAbsorbsLateFact(t *testing.T) {
 	db, ctx, version := freezeAttemptForRace(t)
 	got, err := db.ResolveAttemptRace(ctx, AttemptRaceCommand{
