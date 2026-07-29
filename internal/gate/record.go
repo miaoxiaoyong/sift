@@ -14,35 +14,60 @@ import (
 // have been committed. CacheHit describes the caller's cache lookup; it never
 // suppresses a new evaluation/calibration row.
 func EvaluateAndRecord(ctx context.Context, db *storage.DB, in Input, cacheHit bool, features json.RawMessage, nowMS int64) (Verdict, storage.RecordedGateEvaluation, error) {
-	if db == nil {
-		return Verdict{}, storage.RecordedGateEvaluation{}, errors.New("gate: storage is required")
+	v, record, err := evaluationRecord(in, cacheHit, features, nowMS)
+	if err != nil || db == nil {
+		if db == nil && err == nil {
+			err = errors.New("gate: storage is required")
+		}
+		return v, storage.RecordedGateEvaluation{}, err
 	}
+	r, err := db.RecordGateEvaluation(ctx, record)
+	return v, r, err
+}
+
+// EvaluateRecordAndEmitInterrupt is the production Gate HITL boundary. It
+// evaluates exactly once, then commits the frozen snapshot, calibration and
+// M3 Interrupt emission through the single atomic storage port.
+func EvaluateRecordAndEmitInterrupt(ctx context.Context, db *storage.DB, in Input, cacheHit bool, features json.RawMessage, cmd storage.EmitInterruptCmd) (Verdict, storage.RecordedGateEvaluation, storage.Interrupt, error) {
+	v, record, err := evaluationRecord(in, cacheHit, features, cmd.NowMS)
+	if err != nil || db == nil {
+		if db == nil && err == nil {
+			err = errors.New("gate: storage is required")
+		}
+		return v, storage.RecordedGateEvaluation{}, storage.Interrupt{}, err
+	}
+	if v.Kind != "hitl" {
+		return v, storage.RecordedGateEvaluation{}, storage.Interrupt{}, errors.New("gate: interrupt recording requires a HITL verdict")
+	}
+	r, interrupt, err := db.RecordGateEvaluationAndEmitInterrupt(ctx, record, cmd)
+	return v, r, interrupt, err
+}
+
+func evaluationRecord(in Input, cacheHit bool, features json.RawMessage, nowMS int64) (Verdict, storage.GateEvaluationRecord, error) {
 	snapshot, hash, err := CanonicalInput(in)
 	if err != nil {
-		return Verdict{}, storage.RecordedGateEvaluation{}, err
+		return Verdict{}, storage.GateEvaluationRecord{}, err
 	}
 	v, err := Evaluate(in)
 	if err != nil {
-		return Verdict{}, storage.RecordedGateEvaluation{}, err
+		return Verdict{}, storage.GateEvaluationRecord{}, err
 	}
 	verdict, err := canonical(v)
 	if err != nil {
-		return Verdict{}, storage.RecordedGateEvaluation{}, err
+		return Verdict{}, storage.GateEvaluationRecord{}, err
 	}
 	vd, err := VerdictDigest(v)
 	if err != nil {
-		return Verdict{}, storage.RecordedGateEvaluation{}, err
+		return Verdict{}, storage.GateEvaluationRecord{}, err
 	}
-	links := brainInputLinks(in)
 	riskVersion := in.Risk.Source.Version
 	if riskVersion == "" {
 		riskVersion = in.Risk.Source.PromptVersion
 	}
 	if riskVersion == "" {
-		return Verdict{}, storage.RecordedGateEvaluation{}, errors.New("gate: risk source version is required for recording")
+		return Verdict{}, storage.GateEvaluationRecord{}, errors.New("gate: risk source version is required for recording")
 	}
-	r, err := db.RecordGateEvaluation(ctx, storage.GateEvaluationRecord{RunID: in.Identity.RunID, GateInputHash: hash, GateVersion: Version, SnapshotSchemaVersion: in.SchemaVersion, SnapshotJSON: snapshot, VerdictJSON: verdict, HeadSHA: in.Change.HeadSHA, EffectivePolicyHash: in.EffectivePolicyHash, CertificationVersion: in.CertificationVersion, RiskSourceVersion: riskVersion, VerdictDigest: vd, ShadowDecision: ShadowDecision(v), FeaturesJSON: features, BrainInputLinks: links, CacheHit: cacheHit, NowMS: nowMS})
-	return v, r, err
+	return v, storage.GateEvaluationRecord{RunID: in.Identity.RunID, GateInputHash: hash, GateVersion: Version, SnapshotSchemaVersion: in.SchemaVersion, SnapshotJSON: snapshot, VerdictJSON: verdict, HeadSHA: in.Change.HeadSHA, EffectivePolicyHash: in.EffectivePolicyHash, CertificationVersion: in.CertificationVersion, RiskSourceVersion: riskVersion, VerdictDigest: vd, ShadowDecision: ShadowDecision(v), FeaturesJSON: features, BrainInputLinks: brainInputLinks(in), CacheHit: cacheHit, NowMS: nowMS}, nil
 }
 
 func brainInputLinks(in Input) []storage.GateBrainInputLink {

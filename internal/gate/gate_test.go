@@ -1,11 +1,14 @@
 package gate
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/policy"
+	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
 func input(t *testing.T) Input {
@@ -79,6 +82,39 @@ func TestCacheKeysFullInputAndRecordsHits(t *testing.T) {
 	v, hit, _, err := c.EvaluateCached(in)
 	if err != nil || hit || v.Code != "mergeability_unknown" {
 		t.Fatalf("changed input hit=%v verdict=%#v err=%v", hit, v, err)
+	}
+}
+
+func TestEvaluateRecordAndEmitInterruptCommitsGateShadowAndHITLTogether(t *testing.T) {
+	ctx := context.Background()
+	db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(t.TempDir(), "sift.db"), BinaryVersion: "test", Now: time.UnixMilli(1_700_000_000_000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const now = int64(1_700_000_000_000)
+	if err := db.SeedProjectForTest(ctx, "cfg", "p", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedForgeRunForTest(ctx, "r", "p", "cfg", "42", now); err != nil {
+		t.Fatal(err)
+	}
+	in := input(t)
+	in.Risk.Source = Source{Kind: "fallback", LogicalCallID: "t3-call", Version: "T3/fallback/v1", Reason: "provider_disabled"}
+	in.EffectivePolicy.ReviewPolicy = config.ReviewPolicyAlways
+	in.Change.ReviewState = "not_approved"
+	policyJSON, err := canonical(in.EffectivePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.EffectivePolicyHash = digest(policyJSON)
+	cmd := storage.EmitInterruptCmd{RunID: "r", ExpectedRunVersion: 1, Reason: storage.InterruptCodeReview, Facts: map[string]string{"change_ref": "https://forge.example/change/42", "head_sha": in.Change.HeadSHA, "review_requirement": "required", "recommended_action": "approve", "diff_ref": "https://forge.example/change/42/diff"}, Generation: storage.InterruptGeneration{ChangeID: "42", HeadSHA: in.Change.HeadSHA}, GatePhase: storage.GateReview, GuardrailLevel: storage.GuardrailNone, AttentionDailyQuota: map[storage.InterruptSeverity]int{storage.SeverityLow: 3, storage.SeverityNormal: 5, storage.SeverityHigh: 5}, DayTimezone: "UTC", Source: storage.SourceSystem, NowMS: now}
+	v, record, interrupt, err := EvaluateRecordAndEmitInterrupt(ctx, db, in, false, []byte(`{"schema_version":1}`), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Code != "code_review" || record.CalibrationID == "" || interrupt.ID == "" {
+		t.Fatalf("verdict=%#v record=%#v interrupt=%#v", v, record, interrupt)
 	}
 }
 
