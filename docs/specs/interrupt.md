@@ -156,7 +156,7 @@ string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id
 | reason | 后续 typed fields |
 |---|---|
 | `design_approval` | `string:task_spec_snapshot_id` |
-| `guardrail_violation` | `string:policy_snapshot_id`, `string:violation_code`, `sha256:subject_digest` |
+| `guardrail_violation` | `sha256:effective_policy_hash`, `string:rule_id`, `sha256:matched_paths_digest` |
 | `code_review` | `string:change_id`, `git_oid:head_sha` |
 | `agent_blocked` | `uint:attempt_no`, `uint:generation`, `string:report_id` |
 | `merge_conflict` | `string:change_id`, `git_oid:head_sha`, `sha256:conflict_digest` |
@@ -168,7 +168,7 @@ string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id
 | reason | 完整 preimage | generation key |
 |---|---|---|
 | `design_approval` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00design_approval\x00string:task_spec_snapshot_id\x00task-01\x00` | `2eff88491a846f04025bc5a7019be780e96b00172adfa1b35154e71a77a27a83` |
-| `guardrail_violation` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00guardrail_violation\x00string:policy_snapshot_id\x00policy-01\x00string:violation_code\x00rule-01\x00sha256:subject_digest\x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x00` | `da9fc5161aa8f8a58f30b8c4e55833f4c4d23888112f19154b0de7c95968572e` |
+| `guardrail_violation` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00guardrail_violation\x00sha256:effective_policy_hash\x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x00string:rule_id\x00rule-01\x00sha256:matched_paths_digest\x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x00` | `ecc93ad7d910f74c2a042ad8f6052dfd9a265e02aabf8de4522fdfbad86111fb` |
 | `code_review` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00code_review\x00string:change_id\x00change-01\x00git_oid:head_sha\x000123456789abcdef0123456789abcdef01234567\x00` | `7389e85b479a5c919062677e5a9a9e9f3465db0473b2d41171479be736a83e59` |
 | `agent_blocked` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00agent_blocked\x00uint:attempt_no\x001\x00uint:generation\x002\x00string:report_id\x00report-01\x00` | `ebc17dc66d66fb86c9d48d7e79c86a632e44f0fd0248b5c5713b6a9e95825643` |
 | `merge_conflict` | `string:domain\x00sift.interrupt.generation\x00uint:version\x001\x00string:run_id\x00run-01\x00enum:reason\x00merge_conflict\x00string:change_id\x00change-01\x00git_oid:head_sha\x00aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x00sha256:conflict_digest\x00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\x00` | `56378c8559b5f6bdcebb3e097ff7385c78c0eabdcb1a56ae5effac50f0cdf1a3` |

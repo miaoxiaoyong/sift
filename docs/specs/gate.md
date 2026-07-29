@@ -12,7 +12,7 @@ summary: Gate 纯判定、快照、豁免和 Change 创建契约
 
 ## 评审状态
 
-字段级评审的 G1–G5 已由本文 §2.2、§2.3、§3.1、§3.2 和 active 的 [`policy.md` §3.3](policy.md) 关闭：Gate 只消费其 `EffectivePolicyV1`，不自定义 policy 字段。#217 尚未合入，G6（每类 verdict 的 calibration 二元/不可比较映射，以及 guardrail Interrupt 的不可变身份）仍未关闭，故本文**保持 `draft`**。处置依据及余项见[评审报告](../reviews/2026-07-29-gate-review-pi-gpt-5.6-sol.md)。实现方不得在 G6 完成前自行改变 calibration/Interrupt 身份接缝。
+字段级评审的 G1–G5 已由本文 §2.2、§2.3、§3.1、§3.2 和 active 的 [`policy.md` §3.3](policy.md) 关闭：Gate 只消费其 `EffectivePolicyV1`，不自定义 policy 字段。G6（#227）亦已关闭：每个 verdict 的校准值由已更新的 [`ledger.md` §3](ledger.md) 唯一规定为 `allow`、`block` 或 `inconclusive`（不可比较）；soft guardrail Interrupt 则只以本次冻结输入的 `effective_policy_hash`、`rule_id` 与 `matched_paths_digest` 生成身份，见本文 §5 和 [`interrupt.md` §5](interrupt.md)。本文仍**保持 `draft`**，直至 M4 实现及本规格 §7 的 schema/事务验收完成。处置依据见[评审报告](../reviews/2026-07-29-gate-review-pi-gpt-5.6-sol.md)。
 
 ## 1. 边界与不变量
 
@@ -127,7 +127,9 @@ Forge 端口 `RerunCheck(ctx, project, checkRunID, expectedHeadSHA)` 必须在�
 
 Gate reconciler 在事务外读取 Forge/Brain 事实、组装快照并运行纯函数；不得持有数据库事务执行这些 IO。随后通过 `RecordGateEvaluation` 原子持久化：输入 snapshot（按 hash 去重）、cache insert-or-return、一次 evaluation、含独立 `shadow_decision` 的 calibration、其唯一 `gate_sample` Ledger entry 和必要的领域后继动作。
 
-若 verdict 需要 HITL，该写端口必须在**同一事务**内完成 Gate snapshot/cache/evaluation/calibration/gate_sample，并调用 M3 `EmitInterrupt` 的五件事；创建的 Interrupt 还必须不可变绑定该 calibration。Run 转合法 `waiting_human`、generation-key 去重和首次注意力记账、Interrupt、事件、发布 operation 任一步失败均整体回滚。严禁等人回复后再补 Shadow Gate，或先使 Run 等待再补 Interrupt。`shadow_decision` 的完整 verdict 映射、人的因果 binding 和认证结算见 [`ledger.md` §3–§4](ledger.md)。
+若 verdict 需要 HITL，该写端口必须在**同一事务**内完成 Gate snapshot/cache/evaluation/calibration/gate_sample，并调用 M3 `EmitInterrupt` 的五件事；创建的 Interrupt 还必须不可变绑定该 calibration。Run 转合法 `waiting_human`、generation-key 去重和首次注意力记账、Interrupt、事件、发布 operation 任一步失败均整体回滚。严禁等人回复后再补 Shadow Gate，或先使 Run 等待再补 Interrupt。`shadow_decision` 的完整 verdict 映射、人的因果 binding 和认证结算以已更新的 [`ledger.md` §3–§4](ledger.md) 为准，Gate 不得另作映射。
+
+`hitl/guardrail_violation` 发射时，generation identity 只取同一冻结输入/ verdict 已有的 `effective_policy_hash`、`rule_id` 和 `matched_paths_digest`：依 [`interrupt.md` §5](interrupt.md) 分别编码为 `sha256:effective_policy_hash`、`string:rule_id` 和 `sha256:matched_paths_digest`。三者均为不可变的已验证值；不得虚构 `policy_snapshot_id`、将 `effective_policy_hash` 降格为可变查找，或以 brief/链接/人的回复替代任一键字段。
 
 非 HITL verdict 同样必须创建 calibration 预判，且不得把“没有打扰人”误作人类决定。每次 evaluation 的 `cache_hit` 状态和 verdict digest 都可审计；同一输入的多次调用应有多行 evaluation/calibration，而不是覆盖先前记录。
 
