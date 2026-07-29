@@ -32,6 +32,7 @@ type Server struct {
 	run           *net.UnixListener
 	wg            sync.WaitGroup
 	db            *storage.DB
+	operations    func(context.Context, string, string, int64) error
 }
 
 // Start obtains the process-lifetime mutex, creates the capability token when
@@ -227,6 +228,14 @@ func (s *Server) handle(c *net.UnixConn, operator bool) error {
 	}
 	return writeFrame(c, s.runRequest(req))
 }
+
+// SetOperatorAction installs the daemon-owned implementation for kill and retry.
+// Keeping the callback at the socket boundary prevents the thin CLI from ever
+// acquiring database access.
+func (s *Server) SetOperatorAction(action func(context.Context, string, string, int64) error) {
+	s.operations = action
+}
+
 func (s *Server) operatorRequest(req Request) Response {
 	if !strings.HasPrefix(req.Method, "ops.") {
 		return failure(req.RequestID, "unknown_method", "method is not registered on this socket", false)
@@ -259,7 +268,22 @@ func (s *Server) operatorRequest(req Request) Response {
 		if !onlyKeys(req.Params, "run_id", "expected_version", "request_key") {
 			return failure(req.RequestID, "invalid_request", "invalid params", false)
 		}
-		return failure(req.RequestID, "not_found", "run not found", false)
+		runID, ok := req.Params["run_id"].(string)
+		version, vok := req.Params["expected_version"].(float64)
+		key, kok := req.Params["request_key"].(string)
+		if !ok || runID == "" || !vok || version < 1 || version != float64(int64(version)) || !kok || key == "" {
+			return failure(req.RequestID, "invalid_request", "invalid params", false)
+		}
+		if s.operations == nil {
+			return failure(req.RequestID, "unavailable", "runtime termination is unavailable", true)
+		}
+		if err := s.operations(context.Background(), req.Method, runID, int64(version)); err != nil {
+			if errors.Is(err, storage.ErrRejectedStale) {
+				return failure(req.RequestID, "stale", "run or attempt changed", false)
+			}
+			return failure(req.RequestID, "termination_failed", "controlled termination was not accepted", true)
+		}
+		return success(req.RequestID, map[string]any{"accepted": true, "state": "terminating"})
 	default:
 		return failure(req.RequestID, "unknown_method", "unknown method", false)
 	}

@@ -20,6 +20,17 @@ func seedTerminationAttempt(t *testing.T) (*DB, context.Context) {
 	return db, ctx
 }
 
+func TestRecoveryAttemptsIncludesNonterminalAttemptRegardlessOfRunState(t *testing.T) {
+	db, ctx := seedTerminationAttempt(t)
+	attempts, err := db.RecoveryAttempts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 || attempts[0].RunID != "run" || attempts[0].AttemptNo != 1 {
+		t.Fatalf("recovery attempts = %#v", attempts)
+	}
+}
+
 func TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible(t *testing.T) {
 	db, ctx := seedTerminationAttempt(t)
 	run, err := db.RecordTerminationObservation(ctx, RecordTerminationObservationCmd{RunID: "run", AttemptNo: 1, ExpectedRunVersion: 1, ExpectedGeneration: 1, Source: TerminationRecovery, DiagnosticCause: "termination_unconfirmed", AttentionDailyQuota: interruptQuota(), NowMS: testNow})

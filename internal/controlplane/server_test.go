@@ -77,6 +77,25 @@ func TestV10aEndpointCapabilitiesAndSockets(t *testing.T) {
 // TestV10bUnsafeLocalAttackReproduces verifies the deliberately unclosed V0
 // boundary as an Agent would exploit it: same-UID code reads operator.token
 // and uses it to invoke an operator RPC successfully.
+func TestOperatorKillAndRetryDelegateToTerminationCoordinator(t *testing.T) {
+	home := testHome(t)
+	s, err := Start(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var gotMethod, gotRun string
+	var gotVersion int64
+	s.SetOperatorAction(func(_ context.Context, method, run string, version int64) error {
+		gotMethod, gotRun, gotVersion = method, run, version
+		return nil
+	})
+	response := s.operatorRequest(Request{RequestID: "0123456789abcdef0123456789abcdef", Method: "ops.kill", Auth: Auth{Kind: "operator", Token: s.operatorToken}, Params: map[string]any{"run_id": "run", "expected_version": float64(3), "request_key": "request"}})
+	if !response.OK || gotMethod != "ops.kill" || gotRun != "run" || gotVersion != 3 {
+		t.Fatalf("response=%#v action=%q %q %d", response, gotMethod, gotRun, gotVersion)
+	}
+}
+
 func TestV10bUnsafeLocalAttackReproduces(t *testing.T) {
 	home := testHome(t)
 	s, err := Start(home)

@@ -42,6 +42,16 @@ func main() {
 	if err := db.ActivateConfig(ctx, snapshot, controlplane.Version, now.UnixMilli()); err != nil {
 		fatal(err)
 	}
+	termination := &daemon.TerminationCoordinator{
+		DB: db, Terminator: runtime.Terminator{Inspector: runtime.UnknownProcessInspector{}, Signaler: runtime.UnixProcessSignaler{}}, Runtime: snapshot.Config.Runtime,
+		AttentionDailyQuota: attentionQuota(snapshot.Config.Attention.DailyQuota), DayTimezone: snapshot.Config.Attention.DayTimezone, Now: time.Now,
+	}
+	// Recovery runs before Assemble starts any worker. Unknown process identity
+	// is deliberately fail-closed and becomes a visible startup_stall instead
+	// of allowing a launch lease to be reclaimed.
+	if err := termination.Recover(ctx); err != nil {
+		fatal(err)
+	}
 	workers, err := daemon.Assemble(db, snapshot.Config, time.Now)
 	if err != nil {
 		fatal(err)
@@ -51,6 +61,9 @@ func main() {
 		fatal(err)
 	}
 	defer s.Close()
+	s.SetOperatorAction(func(ctx context.Context, method, runID string, version int64) error {
+		return termination.Operator(ctx, runID, version, method == "ops.retry")
+	})
 	go func() {
 		ticker := time.NewTicker(snapshot.Config.Scheduler.SupervisorInterval)
 		defer ticker.Stop()
@@ -59,6 +72,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				_ = termination.Timeout(ctx)
 				_ = workers.Tick(ctx)
 			}
 		}
@@ -74,6 +88,10 @@ func hasEnabledProjects(cfg *config.Config) bool {
 		}
 	}
 	return false
+}
+
+func attentionQuota(q config.DailyQuota) map[storage.InterruptSeverity]int {
+	return map[storage.InterruptSeverity]int{storage.SeverityLow: q.Low, storage.SeverityNormal: q.Normal, storage.SeverityHigh: q.High}
 }
 
 func fatal(err error) { fmt.Fprintln(os.Stderr, "siftd:", err); os.Exit(1) }
