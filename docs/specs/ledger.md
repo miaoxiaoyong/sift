@@ -6,7 +6,7 @@ summary: 校准账本、人类决定与类别认证投影契约
 
 # Ledger 规格
 
-本文定义 M4 校准账本（Ledger）的不可变记录、人类决定的唯一写入口，以及由校准样本增量维护的类别级认证投影。它不定义 Gate 判定、Command 语法、策略阈值或指标查询；分别见后续 `gate.md`、M5 Command/Report 规格、[`PRD §5.6`](../PRD.md) 与 [`PRD §10.2`](../PRD.md)。
+本文定义 M4 校准账本（Ledger）的不可变记录、人类决定的唯一写入口，以及由校准样本增量维护的类别级认证投影。它不定义 Gate 判定、Command 语法、策略阈值或指标查询；分别见 [`gate.md`](gate.md)、M5 Command/Report 规格、[`PRD §5.6`](../PRD.md) 与 [`PRD §10.2`](../PRD.md)。
 
 来源：[PRD §5.6、§5.9、§10.2–§10.3](../PRD.md)、[DESIGN §8.2、§8.5–§8.6](../DESIGN.md)、[ADR-004](../decisions/004-gate-as-pure-function.md)、[WBS M4 §4.4](../WBS.md)。持久化表、不可变约束和事务配方见 [`storage.md` §10.5–§10.7、§12.6](storage.md)。
 
@@ -14,7 +14,7 @@ summary: 校准账本、人类决定与类别认证投影契约
 
 1. Ledger 是影子门禁的超集，保存 Gate 预判、人类实际决定、富特征、打扰特征及人写的语义原料；记录只追加，不以当前 Run、策略或 forge 状态回填历史。
 2. 每次 Gate 调用先落一条 `calibration_entries` 预判，无开关。需要 HITL 时，该预判必须和 Interrupt 的五件事同事务，不能等评论回复后再计算。
-3. `recordHumanDecision` 是**唯一**写入人类实际决定、补全校准样本并更新认证投影的应用入口。M5 Command、forge 外部事实收敛和未来界面均只能调用它，不能直接更新 `calibration_entries`、`ledger_entries` 或 `certifications`。
+3. `recordHumanDecision` 是**唯一**记录已接受人类动作的应用入口；只有其中能映射为 `allow | block` 且与某次 Gate 预判有因果关联的动作才补全校准样本并更新认证投影。M5 Command、forge 外部事实收敛和未来界面均只能调用它，不能直接更新 `calibration_entries`、`ledger_entries` 或 `certifications`。
 4. Gate、Ledger、认证和 T7 都不得从历史单条记录推导或改变当前单条 Gate verdict，也不得抑制当前单条 HITL。允许的读取面仅为 T7 人工待批提案、观测指标和类别级认证投影。
 5. 人的响应间隔只是调度特征，绝不能作为注意力成本或「Human 分钟数」的代理口径。
 6. 外部 forge/LLM/文件 IO 在事务外完成；进入写入口的均是已经验证并冻结的事实。所有 JSON 使用 canonical JSON，且按其 schema version 校验。
@@ -31,12 +31,15 @@ summary: 校准账本、人类决定与类别认证投影契约
 {
   "schema_version": 1,
   "run": {"id": "…", "kind": "docs"},
-  "provenance": {"source_event_id": "…", "recorded_at_ms": 0}
+  "provenance": {
+    "source": {"kind": "event", "id": "…"},
+    "recorded_at_ms": 0
+  }
 }
 ```
 
 - `run.id` 必须等于行的 `run_id`；`kind` 是作出决定时冻结的任务类别，未知类别不得猜测或归入相邻类别。
-- `source_event_id` 是触发该记录的已接受 command/forge/系统事件；没有事件的 Gate 首次预判使用 Gate evaluation 身份。时间由写入口传入，不在领域层取时钟。
+- `provenance.source.kind` 只能是 `event | gate_evaluation | interrupt_delivery`，`id` 必须引用该 kind 的真实身份。已接受 command/forge/系统动作使用 `event`；没有事件的 Gate 预判使用 `gate_evaluation`；实际送达记录使用 `interrupt_delivery`。不得把 Gate evaluation ID 填进名为 event 的字段。时间由写入口传入，不在领域层取时钟。
 - 任何随后的 policy、Issue 作者、路径或 Interrupt 变化均不改变这份对象。
 
 ### 2.2 `gate_sample`：预判与校准特征
@@ -63,36 +66,43 @@ guardrails[], issue_author
 
 ### 2.3 `human_decision` 与 `semantic_material`
 
-`human_decision` 记录一个已验证人的实际裁定，含：
+`human_decision` 记录一个已接受的人类动作，含：
 
 ```text
-calibration_id?, decision { allow | block }, decision_source,
-interrupt_id?, command_event_id?, gate_bypassed
+action, calibration_decision?, decision_source,
+calibration_id?, interrupt_id?, command_event_id?, gate_bypassed
 ```
 
-- `decision_source` 只能是存储契约中的 `command | manual_merge | manual_close`。
-- `allow` 表示人允许继续/合并；`block` 表示人拒绝/关闭。Command 动词到这两个值的映射由 Command 规格定义，写入口只接受已规范化的结果。
-- 有匹配 Gate 预判时 `calibration_id` 必填，且该预判只能被补全一次。没有预判的决定仍可作为人类决策记录，但不是校准样本、不得参与认证计数。
+- `action` 只能是 `approve | reject | retry | hold | ask | manual_merge | manual_close`；`decision_source` 只能是存储契约中的 `command | manual_merge | manual_close`，且后两种 source 分别只与同名 action 组合。
+- `calibration_decision` 只能是 `allow | block | null`。与 Gate-linked Interrupt 因果绑定的 `approve/reject` 分别映射为 `allow/block`；`manual_merge/manual_close` 分别映射为 `allow/block`；`retry/hold/ask` 以及 Gate 之前的设计批准均为 `null`，不得伪造成校准结论。
+- `calibration_decision` 非空且存在匹配 Gate 预判时 `calibration_id` 必填，该预判只能被补全一次。没有预判的终局动作仍保留人类动作记录，但不是校准样本、不得参与认证计数；非终局动作永远不补全 calibration。
 - `gate_bypassed=true` 只允许 `manual_merge`；它是 forge 已合并事实的审计属性，不表示 Gate 曾经放行。
 
-`semantic_material` 保存人实际输入的自然语言原料：`/sift reject <原因>` 的原因及 `/sift ask <文本>` 的文本。它含来源 command event、可空 Interrupt、`material_kind=reject_reason|ask_text` 和原始 UTF-8 文本；不得以摘要、LLM 改写或后续 context 内容替换原料。`ask` 同时仍按 Task Spec 的不可变快照契约写入，Ledger 不取代该快照。
+`semantic_material` 保存人实际输入的自然语言原料：`/sift reject <原因>` 的原因及 `/sift ask <文本>` 的文本。它含来源 command event、可空 Interrupt、`material_kind=reject_reason|ask_text` 和原始 UTF-8 文本；不得以摘要、LLM 改写或后续 context 内容替换原料。`ask` 的 `human_decision.calibration_decision` 必须为 `null`，同时仍按 Task Spec 的不可变快照契约写入；Ledger 不取代该快照。
 
 ### 2.4 `attention_delivery`
 
-打扰特征以独立追加记录保存，至少包括 Interrupt 的 `reason`、`severity`、是否合批、送达时段、当日配额占用和 delivery 身份。人类决定关联某个 Interrupt 时，可在该决定特征中写入从**实际送达**到决定的响应间隔；未送达或无关联 Interrupt 则为 `null`。
+打扰特征只在 `interrupt_deliveries.state` 首次成功成为 `delivered` 后，以该 delivery ID 幂等追加；`pending`、`failed` 或仅生成 Interrupt 不写送达记录。记录至少包括 Interrupt 的 `reason`、该次实际投递的 `severity`、`delivery_id`、`delivered_at_ms`、`batched`、可空 `batch_id`、本 Interrupt 的首次注意力配额占用及送达时所属配额日。`batched=true` 时 `batch_id` 必填，反之必须为空。
 
-升级重推不重复计注意力配额，也不把「已生成」误作「已送达」。这些字段供调度与聚合观察，不构成注意力成本。
+人类动作关联某个 Interrupt 时，可在该动作特征中写入从该 Interrupt **首次实际送达**到动作的响应间隔；未送达、送达时间晚于动作或无关联 Interrupt 则为 `null`，不得取负数或改用生成时间。升级重推可有新的 delivery 记录，但不重复计注意力配额，也不把「已生成」误作「已送达」。这些字段供调度与聚合观察，不构成注意力成本。
 
 ## 3. `recordHumanDecision` 唯一入口
 
-输入是已认证的 actor/外部事实、稳定幂等身份、Run 与可空 Interrupt/Gate evaluation 身份、规范化的 `allow|block` 结果、来源、可空语义原料和 `gate_bypassed`。入口在开事务前验证：
+输入是已认证的 actor/外部事实、稳定幂等身份、Run 与可空 Interrupt/Gate evaluation 身份，以及下列 tagged union 之一：
+
+```text
+command_action { action, calibration_decision?, command_event_id, semantic_material? }
+external_action { action: manual_merge | manual_close, calibration_decision, forge_fact_event_id, gate_bypassed }
+```
+
+入口在开事务前验证：
 
 1. Run、Interrupt 和 Gate evaluation 的归属一致；Interrupt 若存在，当前命令已通过 nonce、option 与 actor 鉴权。
 2. `manual_merge` 只接受已由 Forge 观测确认的合并事实；`gate_bypassed` 只可随该来源写入。
-3. 结果、来源和可选自然语言的组合合法；自然语言只来自 `reject`/`ask` 的已接受原文，不从 forge 页面或 LLM 推断。
+3. action、校准结果、来源和可选自然语言符合 §2.3 的组合；自然语言只来自 `reject`/`ask` 的已接受原文，不从 forge 页面或 LLM 推断。
 4. 同一 command/forge fact 的幂等键重放返回既有结局；同一 calibration 已有不同人类结果时拒绝冲突，绝不覆盖。
 
-当决定关联 Gate 预判时，单个事务按以下顺序（顺序不产生可见半成品）提交：
+当动作带非空 `calibration_decision` 并关联 Gate 预判时，单个事务按以下顺序（顺序不产生可见半成品）提交：
 
 ```text
 BEGIN IMMEDIATE
@@ -104,7 +114,7 @@ BEGIN IMMEDIATE
 COMMIT
 ```
 
-任一步失败则全部回滚。无 Gate 预判时不写认证投影，但人类决定、语义原料及其 Run/Interrupt 结果仍同事务提交。Gate 首次预判的事务和本入口是两阶段记录：前者绝不预写人的结果，后者绝不重新计算当时 Gate。
+任一步失败则全部回滚。无 Gate 预判或 `calibration_decision=null` 时不写认证投影，但人类动作、语义原料及其 Run/Interrupt/Task Spec 结果仍同事务提交；`ask` 必须走这一分支。Gate 首次预判的事务和本入口是两阶段记录：前者绝不预写人的结果，后者绝不重新计算当时 Gate。
 
 M5 Command 只能组装上述输入并调用本入口；它不能拥有第二条 Ledger 写入路径。手工 close 和手工 merge 的 forge 事实消费者同样调用本入口，而不是模仿 Command 的 SQL。
 
@@ -152,7 +162,7 @@ Forge 是 Change 合并事实的权威。外部手工合并时，Run 仍收敛�
 ## 6. 派生验收
 
 1. 每次 Gate 调用均写冻结预判；需要 HITL 时，预判和 Interrupt 五件事在一次事务中，崩溃后不会只有其一。
-2. `recordHumanDecision` 是 Command、manual merge、manual close 唯一的人类结果入口；重放幂等，冲突结果和直接写表均被拒绝。
+2. `recordHumanDecision` 是 Command、manual merge、manual close 唯一的人类动作入口；`approve/reject/manual_merge/manual_close` 仅在符合 §2.3 时映射校准结果，`retry/hold/ask` 不污染 calibration；重放幂等，冲突结果和直接写表均被拒绝。
 3. 人类结果、Ledger、语义原料、校准补全、认证投影及决定的 Run/Interrupt/outbox 后果要么全有要么全无。
 4. 特征覆盖 kind、风险来源、变更规模、冻结路径/文件类型、护栏、Issue 作者、reason/severity/送达/合批/配额及 reject/ask 原文；响应间隔不进入注意力成本指标。
 5. `allow→block` 只计漏放且属于负样本；`block→allow` 只计误拦；未结算或无预判的记录不污染认证计数。
