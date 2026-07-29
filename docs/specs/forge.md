@@ -6,9 +6,9 @@ summary: Forge 适配层的最小动词集签名、中性类型、平台归一�
 
 # Forge 适配层规格
 
-本文冻结 Forge 适配层的端口契约：PRD §5.2 最小动词集（完整签名与中性类型）、平台归一规则、actor 必填、Change marker 全状态查找、merge expected-head CAS、错误分类、argv 边界与 API 预算收费口。字段级审定记录见[评审报告](../reviews/2026-07-29-forge-review-pi-gpt-5.6-sol.md)。
+本文冻结 Forge 适配层的端口契约：PRD §5.2 最小动词集（完整签名与中性类型）、CI rerun、平台归一规则、actor 必填、Change marker 全状态查找、merge expected-head CAS、错误分类、argv 边界与 API 预算收费口。字段级审定记录见[评审报告](../reviews/2026-07-29-forge-review-pi-gpt-5.6-sol.md)。
 
-来源：[PRD §5.2、§5.4、§9.2](../PRD.md)、[DESIGN §8.1](../DESIGN.md)、[WBS M2 §2.1–§2.5](../WBS.md)。现存 M1 fake 骨架（[`internal/forge/forge.go`](../../internal/forge/forge.go)）只定义了 `Kind`、`ProjectRef`、不完整的中性投影与 `Client` 的三个骨架动词（`ListIssuesByLabel`、`ListLabelEvents`、`GetChange`）。本文冻结全部 13 个动词、完整中性类型、双平台归一细节与副作用对账端口，是 M2 实现的共同契约。M2 必须按本文一次性升级 M1 骨架与 fake；不得把 M1 为骨架链刻意缩小的签名误当成已冻结的 M2 端口。
+来源：[PRD §5.2、§5.4、§9.2](../PRD.md)、[DESIGN §8.1](../DESIGN.md)、[WBS M2 §2.1–§2.5](../WBS.md)。现存 M1 fake 骨架（[`internal/forge/forge.go`](../../internal/forge/forge.go)）只定义了 `Kind`、`ProjectRef`、不完整的中性投影与 `Client` 的三个骨架动词（`ListIssuesByLabel`、`ListLabelEvents`、`GetChange`）。本文冻结 PRD 所列 13 个动词及 Gate 所需的 `RerunCheck`、完整中性类型、双平台归一细节与副作用对账端口，是 M2/M4 实现的共同契约。M2 必须按本文一次性升级 M1 骨架与 fake；不得把 M1 为骨架链刻意缩小的签名误当成已冻结的 M2 端口。
 
 ## 评审处置
 
@@ -290,13 +290,15 @@ ListChangeComments(ctx, project, changeID string, since Cursor) → ([]Comment, 
 ### 4.12 `GetChecks`
 ```
 GetChecks(ctx, project, headSHA string) → (CheckSuite, error)
+RerunCheck(ctx, project, checkRunID, expectedHeadSHA string) → error
 ```
 **用途**：CI 状态与失败任务清单。
 
 **归一要点**：
-- GitHub：合并 Checks API (`/commits/{sha}/check-runs` / `check-suites`) 与 Statuses API (`/commits/{sha}/status`)。结论取最差（`failure` > `pending` > `success`）。
-- GitLab：`glab api projects/{id}/pipelines?sha={sha}` 选最新 pipeline，再查询该 pipeline 的 jobs；从 jobs 归一失败项与 `allow_failure`。每个端点调用分别收费。
+- GitHub：合并 Checks API (`/commits/{sha}/check-runs` / `check-suites`) 与 Statuses API (`/commits/{sha}/status`)。结论取最差（`failure` > `pending` > `success`）。Rerun 仅对带稳定 check-suite/run ID 且经 SHA 复验的对象调用对应 rerun endpoint；Status API-only failure 不可 rerun。
+- GitLab：`glab api projects/{id}/pipelines?sha={sha}` 选最新 pipeline，再查询该 pipeline 的 jobs；从 jobs 归一失败项与 `allow_failure`。每个端点调用分别收费。Rerun 使用该 job 的 retry 端点，但在调用前/后均确认 job 的 pipeline SHA；无法作此确认时不调用。
 - CI 结论归一为 `"success" | "failure" | "pending" | "unknown"`（两平台无法确定时用 `"unknown"`，不猜）。
+- `RerunCheck` 只供 Gate 的一次 flaky rerun operation 使用。适配器必须先验证该 check/pipeline 仍属于 `expectedHeadSHA`，再调用平台 rerun API；不能验证、目标不唯一或平台 API 不支持该条件语义时分别返回 `ContractViolation`、`SemanticConflict` 或 `AuthOrCapability`。它不接受 pipeline 名称、URL 或任意请求参数作为替代身份。
 - `failed_jobs` 列表：每项含 `name`、`web_url`（链接到具体 job/run 供人查看）、`allow_failure`（允许失败的 job 不计入整体失败）。
 
 **`CheckSuite` 结构**：
@@ -308,6 +310,7 @@ ExternalURL  string        // CI 详情页 URL（GitHub: check suite URL; GitLab
 
 **`CheckJob` 结构**：
 ```
+ID           string   // 非空、平台稳定的 check run/job ID；RerunCheck 的唯一目标
 Name         string
 WebURL       string
 AllowFailure bool

@@ -534,7 +534,7 @@ M1 冻结上述表与约束，并仅实现 fake 骨架链所需的 Forge Run/rec
 |----|------|-----------|
 | `id` | TEXT | PK |
 | `operation_key` | TEXT | NOT NULL UNIQUE，稳定业务键 |
-| `kind` | TEXT | `forge_comment \| forge_labels \| create_change \| merge_change \| channel_publish \| launch_agent \| command_ack \| forge_alert` |
+| `kind` | TEXT | `forge_comment \| forge_labels \| create_change \| merge_change \| rerun_checks \| channel_publish \| launch_agent \| command_ack \| forge_alert` |
 | `run_id` | TEXT | NULL FK runs |
 | `attempt_no` | INTEGER | NULL；非空时与 run_id 组成 attempts 组合 FK |
 | `interrupt_id` | TEXT | NULL FK interrupts |
@@ -556,7 +556,22 @@ M1 冻结上述表与约束，并仅实现 fake 骨架链所需的 Forge Run/rec
 
 `executing` 必须同时有 lease owner/expiry；其他 state 不得保留有效 lease。terminal state 为 succeeded/failed/stale/conflict。payload 一经创建不可改；重试只更新执行字段。
 
-### 8.2 `outbox_attempts`（不可变）
+### 8.2 `check_rerun_consumptions`（不可变）
+
+Gate 创建 `rerun_checks` operation 的同一事务插入一行，防止崩溃恢复或并发 Gate evaluation 重复消费 flaky retry 额度。
+
+| 列 | 类型 | 约束/说明 |
+|----|------|-----------|
+| `run_id` | TEXT | NOT NULL FK runs |
+| `head_sha` | TEXT | NOT NULL |
+| `check_run_id` | TEXT | NOT NULL |
+| `retry_no` | INTEGER | NOT NULL，>=1 |
+| `operation_id` | TEXT | NOT NULL UNIQUE FK outbox_operations |
+| `created_at_ms` | INTEGER | NOT NULL |
+
+主键为 `(run_id, head_sha, check_run_id, retry_no)`。同一 head/check 的已消费数由这些不可变行计数；取消、conflict 或 CI 后续成功都不归还额度。
+
+### 8.3 `outbox_attempts`（不可变）
 
 | 列 | 类型 | 约束/说明 |
 |----|------|-----------|
@@ -568,7 +583,7 @@ M1 冻结上述表与约束，并仅实现 fake 骨架链所需的 Forge Run/rec
 
 唯一约束 `(operation_id, attempt_no)`。claim operation 时插入，之后不更新。
 
-### 8.3 `outbox_attempt_results`（不可变）
+### 8.4 `outbox_attempt_results`（不可变）
 
 | 列 | 类型 | 约束/说明 |
 |----|------|-----------|

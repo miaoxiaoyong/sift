@@ -61,6 +61,7 @@ Brain 字段级评审 [2026-07-28-brain-review-pi-gpt-5.6-sol.md](../reviews/202
 | `forge_labels` | `labels:<subject_kind>:<subject_id>:<projection_version>` |
 | `create_change` | `run:<run_id>:create-change:<head_sha>` |
 | `merge_change` | `run:<run_id>:merge:<expected_head_sha>` |
+| `rerun_checks` | `run:<run_id>:checks-rerun:<head_sha>:<check_run_id>:<retry_no>` |
 | `channel_publish` | `interrupt:<interrupt_id>:publish:<escalation_no>` |
 | `launch_agent` | `run:<run_id>:attempt:<attempt_no>:generation:<generation>:launch` |
 | `command_ack` | `command:<forge_event_id>:ack` |
@@ -196,7 +197,22 @@ Payload：
 
 首次保存 Change id 后，后续对账只按 id；按 marker 搜索仅用于“远端成功、本地 id 未提交”的窗口。head 变化形成新 operation key；旧 operation 收敛 stale，不得以同 key 改 payload。
 
-## 8. Merge Change
+## 8. Rerun Checks
+
+Payload：
+
+```json
+{
+  "run_id":"...","change_id":"...","head_sha":"...",
+  "check_run_id":"...","retry_no":1,"triage_source_digest":"..."
+}
+```
+
+只接受 Gate `retry_checks/flaky_retry` verdict 创建的 payload。`retry_no` 从 1 开始，且 operation key、payload 和 Gate snapshot 的 head/check/retry number 必须完全一致；创建 operation、记录已消费 retry number 和 Gate evaluation 在同一事务提交。worker 调用 [`forge.md` §4.12](forge.md) 的 `RerunCheck` 前，每一次读/调都照常收费。
+
+此 kind 没有 marker 或可查询的 exactly-once 证据。worker 仅可在确认**尚未发出**远端请求时把 transient/rate-limit 结果转 retryable；一旦开始 `RerunCheck`，无论收到成功、错误、进程崩溃或 lease 过期，均不得再次调用。成功后 operation succeeded 并触发重新观测 Checks；`SemanticConflict`/`AuthOrCapability`/调用结果不明均为 conflict，原子创建 `failure_review` Interrupt。reclaim 发现此 kind 的旧 attempt 已标记 request-started 时同样直接 conflict。这一保守规则保证单一 Gate retry number 最多导致一次远端 rerun，宁可人工处理也不突破额度。
+
+## 9. Merge Change
 
 Payload：
 
@@ -217,7 +233,7 @@ Payload：
 
 `merge_method` V0 只能为 `merge`；未来新增方法须版本化并验证平台语义。
 
-## 9. Channel publish
+## 10. Channel publish
 
 Payload：
 
@@ -234,7 +250,7 @@ worker 由 operation key 生成并追加可见标识；payload 不接受调用�
 
 escalation 使用新 operation key但复用原 attention charge；同 escalation 重试不新扣费。
 
-## 10. Launch Agent
+## 11. Launch Agent
 
 Payload不含任何 capability 明文：
 
@@ -264,7 +280,7 @@ Payload不含任何 capability 明文：
 
 `spawning` 后 effectively-once 的强度来自 session/permit/进程组消失证据，不来自 outbox lease。
 
-## 11. 结果与错误分类
+## 12. 结果与错误分类
 
 | class/outcome | operation state | 领域动作 |
 |---------------|-----------------|----------|
@@ -278,11 +294,11 @@ Payload不含任何 capability 明文：
 
 错误 summary 必须去除 CLI stderr 中的 token、URL query credential 与控制文件内容；原始 stderr 不入事件或 outbox。每个 attempt 均恰有一个 immutable result；worker 崩溃留下的 attempt 由 reclaim 写 `lease_expired` result。
 
-## 12. M1 骨架与后续 kind
+## 13. M1 骨架与后续 kind
 
 M1 必须完整实现通用 claim/complete、退避、immutable attempts/results 与 `launch_agent`；其他 kind 的 payload decoder、operation key builder 和 fake adapter 契约在 M1 建立，随对应里程碑启用。不得用一个 `map[string]any` payload 占位后绕过 schema。
 
-## 13. 验收
+## 14. 验收
 
 1. operation 与领域投影同事务；各写点崩溃只能全有或全无。
 2. payload 创建后数据库 trigger 拒绝修改；同 key 异 digest 为 contract violation。
@@ -297,16 +313,16 @@ M1 必须完整实现通用 claim/complete、退避、immutable attempts/results
 11. max_attempts、指数退避与 Retry-After 使用注入时间可确定测试。
 12. fake adapter 覆盖 success/transient/rate-limit/auth/contract/conflict/stale 全分类。
 
-## 14. 评审冻结项
+## 15. 评审冻结项
 
 1. comment marker 必须在 GitHub/GitLab 评论与 Change body 中无损保存并全分页搜索。
 2. create Change 必须同时执行全状态 marker 查询和同 base/head 冲突查询。
 3. 平台不能提供 expected-head merge CAS 时必须禁用 auto merge。
 4. launch operation 在 acquire 原子绑定 session 时 succeeded；started 属 attempt handoff，不延长 outbox lease。
 
-## 15. 自查结果
+## 16. 自查结果
 
-- [x] 八类 operation 均有稳定 key、closed payload 与明确投递语义；intake 评论与 token 告警目的不伪造 run 关联、不突破注意力配额。
+- [x] 九类 operation 均有稳定 key、closed payload 与明确投递语义；`rerun_checks` 明确为最多一次远端调用；intake 评论与 token 告警目的不伪造 run 关联、不突破注意力配额。
 - [x] effectively-once 声明均有 marker/set/CAS/handoff 证据；Channel 如实为 at-least-once。
 - [x] create Change 不接管同 base/head 的人工对象；merge 不以预读替代远端 CAS。
 - [x] launch payload 无 capability 明文，prepare/file/spawn/acquire 窗口有唯一恢复动作。
