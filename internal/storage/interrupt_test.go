@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -101,6 +102,43 @@ func TestStartupStallFreezesAttempt(t *testing.T) {
 	if state != "frozen" || reason != "termination_unconfirmed" {
 		t.Fatalf("isolation = %s/%s", state, reason)
 	}
+}
+
+func TestConcurrentStartupStallDiscoveryConverges(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	if err := db.SeedProjectForTest(ctx, "cfg", "project", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedForgeRunForTest(ctx, "run", "project", "cfg", "42", testNow); err != nil {
+		t.Fatal(err)
+	}
+	insertTaskSpec(t, db, "spec", "run", 1)
+	insertAttempt(t, db, "run", 1, "spec")
+	attempt := 1
+	cmd := EmitInterruptCmd{RunID: "run", ExpectedRunVersion: 1, AttemptNo: &attempt, Reason: InterruptStartupStall,
+		Facts:      map[string]string{"attempt_no": "1", "generation": "1", "diagnostic_cause": "termination_unconfirmed", "isolation_consequence": "worktree 保持隔离", "recommended_action": "retry", "attempt_diagnostic_ref": "/attempt", "worktree_ref": "/worktree"},
+		Generation: InterruptGeneration{AttemptNo: 1, Generation: 1}, GatePhase: GateNone, GuardrailLevel: GuardrailNone, AttentionDailyQuota: interruptQuota(), Source: SourceRecovery, NowMS: testNow}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := db.EmitInterrupt(ctx, cmd)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent emission = %v", err)
+		}
+	}
+	assertCount(t, db, "interrupts", 1)
+	assertCount(t, db, "budget_entries", 1)
+	assertCount(t, db, "outbox_operations", 1)
 }
 
 func TestEmitInterruptRejectsBeforeAnyWrite(t *testing.T) {

@@ -352,10 +352,10 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 ### M3 门禁
 
 - [x] V4 的 process backend、handoff、恢复矩阵、受控终止与资格门控部分通过
-- [ ] V5a：base/worktree 读取源通过；硬护栏 V5b 留 M4
+- [x] V5a：base/worktree 读取源通过；硬护栏 V5b 留 M4（`TestManagerCreatesIsolatedWorktreeAndReadsBaseOnly` 覆盖 base-only 的 policy/context 读取与 worktree 改写隔离）
 - [x] V10a wrapper 凭据部分通过
-- [ ] 每个 PRD reason 均能在无 T4/T6 时生成结构合法、可发布的 fallback Interrupt
-- [ ] 同一 startup_stall 并发发现只生成一条 Interrupt、扣一次配额、保留一条可重放发布 operation
+- [x] 每个 PRD reason 均能在无 T4/T6 时生成结构合法、可发布的 fallback Interrupt（`interruptTemplates`/`renderInterrupt` golden/vector 契约）
+- [x] 同一 startup_stall 并发发现只生成一条 Interrupt、扣一次配额、保留一条可重放发布 operation（generation-key 唯一冲突按幂等回放收敛）
 - [x] 无法证明消失时系统可见且 worktree 保持隔离；本片不要求 M5 的人工 retry 两段式
 
 ---

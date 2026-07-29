@@ -261,6 +261,15 @@ func (d *DB) EmitInterrupt(ctx context.Context, cmd EmitInterruptCmd) (Interrupt
 	optionsJSON, _ := json.Marshal(in.Options)
 	linksJSON, _ := json.Marshal(in.Links)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO interrupts (id,run_id,attempt_no,generation_key,reason,severity,headline,brief_markdown,options_json,min_modality,links_json,nonce,version,status,dispatch_state,expires_at_ms,on_expire,escalation_count,max_escalations,charged_budget_entry_id,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,? ,1,'open','ready',?,?,?,?,?,?,?)`, in.ID, in.RunID, in.AttemptNo, in.GenerationKey, in.Reason, in.Severity, in.Headline, in.Brief, string(optionsJSON), in.MinModality, string(linksJSON), newID(), in.ExpiresAtMS, in.OnExpire, cmd.EscalationCount, cmd.MaxEscalations, in.ChargedBudgetEntryID, cmd.NowMS, cmd.NowMS); err != nil {
+		// Two recovery/termination callers can discover the same stall at
+		// once. SQLite serializes the writers, so the loser may observe the
+		// unique generation-key constraint only after the winner commits.
+		// Treat that race exactly like the pre-insert lookup: the losing
+		// transaction must not retain its attention charge or outbox rows.
+		_ = tx.Rollback()
+		if existing, found, lookupErr := d.interruptByKey(ctx, key); lookupErr == nil && found {
+			return existing, nil
+		}
 		return Interrupt{}, err
 	}
 	eventID := newID()
@@ -492,6 +501,22 @@ func mustGenerationKey(cmd EmitInterruptCmd) string {
 	}
 	return k
 }
+func (d *DB) interruptByKey(ctx context.Context, key string) (Interrupt, bool, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Interrupt{}, false, err
+	}
+	defer tx.Rollback()
+	in, found, err := interruptByKeyTx(ctx, tx, key)
+	if err != nil {
+		return Interrupt{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Interrupt{}, false, err
+	}
+	return in, found, nil
+}
+
 func interruptByKeyTx(ctx context.Context, tx *sql.Tx, key string) (Interrupt, bool, error) {
 	var in Interrupt
 	var n sql.NullInt64

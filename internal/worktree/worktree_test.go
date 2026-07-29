@@ -21,6 +21,7 @@ func TestManagerCreatesIsolatedWorktreeAndReadsBaseOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(repo, ".sift", "policy.yaml"), "base-policy")
+	write(t, filepath.Join(repo, ".sift", "context.md"), "base-context")
 	write(t, filepath.Join(repo, "README"), "base")
 	runGit(t, repo, "add", ".")
 	runGit(t, repo, "commit", "-qm", "base")
@@ -38,12 +39,18 @@ func TestManagerCreatesIsolatedWorktreeAndReadsBaseOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(wt.Path, ".sift", "policy.yaml"), "agent-policy")
-	got, err := m.ReadBaseFile(context.Background(), base, ".sift/policy.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "base-policy" {
-		t.Fatalf("base policy = %q", got)
+	write(t, filepath.Join(wt.Path, ".sift", "context.md"), "agent-context")
+	for _, tc := range []struct{ name, want string }{
+		{name: ".sift/policy.yaml", want: "base-policy"},
+		{name: ".sift/context.md", want: "base-context"},
+	} {
+		got, err := m.ReadBaseFile(context.Background(), base, tc.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != tc.want {
+			t.Fatalf("base %s = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 	if err := m.Remove(context.Background(), wt); err != nil {
 		t.Fatal(err)
