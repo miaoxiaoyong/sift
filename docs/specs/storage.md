@@ -698,7 +698,6 @@ Interrupt 升级重推复用原 charge，不新增 entry；Interrupt 关闭不�
 | `selected_attempt_no` | INTEGER | NULL；非空时与 id 组成 brain_attempts 组合 FK |
 | `fallback_reason` | TEXT | NULL |
 | `validated_output_json` | TEXT | NULL |
-| `gate_input_snapshot_id` | TEXT | NULL FK gate_input_snapshots |
 | `started_at_ms` | INTEGER | NOT NULL |
 | `finished_at_ms` | INTEGER | NULL |
 
@@ -711,7 +710,7 @@ Interrupt 升级重推复用原 charge，不新增 entry；Interrupt 关闭不�
   - T2：`scope=run`，run 必填、attempt 为空。
   - T3–T6：`scope=run`，run 必填；调用发生在具体 attempt 时 attempt 可填，否则为空。
   - T7：`scope=aggregate`，subject 为 `global` 或 project/category/window 聚合键；run/attempt 为空。
-- `attempt_no` 非空时 `run_id` 必填且组合外键指向 attempts。Gate 外触点不得伪造 snapshot 外键；只有输出实际参与 Gate 输入时关联。
+- `attempt_no` 非空时 `run_id` 必填且组合外键指向 attempts。Brain call 先于 Gate snapshot 终结且不可回写；输出实际参与 Gate 输入时通过 §10.2 的关联表连接。
 
 #### `brain_attempts`（不可变）
 
@@ -757,6 +756,19 @@ Interrupt 升级重推复用原 charge，不新增 entry；Interrupt 关闭不�
 | `created_at_ms` | INTEGER | NOT NULL |
 
 hash 必须覆盖整份冻结输入；不得在 Gate 内读取快照外的当前值。
+
+#### `brain_gate_input_links`（不可变）
+
+Brain logical call 与 Gate snapshot 是多对多：同一 T3/T5 结果可在 head 不变而 Checks/review/policy 等事实变化时进入多份 snapshot，一份 failure snapshot 也可同时引用 T3 与 T5。不得把 snapshot FK 回写到已终结的 `brain_calls`。
+
+| 列 | 类型 | 约束/说明 |
+|----|------|-----------|
+| `logical_call_id` | TEXT | NOT NULL FK brain_calls |
+| `gate_input_snapshot_id` | TEXT | NOT NULL FK gate_input_snapshots |
+| `touchpoint` | TEXT | `T3 \| T5`；必须等于 call.touchpoint |
+| `created_at_ms` | INTEGER | NOT NULL |
+
+主键 `(logical_call_id, gate_input_snapshot_id)`。`RecordGateEvaluation` 在创建/复用 snapshot 的同一事务按其 canonical source 插入或返回既有 link；被引用 call 必须已 terminal，且 logical ID、touchpoint、prompt/schema version、validated output 或 fallback source 与 snapshot 逐字段一致。没有实际进入 snapshot 的 call 不建 link，T1/T2/T4/T6/T7 不伪造关联。
 
 ### 10.3 `gate_evaluations`（不可变）
 
@@ -842,10 +854,10 @@ Ledger 消费者只能是 T7 提案、指标与类别级 certification；不得�
 
 ```json
 {"record_type":"gate","schema_version":1,"record_id":"...","snapshot_id":"...","input":{},"gate_version":"...","expected_verdict":{}}
-{"record_type":"brain_call","schema_version":1,"record_id":"...","scope":"run","subject_key":"run:...","touchpoint":"T3","call_seq":2,"prompt_version":"...","output_schema_version":1,"status":"valid","selected_attempt_no":1,"fallback_reason":null,"input":{},"input_digest":"...","validated_output":{},"attempts":[{"provider_attempt":1,"outcome":"valid","provider_error_code":null,"raw_output":"...","raw_output_digest":"...","raw_output_bytes":123,"raw_output_truncated":false,"input_tokens":10,"output_tokens":5,"started_at_ms":0,"finished_at_ms":1}],"gate_input_snapshot_id":"..."}
+{"record_type":"brain_call","schema_version":2,"record_id":"...","scope":"run","subject_key":"run:...","touchpoint":"T3","call_seq":2,"prompt_version":"...","output_schema_version":1,"status":"valid","selected_attempt_no":1,"fallback_reason":null,"input":{},"input_digest":"...","validated_output":{},"attempts":[{"provider_attempt":1,"outcome":"valid","provider_error_code":null,"raw_output":"...","raw_output_digest":"...","raw_output_bytes":123,"raw_output_truncated":false,"input_tokens":10,"output_tokens":5,"started_at_ms":0,"finished_at_ms":1}],"gate_input_snapshot_ids":["..."]}
 ```
 
-Gate record 来自同一 snapshot/evaluation；Brain record 一条 logical record 内携**按 `provider_attempt` 有序**的 attempts，不得把一次 retry 导出成两个彼此无归属的 record。`output_schema_version` 与表字段同名，`gate_input_snapshot_id` 可空。导出不得包含 capability hash、operator token 或控制文件内容。格式字段新增需 bump 顶层 `schema_version`；旧导出必须继续可读或由显式迁移工具转换。
+Gate record 来自同一 snapshot/evaluation；Brain record 一条 logical record 内携**按 `provider_attempt` 有序**的 attempts，不得把一次 retry 导出成两个彼此无归属的 record。`output_schema_version` 与表字段同名；`gate_input_snapshot_ids` 按 ID UTF-8 bytes 排序，可为空数组并由关联表重建。导出不得包含 capability hash、operator token 或控制文件内容。格式字段新增需 bump 顶层 `schema_version`；旧导出必须继续可读或由显式迁移工具转换。
 
 ## 11. 受限写端口
 
@@ -882,7 +894,7 @@ Gate record 来自同一 snapshot/evaluation；Brain record 一条 logical recor
 | `ReserveBrainCall` | brain_call_counters CAS 递增 + 插入 `status=running` 的 brain_calls（冻结身份/输入），同一事务 |
 | `RecordBrainAttempt` | immutable brain_attempts + token post-charge（budget entry/counter，唯一 operation key 幂等，允许单次越界） |
 | `FinalizeBrainCall` | brain_calls 一次性 `running → valid | fallback` 终结（valid 指向本 call 的 valid attempt，fallback 带原因）；恢复时按已有 attempts 收敛遗留 running call |
-| `RecordGateEvaluation` | snapshot/cache/evaluation/calibration + 必要 Interrupt |
+| `RecordGateEvaluation` | snapshot/cache/evaluation/calibration + T3/T5 Brain links + 必要 Interrupt |
 | `RecordExternalHumanDecision` | 手工 merge/close 的 calibration + ledger + certification + Run/Interrupt/outbox |
 
 任何新增可变表必须在本表有完整、显式的写入族归属；新增端口必须证明不能由上述端口表达，并同步本规格与崩溃注入测试。恢复端口接收的是已验证观测及其 digest，不持有数据库事务做 OS 探测；`ApplyStartupRecoveryAction`、`RecordTerminationObservation`、`ResolveAttemptRace` 与 `ApplyRetryProbeResult` 共享内部 transition/isolation/仲裁原语，不形成四套可漂移规则。
@@ -1008,6 +1020,7 @@ COMMIT
 - `brain_attempts`
 - `intake_assessments`
 - `gate_input_snapshots`
+- `brain_gate_input_links`
 - `gate_evaluations`
 - `gate_cache`
 - `ledger_entries`
@@ -1049,6 +1062,7 @@ COMMIT
 - `brain_calls(run_id, attempt_no, touchpoint, call_seq)`（`run_id IS NOT NULL` 的查询索引）
 - `brain_attempts(logical_call_id, provider_attempt)`（唯一）
 - `intake_items(state, updated_at_ms)`
+- `brain_gate_input_links(gate_input_snapshot_id, logical_call_id)`
 - `gate_evaluations(run_id, created_at_ms)`
 - `ledger_entries(run_id, created_at_ms)`
 
@@ -1060,13 +1074,13 @@ COMMIT
 4. append-only 表的 UPDATE/DELETE 被数据库级 trigger 拒绝。
 5. Intake 批次崩溃不推进游标；重放不重复创建 intake 投影、Run 或事件。
 6. outbox operation key、forge event id、Brain 调用身份（call 唯一键与 attempt 组合唯一键）、Interrupt generation key、Report key 的唯一约束可重复验证。
-7. Brain call 可以不关联 Gate snapshot；关联时必须引用真实 snapshot。
+7. Brain call 可以不关联 Gate snapshot；T3/T5 实际进入 snapshot 时写不可变多对多 link，同一 call 可关联多份真实 snapshot且 terminal call 不被回写。
 8. `attempt_resolution` 只接受两个 V0 枚举值，写入后不可逆；隔离与 Run 终态相互独立。
 9. 数据库文件与目录权限符合配置规格；CLI/wrapper 无直接写库路径。
 10. T1/T2/T7 call 可在无 attempt 或无 Run 时合法落库，作用域错误被 CHECK/FK 拒绝。
 11. Report burst=4 的令牌桶跨固定分钟边界仍不允许瞬时超发；critical fuse 按滑动窗口计数。
 12. §11 每张可变表均有完整、显式的写入族归属；outbox payload 与一次性 resolution 的非法修改被 trigger 拒绝。
-13. Gate 与 Brain 两类 JSONL 导出可由冻结数据重建并通过 schema v1 round-trip；Brain record 单条内携有序 attempts。
+13. Gate JSONL schema v1 与 Brain JSONL schema v2 导出可由冻结数据重建并 round-trip；Brain record 单条内携有序 attempts 和排序 snapshot ID 数组，旧 Brain schema v1 继续可读或经显式迁移转换。
 14. `brain_calls` 只能一次性 `running → valid | fallback` 终结；身份/输入列修改与 DELETE 被 trigger 拒绝；`provider_attempt=0` 行 token/exit/raw 必空且 `outcome=fallback`。
 15. 遗留 `running` call 只按已有 attempts 收敛为 valid/fallback，不重放无法证明未执行的 provider attempt。
 16. intake 状态约束生效：`consumed` 必有 `linked_run_id`，awaiting 必有 assessment 与 generation；token post-charge 允许单次越界而 attention/forge 仍被通用 CAS 拒绝。

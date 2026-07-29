@@ -392,7 +392,7 @@ D0.2 写的「按 `(base, head branch)` 查是否已存在**开启的** Change�
 | Gate 输入快照 | 冻结的 `changeFacts` / 有效策略 / riskScore + `gate_input_hash` | §5.6「同一输入重跑得同一 verdict」、量化策略改动 |
 | Brain 触点 trace | 各触点的输入、原始输出、提示词与 schema 版本、是否走了兜底；各触点身份域见 [`specs/storage.md`](specs/storage.md) §10.1 | §5.6「量化**提示词改动**带来的漏放变化」——只存 Gate 快照无法把差异归因到提示词 |
 
-**关联不是强制一一对应。** 缓存条目、影子 Gate 记录与 Gate 回放共用同一个 `gate_input_snapshot_id`；Brain trace 以自身调用身份独立存在，只有该次输出确实参与某份 Gate 输入组装时才携带可空的 `gate_input_snapshot_id`。因此 T1/T2/T6/T7 不需要伪造 Gate 外键，T3 等关联触点仍能回答「这次放行是策略变松了还是提示词变松了」。
+**关联不是强制一一对应。** 缓存条目、影子 Gate 记录与 Gate 回放共用同一个 `gate_input_snapshot_id`；Brain trace 以自身调用身份独立存在，只有该次输出确实参与 Gate 输入组装时才通过不可变多对多关系关联一份或多份 snapshot。同一 T3/T5 结果可在 head 不变而 Checks/review 等事实变化时被多份快照复用，且 call 先终结、snapshot 后创建，故不得把单个可空 FK 回写到 terminal call。T1/T2/T6/T7 不需要伪造 Gate 关联，T3/T5 仍能回答「这次放行是策略变松了还是提示词变松了」。
 
 ---
 
@@ -1100,7 +1100,7 @@ D0.4 收到 review-09～12 的连续阻断评审；本节以用户指定的 [rev
 |----------|------|------|------|
 | R9/R10/R11/R12：两次同凭据 `claim:confirm` 无法区分 acquire、重放与 pre-spawn；claim 唯一约束挡不住共享同一预建 claim 的 wrapper | P1 | 三动词拆义：acquire 以 `wrapper_instance_id` 幂等并签 session；permit-spawn 以 CAS 持久化唯一 permit；started 只确认启动证据。启动 operation 增加 CAS + lease，恢复先于 lease 重放 | §6.4、§8.4、§10.1、V2/V4、ADR-010 |
 | R9/R10/R11/R12：`running` 在真实 Agent spawn 前落库 | P1 | attempt 增加 `spawning`；control 分 wrapper / Agent 两组身份；仅 Agent 身份落盘且 started 验证成功后推进 attempt / Run；`run.sock` 的授权声明收窄到“run token 的 Report 动词不改状态”，不再把整个端点说成只读 | §3.2、§7、§8.4、§8.9、§10.1、V2/V4、ADR-008/010 |
-| R9-F3 / R11-F3：Brain trace 被强制绑定 Gate 快照 | P2 | trace 改用独立调用身份，`gate_input_snapshot_id` 只作可空关联；Gate 缓存 / 影子记录 / Gate 回放仍共用同一 ID | §7、`specs/storage.md` 范围 |
+| R9-F3 / R11-F3：Brain trace 被强制绑定 Gate 快照 | P2 | trace 改用独立调用身份；实际参与 Gate 的 T3/T5 通过不可变多对多表关联 snapshot，terminal call 不回写单 FK；Gate 缓存 / 影子记录 / Gate 回放仍共用同一 ID | §7、`specs/storage.md` 范围 |
 | R11-F4：统一拒绝 unknown field 会让 Forge 无关新增字段触发 fail closed | P2 | 保留单一 gateway，但显式分 `closed` / `open-envelope`；前者拒额外字段，Forge 后者允许无关扩展、对必需语义继续 fail closed。review-12 认为原 gateway 已足够，本版采纳 review-11 的更细边界，因为两种 unknown 的安全含义确实不同 | §5.2、§8.1、§9.4、V14、ADR-009 |
 | R11-F5：PRD“单文件”与三二进制冲突；四组合只构建、未逐组合运行 | P2 | PRD 裁决为“三个同版本自包含二进制 + 单归档”；版本目录 + `current` 原子切换；每组合跑二进制级冒烟、每 OS 跑完整恢复；无 systemd Linux 提供 foreground fallback | PRD §9.3、§5、§11、V15、ADR-009 |
 | R12-N1：outbox 表提前宣称未兑现的 effectively-once | P2（随 P1） | agent 启动行改为 operation lease + session + permit + handoff 的现行协议，明确保证口径为“每 attempt 一个 permit、任一时刻一个存活 writer” | §6.4 |

@@ -61,9 +61,9 @@ cache key       = (gate_input_hash, gate_version)
 |---|---|
 | `schema_version` | 常量 `1` |
 | `identity` | closed object：非空 `run_id`、`project_id`、`task_kind`、`change_id`；所有 ID 为 UTF-8、1–256 bytes |
-| `change` | closed object：`state=open|closed|merged`、64 小写十六进制 `head_sha`、非空 `base_ref`/`head_ref`、boolean `is_draft`、`mergeability=mergeable|conflicting|unknown`、`review_state=approved|not_approved|unknown`、`paths_complete`、`changed_paths`、`files_changed>=0`、`additions>=0`、`deletions>=0`。路径必须为 repo-relative slash path，非空、不以 `/` 开头、不含 `.`/`..` segment、排序去重；`paths_complete=false` 时 `changed_paths` 必须为空，`true` 时空数组才表示确无变更路径。 |
+| `change` | closed object：`state=open|closed|merged`、40（SHA-1 repository）或 64（SHA-256 repository）个小写十六进制字符的 `head_sha`、非空 `base_ref`/`head_ref`、boolean `is_draft`、`mergeability=mergeable|conflicting|unknown`、`review_state=approved|not_approved|unknown`、`paths_complete`、`changed_paths`、`files_changed>=0`、`additions>=0`、`deletions>=0`。路径必须为 repo-relative slash path，非空、不以 `/` 开头、不含 `.`/`..` segment、排序去重；`paths_complete=false` 时 `changed_paths` 必须为空，`true` 时空数组才表示确无变更路径。 |
 | `checks` | closed object：`conclusion=success|failure|pending|unknown`、排序去重 `failed_jobs`、非空 `external_url`、`flaky_retries_used>=0`；job 为 closed `{id,name,web_url,allow_failure}`，`id` 非空且排序 key 为 `(id,name)`。`pending` 时必有 `pending_started_at_ms>=0`、`observed_at_ms>=pending_started_at_ms`、`pending_timed_out`，其他结论三字段均为 null；`failure` 时必有 `triage`，否则为 null。 |
-| `checks.triage` | closed object：`classification=flaky|real_failure|infrastructure|unknown`、closed `source`；仅 failure 可出现。`source` 是 `kind=brain`（非空 logical call/prompt/schema version）或 `kind=fallback`（非空 version/reason）。 |
+| `checks.triage` | closed object：`classification=flaky|real_failure|infrastructure|unknown`、`retry_check_id`、closed `source`；仅 failure 可出现。`classification=flaky` 时 retry ID 必须非空且精确命中 `failed_jobs` 中 `allow_failure=false` 的项；其他分类必须为 null。`source` 是 `kind=brain`（非空 logical call/prompt/schema version）或 `kind=fallback`（非空 logical call/version/reason），字段与 [`brain.md` §10.3](brain.md) 同源。 |
 | `effective_policy` | [`policy.md` §3.3](policy.md) 的 `EffectivePolicyV1` canonical JSON，且只接受该 closed shape：`schema_version`、`protected_paths.{hard,soft,soft_exceptions}`、`review_policy`、`risky_review_threshold`、`auto_merge`、`checks_pending_timeout_ms`、`flaky_retry_limit`。不得添加未知字段或将 `soft_exceptions` 另投影为 remembered-exceptions 字段。 |
 | `effective_policy_hash` / `certification_version` | 各为 64 小写十六进制，前者必须等于 `effective_policy` 的 canonical SHA-256。 |
 | `risk` | `brain.md` §9.2–§9.3 的 closed T3 object：整数 `risk_score`（0–100）、排序去重 `risk_points`、`rationale`、以及 brain/fallback source；不得省略来源。 |
@@ -79,7 +79,7 @@ cache key       = (gate_input_hash, gate_version)
 |---|---|---|
 | `failed` / `hard_guardrail` | `rule_id`、排序 `matched_paths` | Run failed；无 Interrupt |
 | `wait_checks` / `checks_pending` | `external_url`、`pending_started_at_ms` | 等待重新观测 |
-| `retry_checks` / `flaky_retry` | `check_run_id`、`retry_no`（1-based） | 创建 §3.2 `rerun_checks` operation |
+| `retry_checks` / `flaky_retry` | `check_run_id`（等于 triage 的 `retry_check_id`）、`retry_no`（1-based） | 创建 §3.2 `rerun_checks` operation |
 | `hitl` / `guardrail_violation` | `rule_id`、`matched_paths_digest` | `guardrail_violation` Interrupt |
 | `hitl` / `failure_review` | `external_url`、`classification` | `failure_review` Interrupt |
 | `hitl` / `code_review` | `review_policy`、`risk_score` | `code_review` Interrupt |
@@ -89,7 +89,7 @@ cache key       = (gate_input_hash, gate_version)
 | `ready` / `no_auto_merge` | `reason=policy_disabled|draft` | 无 merge operation |
 | `hitl` / `input_unknown` | `field`、`reason` | fail-closed 人工路径 |
 
-`retry_checks` 仅当 failure/`flaky` 且 `flaky_retries_used < flaky_retry_limit` 命中；`pending_timed_out=true`、unknown Checks 和未定义/耗尽的 triage 均不得返回 wait/retry。canonical fixtures 至少覆盖上表每一分支、同 SHA Checks 漂移 cache miss、路径不完整和每条交叉约束反例。
+`retry_checks` 仅当 failure/`flaky`、合法 `retry_check_id` 且 `flaky_retries_used < flaky_retry_limit` 命中；`pending_timed_out=true`、unknown Checks 和未定义/耗尽的 triage 均不得返回 wait/retry。canonical fixtures 至少覆盖上表每一分支、同 SHA Checks 漂移 cache miss、路径不完整和每条交叉约束反例。
 
 ### 2.4 缓存与回放
 

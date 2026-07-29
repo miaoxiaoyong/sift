@@ -26,6 +26,10 @@ summary: Brain 调用壳、T1/T2/T3/T5 schema 与确定性兜底契约
 
 B1–B3 全部 P1 与 B4–B7 均已处置；P3 编辑项（版本独立 bump、SIFT_HOME 单一引用、补充 fixture）同步采纳，见 §2/§11/§12。
 
+### T3/T5 字段级评审
+
+2026-07-29 独立字段级评审结论为 **PASS WITH NOTES**；报告见 [2026-07-29-brain-t3-t5-review-pi-gpt-5.6-sol.md](../reviews/2026-07-29-brain-t3-t5-review-pi-gpt-5.6-sol.md)。评审发现的 head/diff 竞态、T5 rerun 目标缺失、fallback 绕过 Gate 事务、嵌套字段未闭合和 Brain↔Gate 错误一对一关联均已在 §9–§10 及 storage/gate/DESIGN 接缝关闭；无遗留 P1，本文保持 `active`。非阻断注记仅涉及 T5 现有 Forge 元数据的分诊信息量，留待实现证据评估，不扩张 V0 Forge 日志读取面。
+
 ## 1. 不变量
 
 1. LLM 只输出建议；状态转移、硬护栏、Agent 存在性/并发、去重、预算和权限均由确定性代码裁定。
@@ -292,11 +296,22 @@ T3 在 Gate 外、Gate 输入快照组装前调用；Gate 只接收冻结的风�
 
 | 字段 | 类型 | 约束 |
 |------|------|------|
-| `run_id` | string | 必填 |
-| `task_kind` | string | 必填；T2 已冻结的 kind |
-| `change` | closed object | 必填；`id`、`url`、`head_sha`、`diff` 均必填 |
+| `run_id` | string | 必填；1..256 bytes |
+| `task_kind` | string | 必填；`feature \| bug \| chore \| docs \| refactor`，必须等于 T2 冻结值 |
+| `change` | closed object | 必填；仅含下表四个 required 字段 |
 
-`change.id`、`change.url`、`change.head_sha` 与当前 Forge Change 投影精确一致；`diff` 是 `GetChangeDiff` 返回的未改写 unified diff。整份 canonical JSON 不得超过 `brain.max_input_bytes`；超过上限不调用 provider，按 §9.3 兜底。diff 和其中的文本均为 untrusted data。
+`change`（closed object）：
+
+| 字段 | 类型 | 约束 |
+|------|------|------|
+| `id` | string | 1..256 bytes |
+| `url` | string | 1..2048 bytes；已验证的 HTTPS Change URL |
+| `head_sha` | string | 40 或 64 个小写十六进制字符 |
+| `diff` | string | Forge 返回的未改写 unified diff；可空，受整份 input 上限约束 |
+
+`change.id`、`change.url`、`change.head_sha` 必须与该 Run 当前 Forge Change 投影精确一致。为防止 head 在两次 Forge 读取之间漂移，组装器固定执行 `GetChange → GetChangeDiff → GetChange`：前后两次 Change 的 ID/URL/head 必须逐字段相同，才可 reserve T3 call；否则丢弃本次组装并重新观测，不得把 diff 标成旧 head。T3 结果只可进入 `identity.run_id`、`identity.change_id`、`change.head_sha` 分别等于本 input 的 Gate snapshot；head 已变化时必须重新调用 T3。
+
+整份 canonical JSON 不得超过 `brain.max_input_bytes`；超过上限不调用 provider，按 §9.3 兜底。diff 和其中的文本均为 untrusted data。
 
 ### 9.2 Output v1
 
@@ -305,7 +320,7 @@ closed object（`additionalProperties:false`）：
 | 字段 | 类型 | 约束 |
 |------|------|------|
 | `risk_score` | integer | 必填；0..100，数值越大风险越高 |
-| `risk_points` | string[] | 必填；0..10 项，每项 trim 后 1..1000 bytes，trim 后去重 |
+| `risk_points` | string[] | 必填；0..10 项，每项 trim 后 1..1000 bytes；trim 后按 UTF-8 bytes 排序去重 |
 | `rationale` | string | 必填；≤2000 bytes，可空串 |
 
 `risk_score` 与 `risk_points` 只是建议；确定性 Gate 依照有效策略裁定 review、合并与状态转移，LLM 不得输出或覆盖 policy、review requirement、verdict 或 auto-merge 决定。
@@ -320,7 +335,12 @@ closed object（`additionalProperties:false`）：
 
 因此失败和超预算一律是高风险，不能因缺少评分而降级 `risky-only` 的人审要求。
 
-Gate 输入快照必须将风险结果连同**由确定性消费者追加、而非 LLM 输出**的来源对象 canonical 化：正常结果为 `{kind:"brain",logical_call_id,prompt_version,output_schema_version}`；兜底结果为 `{kind:"fallback",version:"T3/fallback/v1",reason}`。`gate_input_snapshots.risk_source_version` 保存该对象对应的版本标识，完整对象留在 `canonical_json`；两者均参与 `gate_input_hash`。同一 diff 在 T3 正常结果与兜底结果间不得命中同一个 Gate 缓存键。
+Gate 输入快照必须将风险结果连同**由确定性消费者追加、而非 LLM 输出**的 closed 来源对象 canonical 化：
+
+- 正常结果：`{kind:"brain",logical_call_id,prompt_version,output_schema_version}`；三个值分别为非空 string、非空 string、正整数，且必须逐字段等于被引用的 terminal valid T3 call；
+- 兜底结果：`{kind:"fallback",logical_call_id,version:"T3/fallback/v1",reason}`；logical ID 必须引用 terminal fallback T3 call，`reason` 只能为 `provider_disabled | token_threshold | input_too_large | invalid_output | provider_error | recovery`。
+
+`gate_input_snapshots.risk_source_version` 对正常结果保存 `prompt_version`，对兜底保存固定 `version`；完整对象留在 `canonical_json`，两者均参与 `gate_input_hash`。同一 diff 在 T3 正常结果与兜底结果间不得命中同一个 Gate 缓存键。`RecordGateEvaluation` 同事务写 [`storage.md` §10.2](storage.md) 的多对多关联；同一 T3 call 可被 Checks/review 等事实不同的多份 snapshot 合法复用，不回写 terminal call。
 
 ## 10. T5 Checks 失败分诊
 
@@ -332,11 +352,27 @@ T5 只在 Forge Checks 已归一为 `failure` 时调用；它不重查 Forge、�
 
 | 字段 | 类型 | 约束 |
 |------|------|------|
-| `run_id` | string | 必填 |
-| `change` | closed object | 必填；`id`、`url`、`head_sha` 均必填且与当前 Change 投影一致 |
-| `checks` | closed object | 必填；`external_url`、`failed_jobs` 均必填 |
+| `run_id` | string | 必填；1..256 bytes |
+| `change` | closed object | 必填；仅含 `id`、`url`、`head_sha` 三个 required 字段，约束与 §9.1 同源且必须等于当前 Change 投影 |
+| `checks` | closed object | 必填；仅含 `external_url`、`failed_jobs` 两个 required 字段 |
 
-`failed_jobs` 是 [`forge.md` §4.12](forge.md) 的失败项按 `(name, web_url)` 排序后的数组；每项为 closed object，含必填 `name`、`web_url` 与 `allow_failure`。`checks.external_url` 是归一后的 CI 详情链接。整份 canonical JSON 不得超过 `brain.max_input_bytes`；超限不调用 provider，按 §10.3 兜底。所有 Check 名称、URL 与文本均为 untrusted data。
+`checks`（closed object）：
+
+| 字段 | 类型 | 约束 |
+|------|------|------|
+| `external_url` | string | 1..2048 bytes；已验证的 HTTPS CI 详情 URL |
+| `failed_jobs` | array | 1..100 项；按 `(id, name)` UTF-8 bytes 排序，`id` 去重 |
+
+`failed_jobs[]`（closed object）：
+
+| 字段 | 类型 | 约束 |
+|------|------|------|
+| `id` | string | 必填；1..256 bytes；[`forge.md` §4.12](forge.md) 的稳定 check run/job ID |
+| `name` | string | 必填；1..512 bytes |
+| `web_url` | string | 必填；1..2048 bytes；已验证的 HTTPS job/run URL |
+| `allow_failure` | boolean | 必填 |
+
+T5 只在 `GetChecks(head_sha)` 返回 `conclusion=failure` 且至少一个失败项时调用；`change.head_sha` 必须等于该次查询使用的 SHA。failure 却没有可归一失败项时不调用 provider，按 §10.3 以 `input_incomplete` 兜底。整份 canonical JSON 不得超过 `brain.max_input_bytes`；超限不调用 provider，按 §10.3 兜底。所有 Check 名称与 URL 均为 untrusted data；T5 不跟随 URL，也不自行读取日志。
 
 ### 10.2 Output v1
 
@@ -345,15 +381,16 @@ closed object（`additionalProperties:false`）：
 | 字段 | 类型 | 约束 |
 |------|------|------|
 | `classification` | string | 必填；`flaky \| real_failure \| infrastructure` |
-| `rationale` | string | 必填；1..2000 bytes |
+| `retry_check_id` | string/null | 必填；`flaky` 时为 1..256 bytes string，其他分类必须为 null |
+| `rationale` | string | 必填；trim 后 1..2000 bytes |
 
-分类是建议，不是动作命令。确定性消费矩阵固定为：`flaky` 仅可进入既有、有限且仍受预算/幂等约束的 Check 重试路径；`real_failure` 与 `infrastructure` 都生成 `failure_review` HITL。T5 不得要求、发起或无限重复 CI/Agent 重试。
+分类和重试目标都是建议，不是动作命令。`flaky` 的 `retry_check_id` 必须精确命中 input 中 `allow_failure=false` 的一项，否则视同 schema/domain failure并按同 prompt 重试；`real_failure`/`infrastructure` 不得夹带目标。确定性消费矩阵固定为：合法 `flaky` 建议仅可把该 ID 交给 Gate 的既有、有限且仍受预算/幂等约束的 Check 重试路径；Gate 仍独立核对 head、额度与目标身份。`real_failure` 与 `infrastructure` 都生成 `failure_review` HITL。T5 不得要求、发起或无限重复 CI/Agent 重试。
 
 ### 10.3 失败兜底与 Gate 来源
 
-provider 禁用、token 阈值/输入上限、schema failure、provider failure 或 recovery 收敛为 fallback 时，T5 不猜测 flaky，直接以 `failure_class=triage_unavailable` 和现有 Check/Brain trace 证据调用 `EmitInterrupt(reason=failure_review)`；其 options、severity、预算与发布均遵循 [`interrupt.md` §3–§5](interrupt.md)。
+provider 禁用、token 阈值/输入上限、`input_incomplete`、schema/domain failure、provider failure 或 recovery 收敛为 fallback 时，T5 不猜测 flaky，也不直接改变 Run 或发 Interrupt。确定性消费者组装 Gate triage `{classification:"unknown",retry_check_id:null,source:{kind:"fallback",logical_call_id,version:"T5/fallback/v1",reason}}`；logical ID 必须引用本次 terminal fallback T5 call，`reason` 只能为 `provider_disabled | token_threshold | input_too_large | input_incomplete | invalid_output | provider_error | recovery`。Gate 随后以 `failure_class=triage_unavailable` 和现有 Check/Brain trace 证据在 `RecordGateEvaluation` 事务内调用 `EmitInterrupt(reason=failure_review)`，其 options、severity、预算与发布遵循 [`interrupt.md` §3–§5](interrupt.md)。不得在 T5 fallback 和 Gate 各发一次 Interrupt，也不得绕过 Gate evaluation/calibration。
 
-Check 失败参与 Gate 输入时，快照必须 canonical 化 T5 的分类结果及其确定性来源：正常结果为 `{kind:"brain",logical_call_id,prompt_version,output_schema_version}`；兜底为 `{kind:"fallback",version:"T5/fallback/v1",reason}`。来源版本和完整来源对象与分类一起进入 Gate 快照及其 hash；正常分类与兜底不得共用缓存输入。具体 Gate 输入字段留待 M4 的 `specs/gate.md` 冻结；本节不把 T5 建议扩展为 Gate 决定。
+Check 失败参与 Gate 输入时，快照必须 canonical 化 T5 的分类结果、`retry_check_id` 及其确定性来源。正常来源 closed object 与 §9.3 的 brain 形态同源，并必须引用 terminal valid T5 call；兜底来源使用上段固定对象。来源版本规则与 §9.3 相同。完整分类/目标/来源进入 Gate 快照及其 hash，正常分类与兜底不得共用缓存输入；关联通过 [`storage.md` §10.2](storage.md) 的多对多表写入，不回写 terminal call。本节不把 T5 建议扩展为 Gate 决定。
 
 ## 11. Task Spec v1
 
@@ -405,9 +442,9 @@ T2 valid 后由确定性 assembler 生成：
 ### 12.3 M4：T3/T5、Gate 输入与 replay
 
 1. T3 valid 输出和 provider disabled、token threshold、input over-limit、invalid→fallback 均产生高风险兜底；后者不能绕过 `risky-only` 人审。
-2. T5 只消费归一为 failure 的 CheckSuite；三个合法分类均可 closed decode，unknown field、枚举外值和 fenced JSON 触发同 prompt retry 后 HITL 兜底。
-3. T5 的 `flaky` 只触发有界确定性重试；`real_failure`、`infrastructure` 与任何 T5 fallback 都以 `failure_review` 进入 HITL，不由 LLM 改写 Interrupt 内容或预算。
-4. T3/T5 使用同一 call/attempt trace、retry 与 per-attempt token post-charge；调用只在输出实际进入 Gate 输入时关联对应 snapshot。
+2. T5 只消费归一为 failure 且有非空失败项的 CheckSuite；三个合法分类及 `retry_check_id` 互斥矩阵均可 closed decode，unknown field、枚举外值、未知/allow-failure retry ID 和 fenced JSON 触发同 prompt retry 后 HITL 兜底。
+3. T5 的合法 `flaky + retry_check_id` 只建议有界确定性重试；`real_failure`、`infrastructure` 与任何 T5 fallback 都以 `failure_review` 进入 HITL，不由 LLM 改写 Interrupt 内容或预算。
+4. T3/T5 使用同一 call/attempt trace、retry 与 per-attempt token post-charge；调用只在输出实际进入 Gate 输入时通过关联表连接对应 snapshot，同一 call 可连接多份 snapshot。
 5. Gate 快照及 `gate_input_hash` 覆盖 T3 risk result/T5 triage（适用时）及来源与版本；正常输出与 fallback 的快照必然不同，导出的 Brain trace 可按版本重跑。
 
 ## 13. 自查结果
@@ -419,7 +456,7 @@ T2 valid 后由确定性 assembler 生成：
 - [x] Task Spec 来源、hash、不可变版本与 control-plane transport 对齐；路径事实只引用 config.md。
 - [x] T3 风险分/风险点、失败或超预算高风险兜底与 Gate 来源/版本快照契约已冻结。
 - [x] T5 flaky/真实失败/基础设施分类、有限确定性重试边界与失败 `failure_review` HITL 兜底已冻结。
-- [x] T3/T5 prompt/schema 沿用统一版本规则、调用壳、token 收费与 trace；字段级审查留待独立 Sol Issue。
+- [x] T3/T5 prompt/schema 沿用统一版本规则、调用壳、token 收费与 trace；独立字段级评审已关闭嵌套字段、head/diff 绑定、rerun 目标和多 snapshot 关联。
 - [x] 相对链接存在、代码围栏闭合、无尾随空白。
 
 **自查结论：** 评审全部 P1（B1–B3）与约定采纳的 P2（B4–B7）已按「评审处置」表关闭，交叉补丁（storage/outbox/config/WBS）与本文不矛盾，转 `active`。
