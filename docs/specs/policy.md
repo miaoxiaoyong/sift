@@ -8,7 +8,7 @@ summary: 项目策略字段、有效组装与漂移诊断契约
 
 本文规定项目策略在 Gate **之外**的读取、closed 校验、有效组装、资格收窄和诊断边界，并冻结 V0 `.sift/policy.yaml` 的字段级 schema。Gate 的输入与判定顺序见 [`gate.md`](gate.md)。
 
-来源：[PRD §5.4、§5.7](../PRD.md)、[DESIGN §8.4–§8.5、§9.4、§11](../DESIGN.md)、[WBS M4 §4.1](../WBS.md)。全局缺省和认证规则版本的唯一事实来源是 [`config.md` §3.11–§3.12](config.md)，认证投影见 [`ledger.md` §5](ledger.md)，持久化 Gate 输入字段见 [`storage.md` §10.2](storage.md)，远端 CAS capability 见 [`forge.md` §4.13](forge.md)。
+来源：[PRD §5.4、§5.7](../PRD.md)、[DESIGN §8.4–§8.5、§9.4、§11](../DESIGN.md)、[WBS M4 §4.1](../WBS.md)。全局缺省和认证规则版本的唯一事实来源是 [`config.md` §3.11–§3.12](config.md)，认证投影见 [`ledger.md` §4](ledger.md)，持久化 Gate 输入字段见 [`storage.md` §10.2](storage.md)，远端 CAS capability 见 [`forge.md` §4.13](forge.md)。
 
 字段级评审：[2026-07-29-policy-review-pi-gpt-5.6-sol.md](../reviews/2026-07-29-policy-review-pi-gpt-5.6-sol.md)。
 
@@ -140,9 +140,9 @@ assemble(basePolicy, gateDefaults, certificationProjection, forgeCapabilities)
 
 ### 4.2 certification version
 
-[`config.md` §3.12](config.md) 的 `certification_rules_version` 只标识算法、窗口和阈值，不足以标识随样本变化的认证投影。组装器消费 [`ledger.md` §5](ledger.md) 输出的类别级 `certification_version`；该 version 必须同时承诺 rules version、task kind 和当前可重算证据版本。即使候选 `auto_merge=false` 或收窄前后 effective bytes 相同，投影 version 变化仍必须进入 Gate 输入，使旧 cache 不可命中。
+[`config.md` §3.12](config.md) 的 `certification_rules_version` 只标识算法、窗口和阈值，不足以标识随样本变化的认证投影。组装器消费 [`ledger.md` §4](ledger.md) 输出的同类别 `certification_version`（证据 revision）；它承诺 rules version、task kind 与当前 evidence digest，二者不得混用。即使候选 `auto_merge=false` 或收窄前后 effective bytes 相同，任一版本变化仍必须进入 Gate 输入，使旧 cache 不可命中。
 
-每次 Gate 调用前，reconciler 取得一次组装结果，将完整 `effective_policy`、`effective_policy_hash` 和该类别的 `certification_version` 写入规范化 Gate 输入快照。`gate_input_hash` 覆盖整份快照；hash/version 写入 [`storage.md` §10.2](storage.md) 的同一不可变记录，缓存键仍仅为 `(gate_input_hash, gate_version)`。
+每次 Gate 调用前，reconciler 取得一次组装结果，将完整 `effective_policy`、`effective_policy_hash`、`certification_rules_version` 和该类别的 `certification_version` 写入规范化 Gate 输入快照。`gate_input_hash` 覆盖整份快照；hash/version 写入 [`storage.md` §10.2](storage.md) 的同一不可变记录，缓存键仍仅为 `(gate_input_hash, gate_version)`。
 
 快照取得后，base policy、全局配置、认证投影或 Forge capability 的变化不得改写该次 verdict；后续调用重新读取 base SHA、组装并取得新快照。缓存和回放只引用冻结快照，不回读当前策略事实。
 

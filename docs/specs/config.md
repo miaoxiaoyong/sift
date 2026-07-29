@@ -346,7 +346,7 @@ Report 子配额统计所有 Report 直接触发的 Interrupt（含 critical）�
 | `false_block_rate_max` | `0.2` | `[0,1]` |
 | `window` | `4320h`（180 天） | `24h..8760h` |
 
-`certification_rules_version = SHA-256(算法版本 + canonical certification 配置)`。它只标识规则、窗口与阈值；Ledger 再把该 version、任务类别和当前可重算证据版本纳入类别级 `certification_version`。任一规则、阈值、窗口或资格证据变化都必须改变最终 version；后者进入 Gate 输入快照，使旧 Gate cache 自动失效。认证仍只按任务类别聚合，不能被单条 Run 历史绕过。
+`certification_rules_version = SHA-256(算法版本 + canonical certification 配置)`，只标识规则、窗口与阈值。Ledger 为每个 task kind 独立计算 `certification_version`（又名证据 revision）：`SHA-256({task_kind, certification_rules_version, evidence_digest})`；二者不得混名或互相代替。规则变化或影响资格的样本进入/离开窗口都会改变 revision。两者均进入 Gate 输入快照，使旧 Gate cache 自动失效。认证仍只按任务类别聚合，不能被单条 Run 历史绕过。
 
 ### 3.13 `metrics`
 

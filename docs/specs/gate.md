@@ -65,7 +65,7 @@ cache key       = (gate_input_hash, gate_version)
 | `checks` | closed object：`conclusion=success|failure|pending|unknown`、排序去重 `failed_jobs`、非空 `external_url`、`flaky_retries_used>=0`；job 为 closed `{id,name,web_url,allow_failure}`，`id` 非空且排序 key 为 `(id,name)`。`pending` 时必有 `pending_started_at_ms>=0`、`observed_at_ms>=pending_started_at_ms`、`pending_timed_out`，其他结论三字段均为 null；`failure` 时必有 `triage`，否则为 null。 |
 | `checks.triage` | closed object：`classification=flaky|real_failure|infrastructure|unknown`、`retry_check_id`、closed `source`；仅 failure 可出现。`classification=flaky` 时 retry ID 必须非空且精确命中 `failed_jobs` 中 `allow_failure=false` 的项；其他分类必须为 null。`source` 是 `kind=brain`（非空 logical call/prompt/schema version）或 `kind=fallback`（非空 logical call/version/reason），字段与 [`brain.md` §10.3](brain.md) 同源。 |
 | `effective_policy` | [`policy.md` §3.3](policy.md) 的 `EffectivePolicyV1` canonical JSON，且只接受该 closed shape：`schema_version`、`protected_paths.{hard,soft,soft_exceptions}`、`review_policy`、`risky_review_threshold`、`auto_merge`、`checks_pending_timeout_ms`、`flaky_retry_limit`。不得添加未知字段或将 `soft_exceptions` 另投影为 remembered-exceptions 字段。 |
-| `effective_policy_hash` / `certification_version` | 各为 64 小写十六进制，前者必须等于 `effective_policy` 的 canonical SHA-256。 |
+| `effective_policy_hash` / `certification_rules_version` / `certification_version` | 各为 64 小写十六进制；前者必须等于 `effective_policy` 的 canonical SHA-256，后两者分别是规则/配置 hash 与类别证据 revision，不能互相替代。 |
 | `risk` | `brain.md` §9.2–§9.3 的 closed T3 object：整数 `risk_score`（0–100）、排序去重 `risk_points`、`rationale`、以及 brain/fallback source；不得省略来源。 |
 | `one_time_exemptions` | 排序去重数组；每项为 closed object `{run_id,head_sha,rule_id,matched_paths_digest}`，digest 为 64 小写十六进制。每项 run/head 必须等于 `identity.run_id`/`change.head_sha`。 |
 
@@ -79,6 +79,7 @@ cache key       = (gate_input_hash, gate_version)
 |---|---|---|
 | `failed` / `hard_guardrail` | `rule_id`、排序 `matched_paths` | Run failed；无 Interrupt |
 | `wait_checks` / `checks_pending` | `external_url`、`pending_started_at_ms` | 等待重新观测 |
+| `hitl` / `checks_timeout` | `external_url`、`pending_started_at_ms` | `failure_review` Interrupt |
 | `retry_checks` / `flaky_retry` | `check_run_id`（等于 triage 的 `retry_check_id`）、`retry_no`（1-based） | 创建 §3.2 `rerun_checks` operation |
 | `hitl` / `guardrail_violation` | `rule_id`、`matched_paths_digest` | `guardrail_violation` Interrupt |
 | `hitl` / `failure_review` | `external_url`、`classification` | `failure_review` Interrupt |
@@ -89,7 +90,7 @@ cache key       = (gate_input_hash, gate_version)
 | `ready` / `no_auto_merge` | `reason=policy_disabled|draft` | 无 merge operation |
 | `hitl` / `input_unknown` | `field`、`reason` | fail-closed 人工路径 |
 
-`retry_checks` 仅当 failure/`flaky`、合法 `retry_check_id` 且 `flaky_retries_used < flaky_retry_limit` 命中；`pending_timed_out=true`、unknown Checks 和未定义/耗尽的 triage 均不得返回 wait/retry。canonical fixtures 至少覆盖上表每一分支、同 SHA Checks 漂移 cache miss、路径不完整和每条交叉约束反例。
+`retry_checks` 仅当 failure/`flaky`、合法 `retry_check_id` 且 `flaky_retries_used < flaky_retry_limit` 命中；`pending_timed_out=true` 返回 `hitl/checks_timeout`，unknown Checks 和未定义/耗尽的 triage 均不得返回 wait/retry。canonical fixtures 至少覆盖上表每一分支、同 SHA Checks 漂移 cache miss、路径不完整和每条交叉约束反例。
 
 ### 2.4 缓存与回放
 
@@ -124,9 +125,9 @@ Forge 端口 `RerunCheck(ctx, project, checkRunID, expectedHeadSHA)` 必须在�
 
 ## 5. 调用、Shadow Gate 与 HITL 事务
 
-Gate reconciler 在事务外读取 Forge/Brain 事实、组装快照并运行纯函数；不得持有数据库事务执行这些 IO。随后通过 `RecordGateEvaluation` 原子持久化：输入 snapshot（按 hash 去重）、cache insert-or-return、一次 evaluation、Shadow Gate 预判 calibration 和必要的领域后继动作。
+Gate reconciler 在事务外读取 Forge/Brain 事实、组装快照并运行纯函数；不得持有数据库事务执行这些 IO。随后通过 `RecordGateEvaluation` 原子持久化：输入 snapshot（按 hash 去重）、cache insert-or-return、一次 evaluation、含独立 `shadow_decision` 的 calibration、其唯一 `gate_sample` Ledger entry 和必要的领域后继动作。
 
-若 verdict 需要 HITL，该写端口必须在**同一事务**内完成 Gate snapshot/cache/evaluation/calibration，并调用 M3 `EmitInterrupt` 的五件事：Run 转合法 `waiting_human` 状态、generation-key 去重和首次注意力记账、Interrupt、事件、发布 operation。任一步失败则整体回滚；严禁等人回复后再补 Shadow Gate，或先使 Run 等待再补 Interrupt。人类决定的补全、Ledger entry 和认证投影属于 `recordHumanDecision` 的后续同事务职责，见 [`ledger.md`](ledger.md)。
+若 verdict 需要 HITL，该写端口必须在**同一事务**内完成 Gate snapshot/cache/evaluation/calibration/gate_sample，并调用 M3 `EmitInterrupt` 的五件事；创建的 Interrupt 还必须不可变绑定该 calibration。Run 转合法 `waiting_human`、generation-key 去重和首次注意力记账、Interrupt、事件、发布 operation 任一步失败均整体回滚。严禁等人回复后再补 Shadow Gate，或先使 Run 等待再补 Interrupt。`shadow_decision` 的完整 verdict 映射、人的因果 binding 和认证结算见 [`ledger.md` §3–§4](ledger.md)。
 
 非 HITL verdict 同样必须创建 calibration 预判，且不得把“没有打扰人”误作人类决定。每次 evaluation 的 `cache_hit` 状态和 verdict digest 都可审计；同一输入的多次调用应有多行 evaluation/calibration，而不是覆盖先前记录。
 
@@ -150,5 +151,5 @@ Gate/Change reconciler 只接受 M3 `EvaluateSuccess` 已确认的“可创建 C
 - 整份输入 hash 与唯一二元缓存键生效：同一 head 下 Checks、review、mergeability、risk（含来源版本）或 certification/effective policy 变化均 cache miss。
 - `.sift/**`、CI 配置和其他 hard rule 命中失败，不能走两种软豁免；soft rule 分别覆盖一次性批准和显式 remembered-policy 路径。
 - Checks、review policy、风险兜底和 auto merge 按 §3 顺序 fail closed；merge 的 head 漂移使旧 operation stale/no-op，远端 CAS 不能以 Gate(A) 合并 B。
-- 每次 Gate 调用（包括 cache hit）都有新的 evaluation 与 calibration；HITL 时它们和 Interrupt 五件事全有或全无。
+- 每次 Gate 调用（包括 cache hit）都有新的 evaluation、明确 shadow decision 与 calibration；HITL 时它们和 Interrupt 五件事全有或全无。
 - Change 仅由 M3 可创建事实触发；marker 全状态命中、远端 ID 持久化、已关闭/已合并收敛及无 marker 冲突拒绝均有测试。

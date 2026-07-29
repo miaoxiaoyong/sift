@@ -365,6 +365,7 @@ PRAGMA wal_autocheckpoint = 1000;
 | `close_reason` | TEXT | NULL 或 `responded \| expired_auto_reject \| superseded_by_fact \| superseded_by_decision \| external_fact` |
 | `closed_at_ms` | INTEGER | NULL |
 | `charged_budget_entry_id` | TEXT | NOT NULL UNIQUE FK budget_entries |
+| `calibration_id` | TEXT | NULL UNIQUE FK calibration_entries；仅 Gate HITL 创建时不可变绑定 |
 | `created_at_ms` | INTEGER | NOT NULL |
 | `updated_at_ms` | INTEGER | NOT NULL |
 
@@ -751,7 +752,8 @@ Interrupt 升级重推复用原 charge，不新增 entry；Interrupt 关闭不�
 | `canonical_json` | TEXT | NOT NULL |
 | `head_sha` | TEXT | NOT NULL |
 | `effective_policy_hash` | TEXT | NOT NULL |
-| `certification_version` | TEXT | NOT NULL |
+| `certification_rules_version` | TEXT | NOT NULL；算法、窗口与阈值的 config hash |
+| `certification_version` | TEXT | NOT NULL；类别证据 revision，不能等同 rules version |
 | `risk_source_version` | TEXT | NOT NULL |
 | `created_at_ms` | INTEGER | NOT NULL |
 
@@ -798,31 +800,45 @@ Brain logical call 与 Gate snapshot 是多对多：同一 T3/T5 结果可在 he
 
 缓存条目、评估与回放必须引用同一 snapshot。相同 `(gate_input_hash, gate_version)` 只能 insert-or-return existing；既有 digest 与本次 verdict 不同是 contract violation，不得覆盖缓存。
 
-### 10.5 `calibration_entries`（不可变）
+### 10.5 `calibration_entries`（single-settle）
 
 | 列 | 类型 | 约束/说明 |
 |----|------|-----------|
 | `id` | TEXT | PK |
 | `run_id` | TEXT | NOT NULL FK runs |
-| `gate_evaluation_id` | TEXT | NOT NULL FK gate_evaluations |
-| `predicted_decision` | TEXT | NOT NULL |
-| `human_decision` | TEXT | NULL |
+| `gate_evaluation_id` | TEXT | NOT NULL UNIQUE FK gate_evaluations |
+| `predicted_decision` | TEXT | NOT NULL；`allow \| block \| inconclusive` |
+| `gate_sample_entry_id` | TEXT | NOT NULL UNIQUE FK ledger_entries；唯一校准特征事实 |
+| `human_decision` | TEXT | NULL 或 `allow \| block`；仅二元 shadow 可补全 |
 | `decision_source` | TEXT | NULL 或 `command \| manual_merge \| manual_close` |
 | `gate_bypassed` | INTEGER | NOT NULL boolean，默认 0 |
-| `features_json` | TEXT | NOT NULL |
 | `predicted_at_ms` | INTEGER | NOT NULL |
 | `decided_at_ms` | INTEGER | NULL |
 
-Gate 预判先插入；人的结果由受限存储端口一次性补全，补全后不可修改。该受限补全必须与 Ledger entry 和 certification 投影更新同事务。
+`gate_sample_entry_id` 与 calibration 在 Gate 事务内预分配 ID 后互相引用；不得有 `features_json` 副本。人的结果只能由受限端口一次性补全；`inconclusive` 永不补全。二元补全必须有 `interrupts.calibration_id` 或 `external_decision_bindings` 的唯一不可变 binding，且与 Ledger entry、认证投影同事务。
 
-### 10.6 `certifications`
+### 10.6 `external_decision_bindings`（不可变）
 
-主键 `(task_kind, certification_version)`。
+手工 Forge merge/close 事实的因果绑定，禁止由消费者按时间猜测。
+
+| 列 | 类型 | 约束/说明 |
+|----|------|-----------|
+| `forge_fact_event_id` | TEXT | PK、FK events |
+| `calibration_id` | TEXT | NOT NULL UNIQUE FK calibration_entries |
+| `created_at_ms` | INTEGER | NOT NULL |
+
+只有在观测事实时已有明确 Gate 因果身份才插入；不存在或歧义时不建行，人类动作仍可审计但不得结算。
+
+### 10.7 `certifications`
+
+主键 `(task_kind, certification_version)`；是不可变证据快照，不原地更新。当前读取面由下表唯一指针提供。
 
 | 列 | 类型 | 说明 |
 |----|------|------|
-| `task_kind` | TEXT | NOT NULL；任务类别 |
-| `certification_version` | TEXT | NOT NULL；承诺认证规则版本、task kind 与当前可重算证据版本 |
+| `task_kind` | TEXT | `feature \| bug \| chore \| docs \| refactor` |
+| `certification_rules_version` | TEXT | NOT NULL；算法、窗口与阈值版本 |
+| `certification_version` | TEXT | NOT NULL；类别证据 revision |
+| `window_start_ms` / `window_end_ms` | INTEGER | NOT NULL；半开 `[start,end)` 的冻结边界 |
 | `total_samples` | INTEGER | NOT NULL |
 | `negative_samples` | INTEGER | NOT NULL |
 | `leak_count` | INTEGER | NOT NULL |
@@ -833,7 +849,20 @@ Gate 预判先插入；人的结果由受限存储端口一次性补全，补全
 
 投影只按类别聚合，不存或输出单条 Run 放行建议。
 
-### 10.7 `ledger_entries`（不可变）
+### 10.8 `certification_current`
+
+每个类别一行可变 current projection，消除按时间选「最新」的歧义。
+
+| 列 | 类型 | 说明 |
+|----|------|------|
+| `task_kind` | TEXT | PK，任务类别枚举 |
+| `certification_version` | TEXT | NOT NULL；与 `certifications` 组成 FK |
+| `version` | INTEGER | NOT NULL CAS |
+| `updated_at_ms` | INTEGER | NOT NULL |
+
+写入 settled decision 或 Gate 组装发现窗口证据改变时，同事务插入不可变 `certifications` snapshot，并以 CAS 更新此指针；组装器只读取该指针指向的快照。
+
+### 10.9 `ledger_entries`（不可变）
 
 | 列 | 类型 | 约束/说明 |
 |----|------|-----------|
@@ -842,13 +871,14 @@ Gate 预判先插入；人的结果由受限存储端口一次性补全，补全
 | `interrupt_id` | TEXT | NULL FK interrupts |
 | `entry_kind` | TEXT | `human_decision \| attention_delivery \| semantic_material \| gate_sample` |
 | `features_schema_version` | INTEGER | NOT NULL |
-| `features_json` | TEXT | NOT NULL |
-| `natural_language` | TEXT | NULL；reject 原因或 ask 文本 |
+| `features_json` | TEXT | NOT NULL；按 `ledger.md` closed schema 校验 |
+| `features_digest` | TEXT | NOT NULL；canonical features JSON 的 SHA-256 |
+| `natural_language` | TEXT | NULL；仅 reject 原因或 ask 文本，且须与 `semantic_material` 原文相同 |
 | `created_at_ms` | INTEGER | NOT NULL |
 
 Ledger 消费者只能是 T7 提案、指标与类别级 certification；不得建立影响单条 Gate 或抑制单条 HITL 的查询端口。
 
-### 10.8 回放集 JSONL v1
+### 10.10 回放集 JSONL v1
 
 导出是只读 `SELECT → JSONL`，UTF-8，每行一个 canonical JSON object，不重新拼当前数据。导出查询把 Gate 的 `created_at_ms` 与 Brain 的 `started_at_ms` 统一别名为 `recorded_at_ms`，按 `recorded_at_ms, record_type, record_id` 稳定排序。两种 record：
 
@@ -894,8 +924,9 @@ Gate record 来自同一 snapshot/evaluation；Brain record 一条 logical recor
 | `ReserveBrainCall` | brain_call_counters CAS 递增 + 插入 `status=running` 的 brain_calls（冻结身份/输入），同一事务 |
 | `RecordBrainAttempt` | immutable brain_attempts + token post-charge（budget entry/counter，唯一 operation key 幂等，允许单次越界） |
 | `FinalizeBrainCall` | brain_calls 一次性 `running → valid | fallback` 终结（valid 指向本 call 的 valid attempt，fallback 带原因）；恢复时按已有 attempts 收敛遗留 running call |
-| `RecordGateEvaluation` | snapshot/cache/evaluation/calibration + T3/T5 Brain links + 必要 Interrupt |
-| `RecordExternalHumanDecision` | 手工 merge/close 的 calibration + ledger + certification + Run/Interrupt/outbox |
+| `RecordGateEvaluation` | snapshot/cache/evaluation/calibration/gate_sample + T3/T5 Brain links + 必要 Interrupt；Gate HITL 同时写不可变 `interrupt.calibration_id` |
+| `RecordHumanDecision` | Command、手工 merge/close 唯一人类动作入口；只能解析 immutable Interrupt/external binding，写 ledger + certification snapshot/current CAS + Run/Interrupt/outbox |
+| `RefreshCertification` | Gate 组装前以冻结 `as_of_ms` 重算窗口；必要时插入 certification snapshot 并 CAS 更新 current 指针，不做外部 IO |
 
 任何新增可变表必须在本表有完整、显式的写入族归属；新增端口必须证明不能由上述端口表达，并同步本规格与崩溃注入测试。恢复端口接收的是已验证观测及其 digest，不持有数据库事务做 OS 探测；`ApplyStartupRecoveryAction`、`RecordTerminationObservation`、`ResolveAttemptRace` 与 `ApplyRetryProbeResult` 共享内部 transition/isolation/仲裁原语，不形成四套可漂移规则。
 
@@ -945,7 +976,7 @@ CAS 认领到期的 pending/retryable，或接管 lease 已过期的 executing o
 
 ### 12.6 Gate 与人的决定
 
-Gate 首次判定：snapshot、evaluation、预判 calibration 同事务；需要 HITL 时同事务执行 §12.2。人的决定到达时，calibration 一次性补全、ledger entry、certification 增量与 Run/outbox 结果同事务。`/sift ask` 还须在该事务插入新 Task Spec snapshot 并更新 `runs.current_task_spec_id`；不得原地覆盖旧 snapshot。
+Gate 首次判定：snapshot、evaluation、calibration 与其唯一 gate_sample entry 同事务；需要 HITL 时同事务执行 §12.2 并冻结 `interrupt.calibration_id`。人的决定到达时只能解析该 binding 或 external binding；calibration 一次性补全、ledger entry、认证 revision 与 Run/outbox 结果同事务。`/sift ask` 还须在该事务插入新 Task Spec snapshot 并更新 `runs.current_task_spec_id`；不得原地覆盖旧 snapshot。
 
 ### 12.7 启动事实与 resolution 仲裁
 
@@ -1024,8 +1055,9 @@ COMMIT
 - `gate_evaluations`
 - `gate_cache`
 - `ledger_entries`
+- `external_decision_bindings`
 
-`calibration_entries` 只允许专用语句把 human decision 的 NULL 字段一次性补全；其余 UPDATE 与全部 DELETE 被 trigger 拒绝。`daemon_boots` 同理只允许分别一次性补全 recovery completion 与 stop 字段；两类补全不得修改身份、配置或启动时间。
+`calibration_entries` 只允许专用语句把二元 human decision 的 NULL 字段一次性补全；其余 UPDATE 与全部 DELETE 被 trigger 拒绝。`interrupts.calibration_id`、`calibration_entries.gate_sample_entry_id` 与 external binding 创建后不可修改。`daemon_boots` 同理只允许分别一次性补全 recovery completion 与 stop 字段；两类补全不得修改身份、配置或启动时间。
 
 `brain_calls` 禁止 DELETE；UPDATE trigger 只允许一次 `running → valid | fallback` 终结（补全终结字段），身份、输入与 `call_seq` 列任何修改都 abort。`brain_call_counters` 与 `intake_items` 是可变投影，以 `version` CAS 并发控制，不加 append-only trigger。
 
