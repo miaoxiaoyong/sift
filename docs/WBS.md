@@ -428,13 +428,15 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 > **P1 关闭后定向复审（#263）：[FAIL](reviews/2026-07-29-m4-phase-gate-rereview-pi-gpt-5.6-sol.md)。** PR #259–#262 已补生产形 Gate/merge/external-audit/replay 主体，但 policy 读取错误仍可退化为 missing，V7 没有 B 重过 Gate及成功终态重读，reverse-sync 会把 Sift merge 错记为人工绕过，阶段测试也以 seed 跳过 Change 创建与认证结算；六项继续不勾，M5 前置不开放。
 >
 > **第五次定向复审（#279）：[FAIL](reviews/2026-07-29-m4-phase-gate-rereview-5-pi-gpt-5.6-sol.md)。** PR #278 已补足 policy alert 幂等、T3/T5 fallback snapshot association 与 V6 cache-miss vectors，前三项据证据勾选；V7 的精确 CLI merge SHA/marker recovery replay及 V11 的 Forge 事实优先收敛仍未闭合，M5 前置不开放。
+>
+> **第六次定向复审（#283）：[PASS WITH NOTES](reviews/2026-07-29-m4-phase-gate-rereview-6-pi-gpt-5.6-sol.md)。** PR #282 已补双平台精确 merge SHA、真实 Change marker recovery replay，以及 `queued/running` 与 exact binary/inconclusive/missing/ambiguous binding 的 facts-first V11 矩阵；后三项据证据勾选，M4 门禁通过并开放 M5 前置。PRD 状态图同步与并行时序 flake 属非阻断注记。
 
 - [x] V5b：`.sift/**`、CI 配置、head 变化 fail closed；A5/A6 在本片闭合
 - [x] T3/T5 正常输出与确定性兜底均被版本化并进入 trace/Gate 快照
 - [x] V6：纯函数、cache miss、每次 Gate 必有校准记录、导出重放通过
-- [ ] V7：Change marker 与 merge stale/no-op 全链通过
-- [ ] V11 审计段：等待 Gate/HITL 时外部合并 → done + gate_bypassed，并写入人类决定/校准分类；指标查询分母留 M5
-- [ ] Gate/Shadow/认证/回放/Change 创建五项同时可用，无延后项
+- [x] V7：Change marker 与 merge stale/no-op 全链通过
+- [x] V11 审计段：等待 Gate/HITL 时外部合并 → done + gate_bypassed，并写入人类决定/校准分类；指标查询分母留 M5
+- [x] Gate/Shadow/认证/回放/Change 创建五项同时可用，无延后项
 
 ---
 
@@ -442,7 +444,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### 前置
 
-- [ ] M4 门禁通过
+- [x] M4 门禁通过（[第六次定向复审 PASS WITH NOTES](reviews/2026-07-29-m4-phase-gate-rereview-6-pi-gpt-5.6-sol.md)）
 
 ### 任务
 
