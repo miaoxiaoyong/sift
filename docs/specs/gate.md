@@ -106,7 +106,7 @@ cache key       = (gate_input_hash, gate_version)
 1. **Change state（G2）。** `change.state=closed|merged` 分别立即返回 `failed/change_not_open`；只有 `open` 才可进入以下阶段。
 2. **`protected_paths`（G3）。** matcher 和 pattern/path normalization 只按 [`policy.md` §2.1](policy.md) 执行；规则唯一来自 `EffectivePolicyV1.protected_paths`，其中 hard 已包含 [`policy.md` §3.2](policy.md) 的内建集合。Gate 不接受 `{rule_id,pattern,level}`、独立默认 CI 清单或其他 policy 投影。为 verdict、豁免和 Ledger 特征提供稳定身份时，Gate 从已规范化 pattern 确定性派生 `rule_id`：hard 为 `hard:<pattern>`，soft 为 `soft:<pattern>`；该 ID 不属于 `EffectivePolicyV1`，也不改变其 hash。命中按 `(rule_id, matched_path)` 词典序排序；任一 hard 命中优先于全部 soft，多个 soft 则选择首个未被同一路径集合的一次性豁免覆盖、且未被任一 `soft_exceptions` pattern 匹配的 rule。matcher/policy 无效返回 `input_unknown`；路径不完整不能进入此函数，绝不据空数组放行。hard 命中立即返回 failed；soft 命中且没有本次有效豁免，返回 `guardrail_violation` HITL。
 3. **Checks。** success 才进入下一阶段；pending 未超时返回等待结果，pending 已超时转 HITL。failure 使用冻结的 T5 分类：仅 `flaky` 且尚有有效重试额度可请求确定性重试；真实失败、基础设施失败、T5 不可用/超预算或任何未知分类均转 `failure_review` HITL。Gate 不自行重试或调用 T5。
-4. **review policy。** `always` 在冻结的有效审查未满足时转 `code_review` HITL；`risky-only` 只在 `riskScore.risk_score >= effectivePolicy.risky_review_threshold`（确定性高风险兜底固定为 100）、且有效审查尚未满足时转 HITL；`never` 不要求 review。需要审查时，审查状态或平台能力未知不得视为已经满足审查。
+4. **review policy。** `always` 在冻结的有效审查未满足时转 `code_review` HITL；`risky-only` 只在 `riskScore.risk_score >= effectivePolicy.risky_review_threshold`（确定性高风险兜底固定为 100）、且有效审查尚未满足时转 HITL；`never` 不要求 review。有效审查是 Forge 的冻结 approved state，或严格匹配同一 run/change/head/review-policy snapshot 的 [`storage.md` §6.4](storage.md) immutable `human_review_approval` effect；不得从当前标签或其他 head 继承。需要审查时，审查状态或平台能力未知不得视为已经满足审查。
 5. **auto merge。** 只有有效策略允许、前述所有阶段全绿、Change 非 draft 且 mergeability 明确可合并时，才返回可创建 `merge_change` 的 verdict。该 operation 必须携带本 verdict 的 `head_sha` 作为 `expected_head_sha`。`auto_merge=false` 或 draft 可返回“门禁全绿但不自动合并”；`auto_merge=true` 时，`mergeability=conflicting` 必须转 `merge_conflict` HITL，`unknown` 必须转显式人工/等待分支，二者都不得冒充全绿结果。合并时远端 CAS 拒绝或 head 已变化，旧 operation 必须 stale/no-op，新 head 必须重新组装快照并过 Gate。
 
 硬护栏、未知事实和所有 HITL 分支都不能被后续 review、auto merge 或缓存命中放宽。
@@ -119,7 +119,7 @@ Forge 端口 `RerunCheck(ctx, project, checkRunID, expectedHeadSHA)` 必须在�
 
 ## 4. 软护栏豁免
 
-软护栏命中默认只可请求一次性豁免。豁免至少绑定 `run_id`、`head_sha`、`rule_id` 与本次命中路径集合的 canonical digest；不得绑定包含该豁免自身的整份 `gate_input_hash`，否则批准进入下一快照后永远无法匹配。换 head、规则或命中路径集合、其他 Run 均不能复用。批准后该受限事实进入下一次冻结输入；原来的 `guardrail_violation` verdict 不被原地改写。
+软护栏命中默认只可请求一次性豁免。豁免至少绑定 `run_id`、`head_sha`、`rule_id` 与本次命中路径集合的 canonical digest；不得绑定包含该豁免自身的整份 `gate_input_hash`，否则批准进入下一快照后永远无法匹配。换 head、规则或命中路径集合、其他 Run 均不能复用。Command 批准只能从 [`storage.md` §6.4](storage.md) 的 immutable `command_effects(one_time_exemption)` 读取这一组字段；不得从评论、标签、当前 Run 或旧 Gate 结果猜测。组装器将该 effect 作为下一份冻结 input 的 `one_time_exemptions`，原来的 `guardrail_violation` verdict 不被原地改写。
 
 “记住”不是一次性豁免的别名，也不是 Gate 选项的隐式副作用。它必须是人显式选择的独立动作，形成一个由人发起、按**旧**策略审查的仓库 policy 例外变更；只有该变更已进入 base policy 并经有效策略组装，后续 Gate 才可使用该例外。Gate 从不写 policy、从不把人的自然语言回复解释为 remembered exception。
 

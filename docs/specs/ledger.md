@@ -14,7 +14,7 @@ summary: 校准账本、人类决定与类别认证投影契约
 
 1. Ledger 只追加，保存 Gate shadow 预判、人类实际决定、特征、送达及人写语义原料；不会以当前 Run、策略或 Forge 状态回填历史。
 2. 每次 Gate evaluation 同事务创建一条 calibration 和一个 `gate_sample` Ledger entry；`gate_sample` 是校准特征的**唯一物理事实源**。`calibration_entries` 只以真实 FK 指向该 entry，不复制特征 JSON。
-3. `recordHumanDecision` 是 Command、手工 merge/close 事实消费者和未来界面记录人类动作的唯一应用入口。只有因果绑定的、`shadow_decision` 为二元值的动作才可结算 calibration。
+3. `recordHumanDecisionTx` 是同一存储事务内唯一的人类动作原语；它不是 public 端口。`ApplyCommandEvent`（Command）和 `RecordExternalHumanDecision`（手工 merge/close）各自拥有其单一事务并调用它，绝不相互调用或嵌套事务。只有因果绑定的、`shadow_decision` 为二元值的动作才可结算 calibration。
 4. Gate、Ledger、认证和 T7 不得从单条历史记录改变单条 Gate verdict 或抑制 HITL。允许读取面只有 T7 提案、指标和类别级认证投影。
 5. 人的响应间隔只是调度特征，不是注意力成本或「Human 分钟数」。所有 JSON 都按本节 closed schema 校验并 canonical 化；领域层不读时钟。
 
@@ -80,16 +80,16 @@ M4 实现的唯一生成源为 `internal/ledger/contract/ledger_v1.go`；它生�
 
 创建 Gate HITL Interrupt 时，`interrupts.calibration_id` 必须在同一事务不可变地绑定本 evaluation 的 calibration；非 Gate Interrupt 为 null。外部手工 merge/close 只可消费当前 `waiting_human` Gate Interrupt 已落库的精确 `(gate_evaluation_id, calibration_id)`，并在观察该 Forge fact 的同一事务创建不可变 `external_decision_bindings(forge_fact_event_id, calibration_id)`；缺失、歧义或非二元 binding 一律拒绝该事实结算，绝不写空 binding。禁止按 Run、head、时间或「最新 evaluation」猜测。
 
-`recordHumanDecision` 接受已鉴权 actor、稳定 command/Forge-fact 幂等身份和 tagged union：
+私有 `recordHumanDecisionTx` 接受已鉴权 actor、稳定 command/Forge-fact 幂等身份和 tagged union：
 
 ```text
 command_action { action, command_event_id, interrupt_id, semantic_material? }
 external_action { action: manual_merge|manual_close, forge_fact_event_id }
 ```
 
-它只从上述 immutable binding 解析 calibration；调用者不能传 `calibration_id`、`gate_evaluation_id` 或自行选择结果。重放返回既有结局；同一 calibration 的第二个不同决定拒绝，绝不覆盖。
+它只从上述 immutable binding 解析 calibration；public 调用者不能传 `calibration_id`、`gate_evaluation_id` 或自行选择结果。重放返回既有结局；同一 calibration 的第二个不同决定拒绝，绝不覆盖。`ApplyCommandEvent` 同一事务还负责 receipt、closed command event、状态/effect/probe 和最终 ack；手工事实的 `RecordExternalHumanDecision` 同一事务负责 Forge fact、Ledger 和其领域后果。
 
-二元、Gate-linked 动作在一个事务内：CAS 补全 calibration → 写 `human_decision`（及语义原料）→ 以该类别当前 `as_of_ms` 重算认证 → 写 projection/revision → 写 Run、Interrupt、Task Spec、outbox 与事件。无预判、`inconclusive` 或非终局动作只写动作及必要领域后果，不写认证。Gate 首次事务绝不预写人类结果，人的入口绝不重算当时 Gate。
+二元、Gate-linked 动作在 owner 的一个事务内：CAS 补全 calibration → 写 `human_decision`（及语义原料）→ 以该类别当前 `as_of_ms` 重算认证 → 写 projection/revision → 写 Run、Interrupt、Task Spec、outbox 与事件。无预判、`inconclusive` 或非终局动作只写动作及必要领域后果，不写认证。Gate 首次事务绝不预写人类结果，人的入口绝不重算当时 Gate。
 
 ## 4. 认证投影
 

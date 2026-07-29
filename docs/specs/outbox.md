@@ -65,7 +65,7 @@ Brain 字段级评审 [2026-07-28-brain-review-pi-gpt-5.6-sol.md](../reviews/202
 | `channel_publish`（单 Interrupt） | `interrupt:<interrupt_id>:publish:<escalation_no>` |
 | `channel_publish`（attention batch） | `attention-batch:<batch_id>:publish:1` |
 | `launch_agent` | `run:<run_id>:attempt:<attempt_no>:generation:<generation>:launch` |
-| `command_ack` | `command:<forge_event_id>:ack` |
+| `command_ack` | `command:<command_event_key>:ack`，其中 key 是 [`command.md` §1](command.md) 的 64 位 canonical event key |
 | `forge_alert` | `alert:<alert_kind>:<subject_id>:<generation>` |
 
 同 key 不同 payload digest 是 `contract_violation`，不得返回既有 operation 冒充成功。
@@ -131,7 +131,7 @@ min(retry_max_delay, retry_initial_delay * retry_multiplier^(n-1))
 ```
 
 - `forge_comment.purpose = interrupt | summary | intake_clarification | intake_duplicate_confirmation`；
-- `command_ack.purpose = command_ack`；
+- `command_ack.purpose = command_ack`；其 operation key 必须使用 `command_event_key`，不得使用项目内或跨 source 可能碰撞的裸 remote Forge ID。
 - `forge_alert.purpose = channel_failure | project_isolated | config_drift | token_budget_exceeded | forge_api_budget_warning`；
 - payload 不存 marker，避免 digest 自引用；worker 在执行时由 operation key + 已冻结 payload digest 重算并追加 marker。
 

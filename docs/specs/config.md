@@ -443,7 +443,7 @@ metrics:
 | `done` | `sift:done` |
 | `failed` | `sift:failed` |
 
-标签只是投影。驱动动作必须回溯事件 actor，不能根据当前标签集合直接执行。
+每个 label 是 1–256 UTF-8 bytes、不得含 NUL，按配置字节精确匹配（不 trim、不 case-fold、不做平台重写）；未知字段和相同标签值均拒绝。labels 是全局配置、但在每个 Run 的启动 `config_snapshot_id` 中冻结，并按该 Run 的 project/Forge platform 使用。驱动动作必须回溯事件 actor，不能根据当前标签集合直接执行；Command 的 approval label 只接受该冻结 `approved` 值，重启前的配置文件漂移不改变既有 Run。
 
 ### 3.15 `logging`
 

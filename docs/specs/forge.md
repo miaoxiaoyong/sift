@@ -6,7 +6,7 @@ summary: Forge 适配层的最小动词集签名、中性类型、平台归一�
 
 # Forge 适配层规格
 
-本文冻结 Forge 适配层的端口契约：PRD §5.2 最小动词集（完整签名与中性类型）、CI rerun、平台归一规则、actor 必填、Change marker 全状态查找、merge expected-head CAS、错误分类、argv 边界与 API 预算收费口。字段级审定记录见[评审报告](../reviews/2026-07-29-forge-review-pi-gpt-5.6-sol.md)。
+本文冻结 Forge 适配层的端口契约：PRD §5.2 最小动词集（完整签名与中性类型）、CI rerun、平台归一规则、nullable actor、稳定驱动事件身份、Change marker 全状态查找、merge expected-head CAS、错误分类、argv 边界与 API 预算收费口。字段级审定记录见[评审报告](../reviews/2026-07-29-forge-review-pi-gpt-5.6-sol.md)。
 
 来源：[PRD §5.2、§5.4、§9.2](../PRD.md)、[DESIGN §8.1](../DESIGN.md)、[WBS M2 §2.1–§2.5](../WBS.md)。现存 M1 fake 骨架（[`internal/forge/forge.go`](../../internal/forge/forge.go)）只定义了 `Kind`、`ProjectRef`、不完整的中性投影与 `Client` 的三个骨架动词（`ListIssuesByLabel`、`ListLabelEvents`、`GetChange`）。本文冻结 PRD 所列 13 个动词及 Gate 所需的 `RerunCheck`、完整中性类型、双平台归一细节与副作用对账端口，是 M2/M4 实现的共同契约。M2 必须按本文一次性升级 M1 骨架与 fake；不得把 M1 为骨架链刻意缩小的签名误当成已冻结的 M2 端口。
 
@@ -19,7 +19,7 @@ summary: Forge 适配层的最小动词集签名、中性类型、平台归一�
 1. `gh api` / `glab api` 是唯一 forge 通道；verb 优先使用 `api` 子命令（plumbing）而非 porcelain。任何动词不得绕过 CLI 直调 HTTP。
 2. 平台字段（`number`/`iid`、`mergeable_state`/`detailed_merge_status`、Checks vs Pipelines、Draft 前缀）在边界归一为领域中性类型，不得泄漏到上层。
 3. 两平台无法都给出确定性答案时，归一结果是显式 `unknown`，由上层转 HITL——**适配器不得猜测**。
-4. actor 是类型的一部分：`ListLabelEvents`、`ListIssueComments`、`ListChangeComments` 返回类型中 actor 为必填字段；取不到 actor 的驱动性事件在适配器内即**丢弃**（fail closed，DESIGN §8.1 / PRD §9.2）。
+4. actor 是驱动事件的显式 nullable 字段：适配器不得补全或猜测。Intake 的非 Command 驱动事件可在适配器内丢弃；Command 候选（评论和标签）必须连同 `actor=null`、稳定远端身份和 target 交给 Command 持久化 `ignored_missing_actor` receipt（fail closed，DESIGN §8.1 / PRD §9.2）。
 5. 进程调用一律 argv 数组启动，**禁止 shell 拼接**。
 6. 错误分类只暴露五种语义：`Transient` | `RateLimited` | `AuthOrCapability` | `ContractViolation` | `SemanticConflict`。平台 HTTP 状态码 / 退出码 / stderr 细节锁定在适配器内部。
 7. API 预算只在 Forge 适配层收费；上层不感知 `gh`/`glab` 的速率限制细节。
@@ -78,13 +78,15 @@ Labels []string   // 适配器排序去重
 
 ### `LabelEvent`
 ```
-TargetID   string      // issue 或 change id
-Label      string
-Action     LabelAction
-Actor      string      // 必填；缺失则整条事件在适配器内丢弃
-ObservedAt time.Time
+ID        string      // 稳定远端 label-event ID，1..256 bytes
+Target    TargetRef   // 精确 issue/change target
+Label     string
+Action    LabelAction
+Actor     *string     // 可空；Command 候选不得丢弃或补全
+Position  *string     // target-scoped、远端证明单调递增的正十进制位置；无能力时 nil
+ObservedAt time.Time  // 仅诊断/游标，绝不作 Command anti-replay 比较
 ```
-actor 取不到时整条事件丢弃——调用方永远不会看到空 Actor 的 `LabelEvent`。
+`ID` 与 `Target` 缺失是 `ContractViolation`。非空 `Position` 必须来自平台可证明的 label-event 顺序；不能证明时为 nil，适配器仍可观测标签事实，但必须向 Command 标示该 target 的 label-approval capability 不可用。actor 缺失的 Command 候选保留为 `Actor=nil`，由 Command 记 receipt 后静默拒绝。
 
 ### `ChangeState`
 ```
@@ -182,7 +184,7 @@ ListIssueComments(ctx, project, issueID string, since Cursor) → ([]Comment, Cu
 **归一要点**：
 - GitHub：`gh api /repos/{org}/{repo}/issues/{number}/comments?since={since}&sort=created&direction=asc`。
 - GitLab：`glab api projects/{id}/issues/{iid}/notes?sort=asc&order_by=created_at`（按 `created_at` 过滤）。
-- Actor：取自 `user.login`（GitHub）/ `author.username`（GitLab）。**缺失则丢弃该条评论**——这是 C8 的 fail closed 实现点之一（不影响同批次其他评论）。
+- Actor：取自 `user.login`（GitHub）/ `author.username`（GitLab）；comment/note 的稳定远端 `id`、调用目标 `TargetRef` 与 actor（可空）必须一同返回。Command 候选的 actor 缺失保留为 null 交给 Command 写 `ignored_missing_actor` receipt；其他驱动消费者可丢弃该条，绝不补全。
 - 增量游标语义同 `ListIssuesByLabel`；必须穷尽远端分页后才返回新游标。
 
 ### 4.4 `ListLabelEvents`
@@ -194,8 +196,8 @@ ListLabelEvents(ctx, project, target TargetRef, since Cursor) → ([]LabelEvent,
 **归一要点**：
 - GitHub：Issue 与 Change 共用 `/repos/{org}/{repo}/issues/{number}/timeline`（按 `labeled`/`unlabeled` 事件过滤），或 `/issues/{number}/events`。
 - GitLab：按 `target.Kind` 选择 `projects/{id}/issues/{iid}/resource_label_events` 或 `projects/{id}/merge_requests/{iid}/resource_label_events`。
-- Actor：GitHub `actor.login` / GitLab `user.username`。**缺失则丢弃整条事件**。
-- 返回游标必须覆盖本次已扫描的完整分页；没有返回游标就无法在 `Cursor` 不透明约束下安全推进。
+- ID/Position：GitHub timeline/issue-event 的稳定事件 `id` 和 GitLab resource-label-event `id`；适配器只在该 ID 能被证明为 target-scoped 单调位置时填 `Position`，否则将该 target 标为 label-approval unavailable。Actor：GitHub `actor.login` / GitLab `user.username`，可为空且 Command 候选不得丢弃。
+- 返回游标必须覆盖本次已扫描的完整分页；Command 的 nonce label cutover 必须能够全量扫描并持久化该 target 的最高 `Position`，不能证明高水位即 fail closed。
 
 ### 4.5 `CommentTarget`
 ```
@@ -284,7 +286,7 @@ ListChangeComments(ctx, project, changeID string, since Cursor) → ([]Comment, 
 **归一要点**：
 - GitHub：`gh api /repos/{org}/{repo}/issues/{number}/comments?since={since}&sort=created&direction=asc`，只拉 PR 对话区的 issue-style comments。
 - GitLab：`glab api projects/{id}/merge_requests/{iid}/notes?sort=asc&order_by=created_at`。
-- Actor 缺失则丢弃（同 `ListIssueComments`）；增量游标必须在穷尽分页后推进。
+- Actor 可空；Command 候选缺失时保留并交 Command 写 `ignored_missing_actor` receipt，其他消费者按 `ListIssueComments` 丢弃；增量游标必须在穷尽分页后推进。
 - GitHub review comments（行内评论）位于另一端点，V0 不解析；不得一边合并该端点、一边声称忽略行内评论。
 
 ### 4.12 `GetChecks`
@@ -335,11 +337,11 @@ MergeChange(ctx, project, changeID, expectedHeadSHA, method string) → (Change,
 ### `Comment`
 ```
 ID        string
-Author    string   // 必填；缺失时整条 Comment 在适配器内丢弃
+Author    *string  // 可空；Command 候选不得丢弃或补全
 Body      string
 CreatedAt time.Time
 ```
-用于 `ListIssueComments` / `ListChangeComments` 的返回值。
+调用 `ListIssueComments` / `ListChangeComments` 的 target 参数与本对象 ID 共同构成 Command 的 source/target 输入。
 
 ### `FindResult`
 ```
@@ -361,7 +363,7 @@ CreatedAt time.Time
 | 草稿 | `draft` 布尔字段 | 标题 `Draft:` / `WIP:` 前缀 | 归一到 `Change.IsDraft`，GitLab 前缀匹配不区分大小写 |
 | 合并方式 | merge / squash / rebase | 项目策略 merge / ff，另有 squash 开关 | V0 端口只接受 `merge`；不得把平台原语原样映射 |
 | 增量拉取 | `since` + `sort=updated` | `updated_after` | 归一为适配器不透明 `Cursor` |
-| 标签事件 actor | issue events / timeline | resource label events | 统一为 `LabelEvent.Actor`，缺即丢弃 |
+| 标签事件身份/actor | issue events / timeline 的稳定 event ID、actor | resource label events 的 ID、user | 统一为 `LabelEvent.ID/Target/Position/Actor`；actor 可空，Command 写忽略 receipt；无可证明 position 时禁用标签批准 |
 
 **判定原则**：遇到语义差异一律取保守交集。凡是两个平台无法都给出确定性答案的问题，归一结果显式 `unknown`，由上层转 HITL——**适配器不猜**。
 
@@ -371,13 +373,13 @@ CreatedAt time.Time
 
 | 动词 | actor 来源 | 缺失行为 |
 |------|-----------|---------|
-| `ListLabelEvents` | `LabelEvent.Actor` | 丢弃整条驱动性事件 |
-| `ListIssueComments` | `Comment.Author` | 丢弃该条评论 |
-| `ListChangeComments` | `Comment.Author` | 丢弃该条评论 |
+| `ListLabelEvents` | `LabelEvent.Actor` | Command 候选保留 null actor 并交 Command；其他消费者丢弃 |
+| `ListIssueComments` | `Comment.Author` | Command 候选保留 null actor 并交 Command；其他消费者丢弃 |
+| `ListChangeComments` | `Comment.Author` | Command 候选保留 null actor 并交 Command；其他消费者丢弃 |
 
 注意：`Issue.Author` 与 `Change`（无 author 字段）不在此列——`Author` 是 Issue 的创建者，属于事实观测而非驱动性事件，不对其施加 actor 闸门（PRD §4.5）。
 
-**实现约束**：丢弃行为发生在适配器内的归一函数，调用方永远看不到空 actor 的对象。这比在每个调用点记得检查更强——是类型系统保证的 fail closed。
+**实现约束**：适配器从不补全 actor。Command 入口必须能看到 nullable actor，才能以 immutable receipt 静默 fail closed；其他消费者在归一函数丢弃 null actor。这既保留 Command 的幂等审计，也不让其他路径绕过 actor 闸门。
 
 ## 8. 进程调用边界
 
@@ -412,7 +414,7 @@ API 调用只在 Forge 适配层收费（DESIGN §9.2）。预算的唯一收费
 双平台跑同一套契约测试（DESIGN §8.1 / WBS V3）：
 
 - 用真实 CLI 输出录成 fixture（`testdata/fixtures/github/`、`testdata/fixtures/gitlab/`）。
-- 覆盖：分页、actor 缺失、限流、平台差异（`number` vs `iid`、Checks vs Pipelines、Draft 前缀）、Change marker 跨全状态唯一查找与同 base/head 冲突、merge 的远端 expected-head CAS。
+- 覆盖：分页、评论/note 与 label-event 的稳定 ID、精确 target、actor 缺失保留、label position/高水位与无 position capability、限流、平台差异（`number` vs `iid`、Checks vs Pipelines、Draft 前缀）、Change marker 跨全状态唯一查找与同 base/head 冲突、merge 的远端 expected-head CAS。
 - 录制成本近零——开发时本来就在敲这些命令。
 - fixture 入 git（go:embed）。
 - 每个边界类型的 golden test（DESIGN §5.2）：`closed` 契约断言额外字段 / 必填缺失被拒；Forge `open-envelope` 契约断言无关新增字段接受、必需字段缺失/变型被拒。
@@ -434,7 +436,7 @@ M1 的 `Fake`（[`internal/forge/fake.go`](../../internal/forge/fake.go)）实�
 | | `GetChecks` |
 | | `MergeChange` |
 
-M2 的 `Fake` 需扩展以覆盖全部 13 个动词，且每个新动词遵循与真实适配器相同的契约（actor 必填、错误分类、marker 搜索、merge CAS 等）。fake 的 scripted 数据必须携带所有必填字段；缺失即 panic（当前已如此），确保测试不能通过残缺数据伪装边界。
+M2 的 `Fake` 需扩展以覆盖全部 13 个动词，且每个新动词遵循与真实适配器相同的契约（stable event ID/target、nullable actor、label position capability、错误分类、marker 搜索、merge CAS 等）。fake 的 scripted 数据必须携带所有必填字段；缺失即 panic（当前已如此），确保测试不能通过残缺数据伪装边界。
 
 M2 fake 不要求模拟 API 预算（收费口测试另用 mock），不要求模拟远端 rate limit 联动。
 

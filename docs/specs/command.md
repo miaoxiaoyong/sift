@@ -1,255 +1,197 @@
 ---
 status: draft
 created: 2026-07-29
-summary: Forge 指令的鉴权、解析、回执与状态契约
+summary: Forge 指令的鉴权、解析、确定性效果与回执契约
 ---
 
 # Command 规格
 
-本文定义 M5 Command：将 forge 评论和审批标签归一为经鉴权的确定性 `DomainCommand`，并规定其幂等回执、Ledger 写入及 `startup_stall` 的 retry 两段式。它不定义 Interrupt 字段、Gate 判定、进程终止或 Forge API 细节，而是消费这些模块已经冻结的契约。
+本文定义 M5 Command：经鉴权的 Forge 评论和审批标签如何成为一个可重放的领域命令。本文保持 `draft`；它冻结字段和事务边界，不表示已实现或已通过评审。
 
-来源：[PRD §7.1、§9.2](../PRD.md)、[DESIGN §6.2、§6.4、§10.1](../DESIGN.md)、[WBS M5 §5.4](../WBS.md)、[ADR-013](../decisions/013-startup-stall-retry-convergence.md)。Interrupt 的当前对象、options、nonce 与隔离语义见 [`interrupt.md`](interrupt.md)；存储事务、收据、写端口和 race 仲裁见 [`storage.md` §6–§7、§11–§12](storage.md)；人类决定/语义原料/认证见 [`ledger.md`](ledger.md)；Forge actor 与评论/标签端口见 [`forge.md`](forge.md)；回执 outbox 见 [`outbox.md` §2、§5](outbox.md)。
+来源：[PRD §7.1、§9.2](../PRD.md)、[DESIGN §6.2、§6.4、§10.1](../DESIGN.md)、[WBS M5 §5.4](../WBS.md)、[ADR-013](../decisions/013-startup-stall-retry-convergence.md)。Interrupt、配置、Forge、存储、Ledger 和 outbox 的权威字段分别见 [`interrupt.md`](interrupt.md)、[`config.md`](config.md)、[`forge.md`](forge.md)、[`storage.md`](storage.md)、[`ledger.md`](ledger.md) 和 [`outbox.md`](outbox.md)。
 
-## 1. 边界与不变量
+## 1. 不变量与身份
 
-1. Command 只消费 forge 的**驱动性事件**：`/sift` 指令评论和 `sift:approved` 标签的新增事件。Issue/Change 的关闭、合并等事实观测不进入本模块，仍按 Intake 的 facts-first 路径收敛。
-2. 处理顺序固定为：事件身份去重 → actor 鉴权 → 严格语法/标签形态 → 目标与当前 Interrupt → nonce/version（评论）或 issuance cutoff（标签）→ `options[]` → 编译 `DomainCommand` → 单事务提交。不得以 LLM、评论语义或当前标签集合猜测动作。
-3. 只有编译后的 `DomainCommand` 能请求 Run 转移；评论正文、标签名、T4 文案、Ledger 历史和 Brain recommendation 均不能直接写 `runs.status`。实际转移只经 [`storage.md` §11](storage.md) 的受限写端口及其私有 `transition()`。
-4. 任一可执行命令必须绑定**唯一的当前 open Interrupt**，且其 forge target 等于该 Interrupt 冻结的发布 target。只按 Run、Issue、Change、最新评论或同一 target 上“看起来相关”的 Interrupt 匹配一律拒绝。
-5. 所有受理结果以 forge event ID 幂等；同一 event 的重放只返回已持久化 outcome，绝不第二次转移、写 Ledger、启动 probe、轮换 nonce 或创建回执 operation。
-6. `options[]` 是动作白名单，不是 UI 提示。动词即使在 PRD 全集内，只要不在当前 Interrupt 的 options 中就不得执行；特别是 `startup_stall` 的 `approve` 必须拒绝。
-7. Command 不持有 SQL transaction，也不在事务内调用 Forge、发信号、检查进程或运行 Brain。它只把已验证输入交给存储写端口；外部评论和 retry probe 都在提交后推进。
-8. 认证只确认“谁可发指令”，不把 allowlist 解释为可以绕过 nonce、options、CAS、Gate 或隔离。actor、token、nonce、session、permit、原始评论内容和数据库错误不得写入回执或安全事件的公开文本。
+1. Command 只消费 `forge_comment` 的 `/sift` 候选和 `approval_label` 的新增事件；关闭、合并等 Forge 事实仍走 Intake。
+2. 每个候选先以 canonical command event key 去重，再鉴权、解析、精确匹配 immutable target、当前 Interrupt、nonce/cutoff 与 `options[]`，最后由唯一存储事务端口提交。不得从当前 Run、Forge 标签集合、最近评论或自然语言猜测。
+3. canonical key 是 `SHA-256(canonical_json({"v":1,"project_id":project_id,"source":source,"remote_event_id":remote_event_id}))` 的 64 位小写 hex。`source` 严格为 `forge_comment | approval_label`，remote ID 为 1–256 UTF-8 bytes 且不含 NUL。该 key 是 receipt、事件 `idempotency_key`、probe requester 关联和 ack operation 的**同一**身份；不得单独拼接远端 ID。
+4. allowlist 只鉴权，不绕过 CAS、target、nonce、cutoff、Gate、隔离或 options。非命令、缺 actor 和不可信 actor 静默；公开文本不得含 actor、token、旧 nonce、原评论、reject/ask 原文、进程身份、消失证据或数据库错误。
+5. Command 不取得 `*sql.Tx`，也不在事务中调用 Forge、Brain、进程检查或信号。唯一 public command 写端口为 `ApplyCommandEvent(envelope, parsed_action?)`；其私有事务原语负责 Ledger、状态和 outbox。`startup_stall` probe 的最终结果仅由 `ApplyRetryProbeResult` 提交。
 
-## 2. 事件入口、鉴权与目标绑定
+## 2. 输入 envelope、Forge 边界与 receipt
 
-### 2.1 归一输入
+### 2.1 `CommandEventEnvelopeV1`
 
-Command 接收 Forge adapter 已归一的下列值：
-
-```text
-ForgeCommandEvent {
-  forge_event_id, project_id, target: TargetRef,
-  source: comment | approval_label,
-  actor, observed_at_ms,
-  comment_id?, body?, label_event_id?
-}
-```
-
-`forge_event_id` 是项目内稳定的远端事件身份；评论使用远端 comment/note ID，标签使用资源 label-event ID。`target` 是 `issue | change` 加项目内 ID，不能是裸数字。`actor`、时间、项目和 target 缺任一项都不是可执行输入。
-
-Forge adapter 已对评论/标签事件的 actor 缺失 fail closed；Command 仍必须将缺 actor 视为 `ignored_missing_actor`，不得用 Issue 作者、评论显示名、目标权限、当前登录用户或上一次可信 actor 补全。项目启动期冻结的 allowlist 是唯一授权依据；运行期配置文件变化不热生效，见 [`config.md` §3–§4](config.md)。
-
-### 2.2 鉴权、收据与静默边界
-
-`forge_event_receipts(project_id, forge_event_id)` 是第一层不可变幂等收据。其处理规则如下：
-
-| 输入 | receipt disposition | Command 后果 | 是否回执评论 |
-|---|---|---|---|
-| 不是 `/sift` 评论、不是审批标签新增 | 不创建 Command receipt | 忽略 | 否 |
-| actor 缺失 | `ignored_missing_actor` | 忽略并记低敏安全事件 | 否 |
-| actor 不在冻结 allowlist | `ignored_untrusted_actor` | 忽略并记低敏安全事件 | 否 |
-| 可信 actor 的候选命令 | `accepted`，`domain_event_id` 指向 `command.accepted` 或 `command.rejected` | 按本文继续 | 是，除非事务本身回滚 |
-
-`accepted` 只表示事件已通过身份闸并被 Command 消费，**不表示该动作被执行**。例如过期 nonce、错误 target、option 不允许和 probe 在途都可有 `accepted` receipt，但其 `command.rejected` event 的 closed `disposition` 才是最终语义。重复事件直接读取这两个既有事实，不创建新 event 或回执。
-
-只有可信 actor 的候选命令可得到回执。对非命令、缺 actor 或不可信 actor 保持静默，避免把 Command 变成给攻击者探测 Run/Interrupt 的 oracle。
-
-### 2.3 当前 Interrupt 的解析
-
-在单个写事务内，按下列全部条件读取唯一对象：
-
-- `status=open`；
-- `run_id` 与命令携带的 Run（评论）或 target 所归属的 Run（标签）一致；
-- 冻结的 forge comment target 精确等于事件 `target`；
-- `dispatch_state` 不是 `probe_in_progress`，除非输入是合法的启动/结果事实而非本模块的人工命令；
-- 对评论，`nonce` 与 `version` 快照对应的当前 nonce 相同；
-- 对标签，满足 §2.5 的 issuance cutoff；
-- 请求的 action ID 出现在 `options_json` 中。
-
-出现零个或多个候选均为 `interrupt_not_current`；不得挑选最新一条。`status=closed`、nonce 不同、已升级后的旧 version、外部事实关闭、或 Run 版本 CAS 失败均是拒绝而非重新解释历史命令。
-
-### 2.4 评论语法
-
-除 `ask` 与可选 reject 原因外，评论 body 必须逐字节匹配一行 ASCII 命令并在最后一个参数后 EOF；不接受前导/尾随空白、Markdown quote、代码围栏、大小写变体、别名、额外参数或同一评论中的第二条命令。`\r\n`、`\r`、`\n` 都不得作为非 `ask` 命令的一部分。
-
-```text
-/sift approve <run_id> <nonce>
-/sift reject  <run_id> <nonce> [<reason>]
-/sift retry   <run_id> <nonce>
-/sift hold    <run_id> <nonce> <duration>
-/sift ask     <run_id> <nonce> <text>
-```
-
-`run_id` 与 `nonce` 均为 32 个小写十六进制字符；二者必须分别精确匹配存储的 Run ID 与当前 Interrupt nonce。`duration` 是无空白的 Go duration 字符串，必须为正且不超过创建时冻结的 `hold_max_duration`；裸数字、复合空白和负数无效。
-
-`reason` 若存在，必须以紧跟 nonce 的单个 ASCII space 开始，去掉这一个分隔 space 后为 1–16384 UTF-8 bytes、不得含 NUL。`text` 同样为 1–16384 UTF-8 bytes、不得含 NUL，且在去掉 `nonce` 后的单个分隔 space 之外**原样**保存；Command 不 trim、折行、Markdown 解析、摘要、翻译或交给 LLM。`ask` 可含换行；它是唯一允许多行 body 的动词。空 reason 不产生 `SemanticMaterialV1`；空 ask text 拒绝。
-
-渲染 Interrupt 时必须把当前可执行评论命令以本节的完整字面量列出；不得只显示 `/sift approve` 而隐藏 Run/nonce。单条与摘要的 option 顺序、完整 renderer 和当前 nonce/version snapshot 以 [`interrupt.md` §8.1](interrupt.md) 为唯一来源；摘要逐成员渲染，绝无摘要级命令。nonce 是公开的防重放关联值，不是 capability secret。
-
-### 2.5 审批标签
-
-唯一标签命令是可信 actor 发出的新增事件：
-
-```text
-label = "sift:approved"; action = added
-```
-
-它只可编译为 `approve`，且只有目标上唯一当前 open Interrupt 的 `options[]` 含 `approve` 时才有效。移除事件、任意其他 `sift:*` 标签、当前标签集合的读取结果，以及没有对应新增 event 的“标签仍在”都不能生成命令。
-
-标签自身没有承载 nonce 的位置，因此不能伪造一个空 nonce 交给评论解析器。它的 anti-replay 绑定是：同一 forge label-event ID 的 receipt 去重、目标精确匹配、唯一当前 Interrupt、以及
-
-```text
-label_event.observed_at_ms >= interrupt.nonce_issued_at_ms
-```
-
-其中 `nonce_issued_at_ms` 是该 Interrupt 当前 version/nonce 成为有效值的持久化时间。标签 event 早于该 nonce 的签发、在 target 上有多个候选 Interrupt、或 `approve` 不在 options 内时一律拒绝。这样旧审批标签不会在后续 Interrupt 开启或 nonce 轮换后自动生效；若人要批准新检查点，必须在新 nonce 签发后重新添加标签。标签路径在完成这些绑定后生成与评论同形的 `DomainCommand`，并走同一 Ledger、transition、receipt 和 ack 路径。
-
-## 3. 编译结果与通用执行语义
-
-### 3.1 `DomainCommand`
-
-解析器的输出不是状态转移，而是 closed union：
-
-```text
-DomainCommand {
-  source: forge_comment | approval_label,
-  forge_event_id, command_event_id, actor,
-  run_id, interrupt_id, expected_run_version,
-  expected_interrupt_version, expected_nonce,
-  action: approve | reject | retry | hold | ask,
-  hold_duration_ms?, reject_reason?, ask_text?,
-  occurred_at_ms
-}
-```
-
-`expected_*` 是已验证的当前投影快照，不从评论猜测；标签的 `expected_nonce` 是按 §2.5 在事务内解析的当前 nonce。`command_event_id` 是 append-only `command.accepted` 或 `command.rejected` event 的 ID，并是 Ledger `provenance.source.id` 与回执 payload 的唯一来源。该 union 不允许调用方附带目标 Run status、任意 SQL、任意 option、calibration ID、Task Spec ID、severity 或 outbox key。
-
-编译后的执行器只能调用：
-
-- 普通动作：`ApplyInterruptCommand`，并在需要时由它调用 `TransitionRun`/私有 `transition()`、`RecordHumanDecision`、Task Spec snapshot 和 outbox；
-- `startup_stall` 的终局 reject 或与事实并发的分支：`ResolveAttemptRace`；
-- `startup_stall` retry 的成功结果：`ApplyRetryProbeResult`。
-
-这三个端口必须共享 [`storage.md` §12.7](storage.md) 的仲裁原语；不得让评论 consumer、标签 consumer、Supervisor 或 wrapper 各实现一份相似的 Run/Interrupt 更新。
-
-### 3.2 动作与 Interrupt 生命周期
-
-| action | 前提 | 通用效果 |
-|---|---|---|
-| `approve` | option 含 `approve` | 关闭为 `responded`；以 reason 的确定性后继恢复编排。它不是泛用的 `waiting_human → running` 快捷写入。 |
-| `reject` | option 含 `reject` | 终局拒绝：Run 经唯一 transition 进入 `failed`；关闭为 `responded`。`startup_stall` 另受 §5.4 约束。 |
-| `retry` | option 含 `retry` | 请求对应 reason 的确定性重试/重算；非 `startup_stall` 的完成语义由该 reason owner 在同一事务明确给出，不能猜成新 attempt。`startup_stall` 必须走 §5。 |
-| `hold` | option 含 `hold` 且 duration 合法 | 保持 open 与 `waiting_human`，将 `expires_at_ms` 设为 `occurred_at_ms + hold_duration_ms`；不写 attempt resolution。 |
-| `ask` | option 含 `ask` 且 text 合法 | 写当前 Run 的新 Task Spec snapshot、保留原 snapshots，恢复该 reason 的确定性后继；不得升格项目/全局 Context。 |
-
-除 `startup_stall` 的 retry 请求外，成功的非终局 `hold` 或仍保持 open 的 action 都必须 `version+1` 并轮换 nonce；回执携带新 nonce。这样旧评论不能在一次人工延后或澄清后继续作用。关闭 Interrupt 的动作不轮换 nonce。每个更新均以 `expected_interrupt_version` CAS；CAS 失败重读后只可返回已持久化同 event outcome 或 `rejected_stale`，不得在新对象上重放旧命令。
-
-reason owner 必须把 `approve`/普通 `retry`/`ask` 的最终后继写成确定性 `DomainCommand` 或 operation，而非从自然语言解释动作：`design_approval` 的 approve 使 Run 可重新进入启动队列；Gate 类 approve 只恢复冻结 Gate/merge 后继；`agent_blocked` 的 ask 将澄清带入 Task Spec 后恢复执行；`merge_conflict`/`failure_review` 的 retry 只创建其明确的重试或重新观测后继。任何后继仍须满足 Run 状态图、attempt 所有权和 Gate 契约。
-
-## 4. Ledger、Task Spec 与 transition 契约
-
-### 4.1 人类决定
-
-每个成功消费的命令都以 `command_event_id` 调用 [`ledger.md` §3](ledger.md) 的唯一 `recordHumanDecision` 入口；调用方不得传入或猜测 calibration ID。动作映射为：
-
-| Command action | `HumanDecisionV1.action` | `calibration_decision` | 语义原料 |
-|---|---|---|---|
-| `approve` | `approve` | 仅 immutable Gate binding 为二元时为 `allow`，否则 null | 无 |
-| `reject` | `reject` | 仅 immutable Gate binding 为二元时为 `block`，否则 null | 有 reason 时为原文 `reject_reason` |
-| `retry` | `retry` | null | 无 |
-| `hold` | `hold` | null | 无 |
-| `ask` | `ask` | null | 原文 `ask_text` |
-
-因此非 Gate Interrupt 的 approve/reject 仍保留人类动作审计，但不得伪造 calibration 或认证样本；`retry`、`hold`、`ask` 永不结算 calibration。对 Gate-linked 二元决定，calibration 一次性补全、Ledger entry、认证 snapshot/current CAS、Interrupt/Run 结果、event 和回执 operation 必须同一事务提交。`inconclusive`、无 binding 或重复不同决定一律不猜测结算。
-
-### 4.2 Task Spec 与 Run 转移
-
-`ask` 的 text 只写新 `task_spec_snapshots` 版本和 `runs.current_task_spec_id`，不 UPDATE 旧 snapshot，也不写项目/全局 Context。新 snapshot 必须记录 command event 的不可变来源，使回放可知澄清来自哪条已鉴权评论。
-
-所有 Run 变更仍由 [`storage.md` §12.1](storage.md) 的 CAS 纪律执行：预期 version 与合法状态均须命中，转移事件与必要 outbox 同事务；非法转移是可审计拒绝而不是 silent success。Command 不可把 `approve` 解释成自动合并、把 `retry` 解释成无条件 spawn，或以 Ledger 写入成功掩盖 transition 失败。
-
-## 5. `startup_stall`：请求与结果分离
-
-`startup_stall` 的 options 永远只有 `retry | reject | hold`。它没有 `approve`；`auto_reject` 也在配置、发射器与 Command 三层拒绝。attempt 的 `frozen` 隔离独立于 Run/Interrupt 终态，只有持久化消失证据或明确 operator 强制清理才可解除，见 [`storage.md` §1、§5.5](storage.md)。
-
-### 5.1 retry 请求段
-
-合法 `/sift retry <run_id> <nonce>` 或经 §2.5 验证的标签（仅当该 Interrupt 理论上有 approve，故对 startup_stall 标签永不适用）在单事务中：
-
-1. CAS 当前 open `startup_stall` 的 Run version、attempt generation、Interrupt version/nonce 和无在途 probe；
-2. 写 `command.accepted`、`forge_event_receipt`、`HumanDecisionV1(action=retry)` 与必要 event；
-3. 插入唯一 `attempt_probes(state=pending)`，冻结 `expected_run_version`、`expected_generation`、`interrupt_id` 和请求 event；
-4. 将 Interrupt `dispatch_state` 置为 `probe_in_progress`。
-
-请求段**不**关闭 Interrupt、不改变 `waiting_human`、不创建新 attempt、不解除隔离、不写 `attempt_resolution`，也不宣称执行体已停止。Supervisor 在事务外运行既有受控终止/身份/消失探测；其信号和观测按 [`storage.md` §5.5](storage.md) 记入 probe/event，不进 outbox。
-
-`probe_in_progress` 时任何新的人工命令（含第二次 retry、hold、reject）都不得改变状态或创建第二 probe；对可信 actor 的候选命令创建一次 `probe_in_progress` 回执。合法迟到 `claim:started`/result 事实不受此限制，仍进入 `ResolveAttemptRace`。
-
-### 5.2 probe 未确认消失或事实先到
-
-探测未证明消失时：probe 终结为 `failed`；同一 Interrupt 保持 open/冻结，按既有升级规则增加 escalation、轮换 nonce、version+1，达到上限则 `hold`。它不新增 Interrupt、不退注意力费用、不写 resolution，并为最初 retry command 创建 outcome 为 `absence_unconfirmed` 的回执。
-
-若 probe 在途时合法 started/result 事实先提交，`ResolveAttemptRace` 必须：以事实接管监督、Run 在适用时 `waiting_human → running`、关闭同一 Interrupt 为 `superseded_by_fact`、probe 置 `superseded`，并为等待结果的 retry 命令创建 `superseded_by_fact` 回执。retry 请求的前提已被事实推翻，不能继续终止该正常执行体或开新 attempt。
-
-### 5.3 retry 成功结果段
-
-只有 probe 已取得可持久化的旧执行体消失证据时，`ApplyRetryProbeResult` 执行 [`storage.md` §12.5](storage.md) 的单一 CAS 事务：
-
-1. probe 变为 `succeeded` 并写证据摘要；
-2. 旧 attempt 终结，并仅在这里写 `attempt_resolution=retry_after_absence`；
-3. isolation 解除；
-4. 当前 Interrupt 关闭为 `responded`；
-5. Run `waiting_human → queued`；
-6. 创建且仅创建一个新的 `pending` attempt 与 claim；
-7. 创建 launch 和该 forge command 的 ack operation；
-8. 追加全部领域事件。
-
-任一 CAS 前置（Run/attempt/Interrupt/probe）变化使整笔回滚并重读，不得留下“已关 Interrupt、未建 attempt”或“已 queued、未入 launch outbox”。worker 仅在提交后派发新 attempt。
-
-### 5.4 reject、hold 与迟到事实
-
-`startup_stall` reject 必须调用 `ResolveAttemptRace` 的终局决定分支，而不是普通 `TransitionRun`：一次写不可逆 `attempt_resolution=reject`、Run → `failed`、Interrupt → `responded`、Ledger/语义原料/event/ack；attempt 仍 frozen，并安排对随后取得身份的执行体继续受控终止。reject 的“放弃”从不表示执行体已消失。
-
-hold 仅顺延 expiry 并轮换 nonce；自动 escalate、封顶 hold、retry 请求与 hold 都不写 resolution。故其后合法 started/result 仍事实优先。若 `reject` 或 `retry_after_absence` 已先落定，迟到事实必须被 `ResolveAttemptRace` 吸收：记录身份/安全事件、返回 `superseded_by_decision`、不复活旧 Run、不解除旧隔离，并继续或安排受控终止。拒绝 RPC 而丢弃迟到身份是违约。
-
-## 6. 回执
-
-每个可信 actor 的候选命令在其受理或最终 probe outcome 事务中创建一个且仅一个 `command_ack` operation：
-
-```text
-key = command:<forge_event_id>:ack
-kind = command_ack
-purpose = command_ack
-```
-
-该事务先把下列 closed `CommandAckV1` 写入 `command.ack_requested` event payload；`action`、`run_id`、`interrupt_id` 对语法/target 尚未解析的拒绝可为 null，其他字段不可空：
+可信与不可信的**候选**均先被 Forge 保留为下列 closed envelope；未知字段、重复 JSON key 或不满足大小限制均拒绝。`actor` 是显式 nullable，不能由其他字段补全。
 
 ```json
 {
   "schema_version": 1,
-  "command_event_id": "…",
-  "action": "retry",
-  "disposition": "applied",
-  "run_id": "…",
-  "interrupt_id": "…",
-  "next_nonce": null
+  "event_key": "64-lowercase-hex",
+  "project_id": "…",
+  "source": "forge_comment",
+  "remote_event_id": "…",
+  "target": {"kind":"issue","id":"123"},
+  "actor": "alice",
+  "raw_digest": "64-lowercase-hex",
+  "comment": {"id":"…","body":"/sift approve …"},
+  "label": null,
+  "label_position": null
 }
 ```
 
-`disposition` 只能是 `applied | rejected_stale | rejected_syntax | rejected_option | rejected_target | probe_in_progress | absence_unconfirmed | superseded_by_fact | superseded_by_decision`。`next_nonce` 仅当同一 open Interrupt 已轮换 nonce 时为 32 位小写 hex；其余为 null。event payload 不含评论原文、reject/ask 文本、allowlist、进程身份、消失证据、token 或数据库错误。
+Required common fields are as shown. `target.kind` is `issue|change`; `target.id` is 1–256 bytes. `comment` is required only for `forge_comment`, where `comment.id=remote_event_id`, `body` is 1–16384 UTF-8 bytes, and label fields are null. For `approval_label`, `label={"event_id":remote_event_id,"name":"…","action":"added"}` and `label_position` are required, while `comment` is null. `label_position` is a canonical positive decimal integer (no sign/leading zero, at most 39 digits). `raw_digest` hashes the unmodified source payload. `event_key` is recomputed, never trusted from the adapter.
 
-outbox operation 使用 [`outbox.md` §5.1](outbox.md) 已冻结的 `forge_comment` outer payload、target 和 marker 协议：target 固定为原 command target，不能在重试时改投另一 Issue/Change；其 `markdown` 仅由 `CommandAckV1` 确定性渲染。renderer 至少输出 action、disposition、Run 和 Interrupt；字段为 null 时明确说明“未识别到可执行目标”。`next_nonce` 非空时必须输出新的可执行命令提示。Forge comment worker 依 operation marker 收敛为 effectively-once；ack 投递失败不回滚已执行的领域决定，按 outbox 重试。原 command 的重放只能复用同一 operation，不能再发一条确认。
+[`forge.md` §2/§4](forge.md) requires both platforms to provide stable comment/note ID, label-event ID, exact target, nullable actor and label position. A driver event lacking target, remote ID or source is a Forge contract violation, not a Command input. Missing actor remains an envelope with `actor=null`; Command owns its persisted ignored receipt.
 
-## 7. 验收派生
+### 2.2 Receipt and candidate boundary
 
-M5 至少覆盖：
+`forge_event_receipts` uses `(project_id,event_kind,forge_event_id)` where `event_kind` is exactly the envelope `source`; it stores `event_key`, target, nullable actor and raw digest. A duplicate returns the stored outcome and creates no event, Ledger entry, probe or ack.
 
-1. 评论与标签均要求可信 actor；缺 actor、非 allowlist、旧 label event、错误 target、关闭/歧义 Interrupt 均不改变 Run。
-2. 语法对大小写、前后空白、额外参数、非法 ID/nonce/duration、空 ask、过长/NUL 文本和多命令 body fail closed；ask/reject 原文按 Ledger schema 保留。
-3. 旧 nonce、升级后 nonce、非当前 option、`startup_stall approve`、`startup_stall auto_reject` 全部拒绝；成功保持 open 的动作轮换 nonce。
-4. 同一 forge event 的任意重放只产生一个 receipt/event、一次 Ledger 写入、一次 state effect 和一个 ack operation；评论与标签走同一 `DomainCommand` 执行器。
-5. Gate 绑定的 approve/reject 正确结算 calibration/认证；无 binding 或 inconclusive 不伪造样本；retry/hold/ask 不结算；ask 创建新 Task Spec 而不覆盖历史。
-6. `startup_stall` retry 请求不关闭 Interrupt、不写 resolution、不创建 attempt；probe 在途拒绝新命令；失败复用同一 Interrupt、轮换 nonce、封顶 hold。
-7. retry 成功的崩溃注入逐点断言消失证据、resolution、隔离解除、Interrupt、Run、唯一新 attempt/claim、launch/ack operation 和事件全有或全无。
-8. 事实先到、reject 先到、retry 成功先到及 probe 在途事实到达均经同一 race 原语收敛；不出现第二 owner、悬空 Interrupt、错误的 isolation release 或丢失回执。
+| candidate | immutable receipt | domain event / ack |
+|---|---|---|
+| not `/sift` and not configured approval-label addition | no receipt | none |
+| actor null | `ignored_missing_actor` + low-sensitivity security event | none / no ack |
+| actor not in startup config snapshot allowlist | `ignored_untrusted_actor` + low-sensitivity security event | none / no ack |
+| trusted candidate | `accepted`, linked to its initial command event | §6 mapping; exactly one ack except pending retry |
+
+A syntax failure is still a trusted candidate: it atomically writes `accepted` receipt, a closed rejection event and its ack. All receipt/event/ack writes named in this document occur in one transaction or not at all.
+
+### 2.3 Immutable command target
+
+Each Interrupt has exactly one `interrupt_command_targets` binding to the initial `forge_comment` publish operation. The binding contains its immutable `(kind,id)` and a real unique FK to that operation; it is created in `EmitInterrupt`'s five-things transaction from the same verified target used in the payload. Command compares envelope target only with this binding. It must never reconstruct a target from the current Run, Issue, Change, delivery, comment text or Forge query.
+
+## 3. Authentication, grammar and approval labels
+
+The allowlist and `labels.approved` come only from the Run's immutable startup `config_snapshot_id`. `labels.approved` is normalized by the config loader as an exact nonempty UTF-8 label (no trim, case fold or platform rewrite); its scope is the Run project and its Forge platform. Config file changes take effect only on the next daemon boot and only for newly created Runs/Interrupts; they cannot change a pending command's label.
+
+### 3.1 Byte grammar
+
+All literals below use one ASCII space (`SP`, byte `0x20`); `EOF` immediately follows the final byte. `run_id` and `nonce` are exactly 32 lowercase hex bytes.
+
+```abnf
+command  = approve / reject / retry / hold / ask
+approve  = "/sift approve" SP run-id SP nonce EOF
+reject   = "/sift reject" SP run-id SP nonce [SP reason] EOF
+retry    = "/sift retry" SP run-id SP nonce EOF
+hold     = "/sift hold" SP run-id SP nonce SP duration EOF
+ask      = "/sift ask" SP run-id SP nonce SP text EOF
+run-id   = 32lowerhex
+nonce    = 32lowerhex
+lowerhex = DIGIT / %x61-66
+reason   = 1*16384utf8-no-nul
+text     = 1*16384utf8-no-nul
+; reason contains no CR or LF; text may contain LF or CRLF exactly as supplied.
+duration = 1*(duration-number duration-unit)
+duration-number = 1*DIGIT ["." 1*DIGIT] / "." 1*DIGIT
+duration-unit = "ns" / "us" / %xC2.B5 "s" / "ms" / "s" / "m" / "h"
+```
+
+`utf8-no-nul` is valid UTF-8 with no NUL; the 16384 limit is bytes after the one separating SP. `reason` additionally rejects CR and LF. `ask` alone can be multiline. The duration grammar is the positive, unsigned subset of Go `time.ParseDuration`: parse it with that function, reject an overflow or a result `<=0`, then compare it to the Interrupt's immutable `hold_max_duration_ms`. No other Go-duration spelling is accepted.
+
+`hold_max_duration_ms` is copied from `attention.hold_max_duration` into the Interrupt when it is created, alongside expiry defaults. Thus restart/config drift cannot change a pending hold limit. Parser vectors must cover one/many/missing SP, EOF, optional reject reason, CR/LF cases, each duration unit/decimal, overflow, zero/negative/sign, and exact lower/upper limit.
+
+### 3.2 Label anti-replay
+
+Only `label.name == labels.approved` and `action == added` may request `approve`. Label commands never manufacture a nonce. On nonce issuance/rotation, the storage port first makes label approval unavailable (`approval_label_cutoff_position=NULL`), then Forge fully scans that target's approval-label stream outside a transaction and `SetApprovalLabelCutoff(interrupt_id,version,nonce,position)` CAS-freezes its high-water position. Until this second transaction succeeds, or on a platform without the required position capability, label approval fails closed.
+
+A label is current exactly when its `label_position > approval_label_cutoff_position`; equality and all earlier positions reject. The position is a platform-proven, target-scoped remote monotonic label-event sequence, not a daemon or Forge wall-clock. Cursor replay, same-position input, crash between nonce rotation and cutover, and a full scan that cannot prove a high-water position all remain unavailable/rejected. A person may remove and re-add the configured label after label approval becomes available. This intentionally may reject a label added in the conservative scan window; it must never accept a pre-issuance label.
+
+## 4. Closed compilation and deterministic effects
+
+A parsed command is optional input to the single transaction, not the transaction's complete input:
+
+```text
+CompiledCommandV1 {
+  envelope: CommandEventEnvelopeV1,
+  action?: approve|reject|retry|hold|ask,
+  run_id?, nonce?, hold_duration_ms?, reject_reason?, ask_text?,
+  interrupt_id?, expected_run_version?, expected_interrupt_version?
+}
+```
+
+The executable fields are populated only after the immutable target, one open Interrupt, current nonce/cutoff and option validation. The transaction loads its own current snapshots and inserts the command event; callers cannot provide target status, options, calibration ID, Task Spec ID, severity, outbox key or SQL.
+
+For every successful row below, `recordHumanDecisionTx` writes exactly one `HumanDecisionV1`; reject/ask additionally write the unmodified `SemanticMaterialV1`. `hold` always retains `waiting_human`, updates expiry to `occurred_at + duration`, increments Interrupt version and rotates nonce. All unlisted reason/action pairs reject as `rejected_option`.
+
+| reason | action | immutable binding/precondition | one deterministic transaction effect |
+|---|---|---|---|
+| `design_approval` | approve | pre-start Run; no live attempt | close Interrupt/responded; `waiting_human→queued`; create next pending attempt/claim and one launch operation |
+|  | reject | — | close/responded; `Run→failed(human_reject)` |
+|  | hold | — | common hold |
+| `guardrail_violation` | approve | binding has exact run/head/rule/matched-path digest | consume that one-time exemption; close/responded; retain Run waiting only long enough to enqueue exactly one Gate re-evaluation for that binding |
+|  | reject | — | close/responded; `Run→failed(human_reject)` |
+|  | hold | — | common hold |
+| `code_review` | approve | binding has exact change ID/head/review-policy snapshot | insert one immutable human-review approval for that binding; close/responded; enqueue exactly one Gate re-evaluation of that head |
+|  | reject | — | close/responded; `Run→failed(human_reject)` |
+|  | hold | — | common hold |
+| `agent_blocked` | ask | current attempt binding | insert Task Spec snapshot sourced by command event; close/responded; terminalize bound blocked attempt; create next pending attempt/claim and launch |
+|  | retry | current attempt binding | close/responded; terminalize bound blocked attempt; create next pending attempt/claim and launch without Task Spec change |
+|  | reject | — | close/responded; `Run→failed(human_reject)` |
+|  | hold | — | common hold |
+| `merge_conflict` | retry | exact change/head binding | close/responded; enqueue one Gate re-evaluation of that exact head; no attempt or merge operation is created |
+|  | reject | — | close/responded; `Run→failed(human_reject)` |
+|  | hold | — | common hold |
+| `failure_review` | retry | binding declares exactly `gate_recheck` or `new_attempt` | close/responded; respectively enqueue one exact-head Gate re-evaluation, or terminalize bound failed attempt and create next pending attempt/claim/launch |
+|  | reject | — | close/responded; `Run→failed(human_reject)` |
+|  | hold | — | common hold |
+| `startup_stall` | retry | §5 request CAS | §5 only |
+|  | reject | §5 race CAS | §5 only |
+|  | hold | §5 race CAS | common hold through the private race primitive |
+
+`interrupt_command_effect_bindings` is immutable, one-to-one with an Interrupt, and has a closed reason-tagged schema for the bindings in this table (including `failure_review.retry_kind`). It is written by the reason owner in the same transaction that emits the Interrupt; unknown/missing/cross-reason binding rejects. Gate re-evaluation is a persisted deduplicated internal operation keyed by `(interrupt_id, expected head where applicable)`, not a Forge call inside this transaction. Approval/review/exemption facts are consumed by the next Gate snapshot; they never overwrite the historical snapshot.
+
+## 5. `startup_stall`: one owner, request then result
+
+`startup_stall` options are only `retry|reject|hold`; label approval cannot reach it. `ApplyCommandEvent` owns its request and reject paths and calls private `resolveAttemptRaceTx`; no separately callable Command/Ledger race port exists.
+
+- **retry request:** atomically CAS Run version, attempt generation, open Interrupt version/nonce and no live probe; write initial `command.accepted` event, receipt, retry HumanDecision, one pending probe and `dispatch_state=probe_in_progress`. It does not close the Interrupt, create an attempt, release isolation, write resolution or ack. The probe worker runs after commit.
+- **probe failed:** one transaction marks probe failed, retains Interrupt/open isolation, increments version and rotates nonce (or applies frozen capped hold), appends final outcome and creates the one ack with `absence_unconfirmed`.
+- **fact wins:** the same private race primitive marks probe superseded, closes the Interrupt `superseded_by_fact`, appends final outcome and creates its one `superseded_by_fact` ack.
+- **probe succeeds:** `ApplyRetryProbeResult` alone runs the ADR-013 transaction: evidence, `retry_after_absence`, isolation release, close/responded, `waiting_human→queued`, exactly one next attempt/claim/launch, final outcome and one `applied` ack are all-or-nothing.
+- **reject:** the same private race primitive atomically writes `attempt_resolution=reject`, closes/responded, fails Run, retains isolation, writes one HumanDecision/Ledger event/final outcome/ack, and schedules controlled termination. A late fact is absorbed as `superseded_by_decision`, never revives the Run or releases isolation.
+
+While probe is in progress every later human candidate gets one final `probe_in_progress` rejection; no second probe is made. The request command has no ack before a final probe/race result, so it can never create both an acceptance and a completion acknowledgement.
+
+## 6. Events, acknowledgements and replay
+
+### 6.1 Closed schemas
+
+`CommandEventV1` is a closed, canonical JSON object (maximum 64 KiB):
+
+```json
+{"schema_version":1,"event_key":"…","source":"forge_comment","remote_event_id":"…","outcome":"rejected_syntax","action":null,"run_id":null,"interrupt_id":null,"next_nonce":null,"final_for_event_id":null}
+```
+
+All fields shown are required. `event_key` and source match the envelope; `remote_event_id` is copied; `outcome` is one of the mapping table; `action`, `run_id`, `interrupt_id` are nullable with the same limits as §2; `next_nonce` is null or 32 lowercase hex; `final_for_event_id` is null except a final retry outcome, where it references the one `retry_pending` event with the same event key. It contains no natural-language input. Initial retry uses `outcome=retry_pending`; final retry uses this second closed event, not an ambiguous replacement.
+
+`CommandAckV1` is also closed/canonical and at most 8 KiB:
+
+```json
+{"schema_version":1,"command_event_id":"…","action":null,"disposition":"rejected_syntax","run_id":null,"interrupt_id":null,"next_nonce":null}
+```
+
+All shown fields are required. `command_event_id` references the final `CommandEventV1`; disposition is one of the non-pending outcomes below. Non-null action/run/Interrupt must equal that final event. Unknown fields, noncanonical JSON or incompatible nulls reject.
+
+| branch | final event type / outcome | ack disposition |
+|---|---|---|
+| grammar, malformed label shape | `command.rejected` / `rejected_syntax` | `rejected_syntax` |
+| no unique/current target, unavailable/old/equal label cutoff | `command.rejected` / `rejected_target` | `rejected_target` |
+| nonce/version/CAS stale | `command.rejected` / `rejected_stale` | `rejected_stale` |
+| action not in options | `command.rejected` / `rejected_option` | `rejected_option` |
+| probe already live | `command.rejected` / `probe_in_progress` | `probe_in_progress` |
+| normal table action, startup reject, successful probe | `command.accepted` or `command.resolved` / `applied` | `applied` |
+| retry request | `command.accepted` / `retry_pending` | no ack yet |
+| probe cannot prove absence | `command.resolved` / `absence_unconfirmed` | `absence_unconfirmed` |
+| execution fact wins | `command.resolved` / `superseded_by_fact` | `superseded_by_fact` |
+| decision already won | `command.resolved` / `superseded_by_decision` | `superseded_by_decision` |
+
+The final ack operation key is `command:<event_key>:ack`; its `created_from_event_id` is the final event and its target is the immutable envelope target. Same key with another digest is a contract violation. It is created in the same final transaction, not after an external probe.
+
+The deterministic renderer outputs action, disposition, Run and Interrupt. When `next_nonce` is non-null it may output **only the newly issued current nonce** in a complete executable command for that same target; it must never echo the submitted/old nonce. That new nonce is a public anti-replay correlator, not a capability secret.
+
+## 7. Required fixtures and crash vectors
+
+M5 tests must cover GitHub/GitLab comment and label IDs, exact targets, nullable actors, full label pagination/high-water positions and cross-project/cross-source equal remote IDs. They must also cover every grammar and matrix row, default/non-default approved label, config restart drift, label cutover/replay/crash, all table mappings, and nonce renderer bytes.
+
+For every trusted candidate, crash injection at receipt, initial/final command event, Ledger, Run/Interrupt, Task Spec/exemption/review fact, probe, launch and ack operation proves all-or-nothing. Replaying after each point returns the persisted final outcome and at most one Ledger decision, probe, state effect and ack operation.
