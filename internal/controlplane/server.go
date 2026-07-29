@@ -19,6 +19,7 @@ import (
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
 const deadline = 5 * time.Second
@@ -30,11 +31,12 @@ type Server struct {
 	operator      *net.UnixListener
 	run           *net.UnixListener
 	wg            sync.WaitGroup
+	db            *storage.DB
 }
 
 // Start obtains the process-lifetime mutex, creates the capability token when
 // necessary, and binds exactly the two owner-only Unix sockets.
-func Start(home config.Home) (*Server, error) {
+func Start(home config.Home, db ...*storage.DB) (*Server, error) {
 	if err := config.EnsureHomeLayout(home); err != nil {
 		return nil, err
 	}
@@ -48,6 +50,12 @@ func Start(home config.Home) (*Server, error) {
 		return cleanup(err)
 	}
 	s := &Server{Home: home, operatorToken: token, lock: lock}
+	if len(db) > 1 {
+		return cleanup(errf("at most one storage database may be supplied"))
+	}
+	if len(db) == 1 {
+		s.db = db[0]
+	}
 	if s.operator, err = bindSocket("siftd.sock", home.Path); err != nil {
 		return cleanup(err)
 	}
@@ -267,7 +275,7 @@ func (s *Server) runRequest(req Request) Response {
 		}
 		return failure(req.RequestID, "not_found", "run not found", false)
 	case "claim.acquire", "claim.permit_spawn", "claim.started":
-		return failure(req.RequestID, "unauthorized", "credential rejected", false)
+		return s.handoffRequest(req)
 	default:
 		return failure(req.RequestID, "unknown_method", "unknown method", false)
 	}

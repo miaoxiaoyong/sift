@@ -46,7 +46,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	s, err := controlplane.Start(home)
+	s, err := controlplane.Start(home, db)
 	if err != nil {
 		fatal(err)
 	}
