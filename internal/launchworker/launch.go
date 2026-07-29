@@ -42,6 +42,13 @@ type Worker struct {
 	Now                    func() time.Time
 	Backend                Backend
 	Agents                 []config.Agent
+	hooks                  workerHooks
+}
+
+type workerHooks struct {
+	afterBootstrapWrite  func() error
+	afterBootstrapDigest func() error
+	beforeSpawn          func() error
 }
 
 func (w *Worker) RunOnce(ctx context.Context) error {
@@ -107,13 +114,28 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		if err := runtime.WriteControlFile(path, b); err != nil {
 			return err
 		}
+		if w.hooks.afterBootstrapWrite != nil {
+			if err := w.hooks.afterBootstrapWrite(); err != nil {
+				return err
+			}
+		}
 	}
 	sum := sha256.Sum256(b)
 	if err := w.DB.RecordBootstrapDigest(ctx, *claim, dispatch.DispatchID, hex.EncodeToString(sum[:]), now().UnixMilli()); err != nil {
 		return err
 	}
+	if w.hooks.afterBootstrapDigest != nil {
+		if err := w.hooks.afterBootstrapDigest(); err != nil {
+			return err
+		}
+	}
 	if err := w.DB.RevalidateLaunchLease(ctx, *claim, now().UnixMilli()); err != nil {
 		return err
+	}
+	if w.hooks.beforeSpawn != nil {
+		if err := w.hooks.beforeSpawn(); err != nil {
+			return err
+		}
 	}
 	if _, err := w.Backend.Spawn(ctx, path); err != nil {
 		return fmt.Errorf("launch worker: spawn wrapper: %w", err)

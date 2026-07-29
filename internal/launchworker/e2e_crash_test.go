@@ -3,6 +3,7 @@ package launchworker
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	osexec "os/exec"
@@ -115,6 +116,128 @@ func TestLaunchWorkerWrapperCrashSuite(t *testing.T) {
 	if lines := countFileLines(marker); lines != 1 {
 		t.Fatalf("replayed controlled agent starts = %d, want 1", lines)
 	}
+}
+
+func TestLaunchWorkerReclaimsPreparedBootstrapAfterCrashWindows(t *testing.T) {
+	wrapperPath := buildE2EWrapper(t)
+	for _, crash := range []struct {
+		name  string
+		hooks workerHooks
+	}{
+		{name: "after-rename", hooks: workerHooks{afterBootstrapWrite: injectedCrash}},
+		{name: "after-digest", hooks: workerHooks{afterBootstrapDigest: injectedCrash}},
+		{name: "before-spawn", hooks: workerHooks{beforeSpawn: injectedCrash}},
+	} {
+		t.Run(crash.name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now().Truncate(time.Millisecond)
+			root, err := os.MkdirTemp("/tmp", "sift-reclaim-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(root, "sift.db"), BinaryVersion: controlplane.Version, Now: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if err := db.SeedProjectForTest(ctx, "cfg", "project", now.UnixMilli()); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.SeedLaunchRunForTest(ctx, "run-1", "project", "cfg", now.UnixMilli(), t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			boot, err := db.StartDaemonBoot(ctx, "hash-cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), now.UnixMilli())
+			if err != nil {
+				t.Fatal(err)
+			}
+			completeLaunchRecovery(t, db, boot, now.UnixMilli(), "supervise")
+
+			worker := &Worker{DB: db, BootID: boot, WorkerID: "crashed-worker", Root: root, Lease: 10 * time.Millisecond, Now: func() time.Time { return now }, Backend: execWrapperBackend{path: wrapperPath, pgid: true}, Agents: launchTestAgents(), hooks: crash.hooks}
+			if err := worker.RunOnce(ctx); !errors.Is(err, errInjectedCrash) {
+				t.Fatalf("crashed worker = %v, want injected crash", err)
+			}
+
+			restartedAt := now.Add(20 * time.Millisecond)
+			restartedBoot, err := db.StartDaemonBoot(ctx, "hash-cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), restartedAt.UnixMilli())
+			if err != nil {
+				t.Fatal(err)
+			}
+			completeLaunchRecovery(t, db, restartedBoot, restartedAt.UnixMilli(), "reuse_dispatch")
+			server, err := controlplane.Start(config.Home{Path: filepath.Join(root, "runs")}, db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			serveCtx, cancel := context.WithCancel(ctx)
+			defer func() { cancel(); _ = server.Close() }()
+			go func() { _ = server.Serve(serveCtx) }()
+
+			backend := &countingBackend{backend: execWrapperBackend{path: wrapperPath, pgid: true}}
+			worker = &Worker{DB: db, BootID: restartedBoot, WorkerID: "reclaimed-worker", Root: root, Lease: time.Minute, Now: func() time.Time { return restartedAt.Add(time.Millisecond) }, Backend: backend, Agents: launchTestAgents()}
+			if err := worker.RunOnce(ctx); err != nil {
+				t.Fatalf("reclaimed worker: %v", err)
+			}
+			marker := filepath.Join(root, "runs", "run-1", "attempts", "1", "agent-started")
+			waitForLines(t, marker, 1)
+			if backend.spawns != 1 {
+				t.Fatalf("wrappers spawned = %d, want 1", backend.spawns)
+			}
+			if lines := countFileLines(marker); lines != 1 {
+				t.Fatalf("agents started = %d, want 1", lines)
+			}
+		})
+	}
+}
+
+func completeLaunchRecovery(t *testing.T, db *storage.DB, boot string, nowMS int64, attemptAction string) {
+	t.Helper()
+	attempts, operations, err := db.StartupRecoveryPending(context.Background(), boot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range attempts {
+		if err := db.ApplyStartupRecoveryAction(context.Background(), storage.StartupRecoveryAction{BootID: boot, RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedGeneration: attempt.Generation, ObservationDigest: attemptAction, Action: attemptAction, NowMS: nowMS}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, operation := range operations {
+		if err := db.ApplyStartupRecoveryAction(context.Background(), storage.StartupRecoveryAction{BootID: boot, OperationID: operation.ID, ExpectedOperationVersion: operation.Version, ObservationDigest: "converge", Action: "converge_operation", NowMS: nowMS}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.CompleteStartupRecovery(context.Background(), boot, nowMS); err != nil {
+		t.Fatal(err)
+	}
+}
+
+var errInjectedCrash = errors.New("injected crash")
+
+func injectedCrash() error { return errInjectedCrash }
+
+func launchTestAgents() []config.Agent {
+	return []config.Agent{{ID: "agent", Executable: "/bin/sh", Args: []string{"-c", "echo started >> $SIFT_RUN_DIR/agent-started"}, TaskTransport: config.TaskTransportStdin}}
+}
+
+func waitForLines(t *testing.T, path string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if countFileLines(path) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("lines in %s = %d, want %d", path, countFileLines(path), want)
+}
+
+type countingBackend struct {
+	backend execWrapperBackend
+	spawns  int
+}
+
+func (b *countingBackend) Spawn(ctx context.Context, bootstrap string) (*os.Process, error) {
+	b.spawns++
+	return b.backend.Spawn(ctx, bootstrap)
 }
 
 type execWrapperBackend struct {

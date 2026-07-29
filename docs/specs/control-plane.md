@@ -456,7 +456,7 @@ Linux 以 `/proc/<pid>/stat`、`/proc/<pid>/exe` 与 owner-only `control.json` �
 }
 ```
 
-bootstrap 的 operation/claim/payload digest 必须一致。文件写成后将整文件 digest 回填到 operation 执行证据；新 lease owner只可复用与当前 claim/dispatch/digest 一致的文件。wrapper 只接受 argv 中的 bootstrap **路径**，不接受 credential argv；读取后即使 acquire 失败也不得恢复该文件。
+bootstrap 的 operation/claim/payload digest 必须一致。文件写成后将整文件 digest 回填到 operation 执行证据；同一 claim/dispatch 的相同 digest 回填是幂等 no-op，不同 digest 必须拒绝。新 lease owner只可复用与当前 claim/dispatch/digest 一致的文件。wrapper 只接受 argv 中的 bootstrap **路径**，不接受 credential argv；读取后即使 acquire 失败也不得恢复该文件。
 
 ### 7.2 `task.json` v1
 

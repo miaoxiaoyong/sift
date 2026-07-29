@@ -41,9 +41,9 @@ func (d *DB) RecordBootstrapDigest(ctx context.Context, claim ClaimedOperation, 
 		return err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE attempt_claims SET bootstrap_digest=?,updated_at_ms=?
-		WHERE dispatch_id=? AND bootstrap_digest IS NULL
+		WHERE dispatch_id=? AND (bootstrap_digest IS NULL OR bootstrap_digest=?)
 		AND run_id=(SELECT run_id FROM outbox_operations WHERE id=?)
-		AND attempt_no=(SELECT attempt_no FROM outbox_operations WHERE id=?)`, digest, nowMS, dispatchID, claim.ID, claim.ID)
+		AND attempt_no=(SELECT attempt_no FROM outbox_operations WHERE id=?)`, digest, nowMS, dispatchID, digest, claim.ID, claim.ID)
 	if err != nil {
 		return err
 	}
