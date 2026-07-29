@@ -261,18 +261,18 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 3.1 ExecutionBackend、launcher 与 wrapper
 
-- [x] `process` backend 只负责启动 wrapper；Agent 恒由 wrapper 直接 spawn 到其进程组
-- [x] Agent 启动只经一个 launcher 函数，V0 为恒等实现；不得绕过该接缝
+- [ ] `process` backend 只负责启动 wrapper；Agent 恒由 wrapper 直接 spawn 到其进程组
+- [ ] Agent 启动只经一个 launcher 函数，V0 为恒等实现；不得绕过该接缝
 - [x] daemon 只从自身安装目录解析同版本 wrapper，不从 `PATH` 猜；wrapper/daemon 主版本不一致拒绝
-- [x] Agent 环境只注入非机密 `SIFT_RUN_DIR`；bootstrap/run token 不进 argv 或环境变量
-- [x] 逐条实现 DESIGN §8.4 wrapper 契约，控制文件用 temp + fsync + rename
+- [ ] Agent 环境只注入非机密 `SIFT_RUN_DIR`；bootstrap/run token 不进 argv 或环境变量
+- [ ] 逐条实现 DESIGN §8.4 wrapper 契约，控制文件用 temp + fsync + rename
 
 > 证据（PR #109 / #107）：`internal/runtime/runtime.go`——`ProcessBackend` 仅 spawn wrapper 且 `Setpgid`、唯一 `Launcher`/`DirectLauncher` V0 恒等、`ResolveWrapper` 仅从 daemon 安装目录解析并按完整版本拒绝；`internal/runtime/files.go`——`WriteControlFile` 走 temp+fsync+rename+目录 sync、`0600`；`cmd/sift-agent-wrapper/main.go`——`--version` 同版本握手。注：wrapper 主体仍为 M1 bootstrap stub，agent 进程组 spawn 经 `DirectLauncher` 单一接缝预留；控制面 acquire/permit/started 接线属 §3.2，此处不勾。
 
 #### 3.2 Spawn handoff 与控制面最终接线
 
-- [x] 逐步实现 ADR-010 的 operation lease、acquire/session、permit、spawning handoff、started 证据
-- [x] wrapper 不写 DB；permit 的重放不得再次进入 spawn
+- [ ] 逐步实现 ADR-010 的 operation lease、acquire/session、permit、spawning handoff、started 证据
+- [ ] wrapper 不写 DB；permit 的重放不得再次进入 spawn
 - [x] `spawning` 期间不可换 owner；fencing 不能替代旧执行者消失证明
 - [x] V10a wrapper 段：跨 instance/session/permit/generation 使用全部拒绝
 
@@ -326,16 +326,16 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 #### 3.7 受控终止
 
 - [x] 恢复、operator kill/retry、超时共用：身份确认 → 有界信号升级 → 复核消失
-- [x] 确认消失后的结局按来源区分：恢复按重试策略、retry 新建 attempt、kill 不新建且 Run failed
+- [ ] 确认消失后的结局按来源区分：恢复按重试策略、retry 新建 attempt、kill 不新建且 Run failed
 - [x] 未确认消失统一进入 §3.6；人的后续 retry/reject/hold 在 M5 接通
 
-> 证据（PR #122 / #120 / #129）：`internal/runtime/termination.go`——唯一终止入口 `Terminator.Terminate` 落「身份确认 → 有界信号升级（TERM→KILL，按 grace）→ 复核消失」核心：先 `Observe` 校验完整身份（PID+启动时间+可执行路径+PGID+control nonce hash，`subtle.ConstantTimeCompare` 常量时间比对），身份不符即 `TerminationIdentityUnknown` 且**绝不发信号**（拒绝把 PID 复用当消失证明），有界 recheck 复核；`UnixProcessSignaler.SignalGroup(-pgid)` 对进程组发信号，wrapper 内 agent 后代一并终止。`internal/storage/termination.go`——`RecordTerminationObservation` 是三源共享的持久化端口，`Source∈{recovery,retry,kill}`：`Absent=true` 时释放隔离并按来源分诊结局（kill→Run `failed`/`operator_kill` 不建新 attempt；recovery/retry 在 `retry_count+1<max_attempts` 时建 pending 新 attempt 并补 launch operation，耗尽则 `attempts_exhausted` failed），落 `termination.absence_confirmed` 事件；`Absent=false` 时走 §3.6 `EmitInterrupt(startup_stall)` + 隔离冻结。覆盖 `TestTerminatorSignalsOnlyVerifiedIdentityAndProvesAbsence`/`TestTerminatorNeverSignalsReusedOrUncertainPID`/`TestTerminatorEscalatesAndFailsClosedWhenGroupRemains`、`TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible`/`TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`/`TestTerminationRetryAfterAbsenceCreatesNewAttempt`。**调用接线（PR #129，闭合原「端口已有、调用未接」）**：`internal/daemon/termination.go` 的 `TerminationCoordinator` 是三源到受控终止的唯一应用层桥——`Recover`（启动期先于 worker）、`Timeout`（supervisor tick 的 stale heartbeat）、`Operator`（`ops.kill`/`ops.retry` 经 `controlplane.SetOperatorAction`）汇入同一 `terminate` → `Terminator.Terminate` → `RecordTerminationObservation`，故 §3.7 三项的生产调用方已接、第 1/2/3 项勾选；覆盖 `TestOperatorKillAndRetryDelegateToTerminationCoordinator`、`TestRecoveryAttemptsIncludesNonterminalAttemptRegardlessOfRunState` 及上列 Terminator/termination 测试。
+> 证据（PR #122 / #120 / #129）：`internal/runtime/termination.go`——唯一终止入口 `Terminator.Terminate` 落「身份确认 → 有界信号升级（TERM→KILL，按 grace）→ 复核消失」核心：先 `Observe` 校验完整身份（PID+启动时间+可执行路径+PGID+control nonce hash，`subtle.ConstantTimeCompare` 常量时间比对），身份不符即 `TerminationIdentityUnknown` 且**绝不发信号**（拒绝把 PID 复用当消失证明），有界 recheck 复核；`UnixProcessSignaler.SignalGroup(-pgid)` 对进程组发信号，wrapper 内 agent 后代一并终止。`internal/storage/termination.go`——`RecordTerminationObservation` 是三源共享的持久化端口，`Source∈{recovery,retry,kill}`：`Absent=true` 时释放隔离并按来源分诊结局（kill→Run `failed`/`operator_kill` 不建新 attempt；recovery/retry 在 `retry_count+1<max_attempts` 时建 pending 新 attempt 并补 launch operation，耗尽则 `attempts_exhausted` failed），落 `termination.absence_confirmed` 事件；`Absent=false` 时走 §3.6 `EmitInterrupt(startup_stall)` + 隔离冻结。覆盖 `TestTerminatorSignalsOnlyVerifiedIdentityAndProvesAbsence`/`TestTerminatorNeverSignalsReusedOrUncertainPID`/`TestTerminatorEscalatesAndFailsClosedWhenGroupRemains`、`TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible`/`TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`/`TestTerminationRetryAfterAbsenceCreatesNewAttempt`。**调用接线（PR #129，闭合原「端口已有、调用未接」）**：`internal/daemon/termination.go` 的 `TerminationCoordinator` 是三源到受控终止的唯一应用层桥——`Recover`（启动期先于 worker）、`Timeout`（supervisor tick 的 stale heartbeat）、`Operator`（`ops.kill`/`ops.retry` 经 `controlplane.SetOperatorAction`）汇入同一 `terminate` → `Terminator.Terminate` → `RecordTerminationObservation`，故 §3.7 的共享调用桥已接；未确认分支生产可达，第 1/3 项勾选，确认消失分诊因下述资格谓词缺口保持 `[ ]`；覆盖 `TestOperatorKillAndRetryDelegateToTerminationCoordinator`、`TestRecoveryAttemptsIncludesNonterminalAttemptRegardlessOfRunState` 及上列 Terminator/termination 测试。
 >
 > **未完成（不得读作端到端）**：生产 `Inspector` 自 PR #135 起为 `runtime.PlatformProcessInspector`——Linux 经 procfs + owner-only `control.json` 独立重建身份，可发信号并证消失；Darwin fail-closed（身份未知、不发信号）。**但** `cmd/siftd/main.go` 未注入 `ProcessGroupVerified` 谓词（nil），故协调器即便在 Linux 拿到 `result.Absent=true` 也映射为 `process_group_unverified` 诊断、`cmd.Absent` 仍为假——确认消失分支（第 2 项按来源分诊结局、`termination.absence_confirmed` 事件、自动 retry）生产仍不可达，三源的非终态 attempt 在两平台一律经 `Absent=false` 走 §3.6 `startup_stall` 兜底（Linux 是「资格谓词缺失」所致，Darwin 是「无 native 探测」所致）。§3.4 第 4 项（平台进程身份）已闭合；完整恢复矩阵（§3.4 第 1/6 项）仍留 M6；真实资格判定谓词（按 Agent CLI + 版本）属 M6/M7；第 3 项「人的后续 retry/reject/hold 在 M5 接通」仍属 M5 §5.4，本片不闭合。
 
 #### 3.8 hooks 与 doctor
 
-- [x] hooks 指纹覆盖 `.git/config`、`core.hooksPath` 值和最终目录内容；Agent 结束后复核（`internal/hooks`；doctor 对当前基线做漂移报告）
+- [ ] hooks 指纹覆盖 `.git/config`、`core.hooksPath` 值和最终目录内容；Agent 结束后复核（`internal/hooks`；doctor 对当前基线做漂移报告）
 - [x] `doctor` 报 hooks 漂移、隔离 attempt/未回收 worktree、process-group 资格与 `unsafe-local`
 
 > 证据（PR #134）：`internal/hooks/fingerprint.go`——`Capture` 覆盖 `.git/config` 摘要、`core.hooksPath` 取值、effective hooks 目录与目录内容摘要并合成 `Digest`（`TestCaptureIncludesConfigHooksPathAndDirectory`）。`internal/controlplane/doctor.go`——`hookChecks` 经 `hooks.Capture` 取当前指纹、与 `project_hook_baselines` 基线比对报漂移（absent/drifted/match），`processGroupChecks` 对每个 Agent 报 `process-group-unverified`，`attemptChecks` 列 `frozen` 或非终态 attempt（含 worktree 路径），`unsafeLocalCheck` 保留 V10b 边界；`internal/storage/doctor.go` `ReadDoctorState` 只读投影、从不写/迁移。
@@ -351,7 +351,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### M3 门禁
 
-- [x] V4 的 process backend、handoff、恢复矩阵、受控终止与资格门控部分通过
+- [ ] V4 的 process backend、handoff、恢复矩阵、受控终止与资格门控部分通过
 - [x] V5a：base/worktree 读取源通过；硬护栏 V5b 留 M4（`TestManagerCreatesIsolatedWorktreeAndReadsBaseOnly` 覆盖 base-only 的 policy/context 读取与 worktree 改写隔离）
 - [x] V10a wrapper 凭据部分通过
 - [x] 每个 PRD reason 均能在无 T4/T6 时生成结构合法、可发布的 fallback Interrupt（`interruptTemplates`/`renderInterrupt` golden/vector 契约）
