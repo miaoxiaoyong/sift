@@ -423,6 +423,8 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### M4 门禁
 
+> **阶段门禁评审（#256）：[FAIL](reviews/2026-07-29-m4-phase-gate-pi-gpt-5.6-sol.md)。** 当前组件 API 与定向测试已存在，但生产 Gate 纵向链、`merge_change` producer/worker、外部合并到 Ledger 的接线及阶段级组合证据仍缺失；以下六项均无充分证据勾选，M5 前置保持未通过。
+
 - [ ] V5b：`.sift/**`、CI 配置、head 变化 fail closed；A5/A6 在本片闭合
 - [ ] T3/T5 正常输出与确定性兜底均被版本化并进入 trace/Gate 快照
 - [ ] V6：纯函数、cache miss、每次 Gate 必有校准记录、导出重放通过
