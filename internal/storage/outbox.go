@@ -250,7 +250,7 @@ func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, l
 		}
 	}
 	c.ClaimAttemptNo, c.AttemptID, c.LeaseOwner, c.LeaseExpiresAtMS = oldCount+1, newID(), workerID, nowMS+leaseMS
-	res, err := tx.ExecContext(ctx, `UPDATE outbox_operations SET state='executing', lease_owner=?, lease_expires_at_ms=?, attempt_count=?, updated_at_ms=?
+	res, err := tx.ExecContext(ctx, `UPDATE outbox_operations SET state='executing', lease_owner=?, lease_expires_at_ms=?, attempt_count=?, version=version+1, updated_at_ms=?
 		WHERE id=? AND ((state IN ('pending','retryable') AND next_attempt_at_ms <= ?) OR (state='executing' AND lease_expires_at_ms <= ?))`, workerID, c.LeaseExpiresAtMS, c.ClaimAttemptNo, nowMS, c.ID, nowMS, nowMS)
 	if err != nil {
 		return nil, err
@@ -299,7 +299,7 @@ func (d *DB) CompleteOutboxAttempt(ctx context.Context, claim ClaimedOperation, 
 	if outcome.State != OperationRetryable {
 		completed = outcome.NowMS
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE outbox_operations SET state=?, lease_owner=NULL, lease_expires_at_ms=NULL, next_attempt_at_ms=?, remote_evidence_json=?, remote_evidence_digest=?, last_error_class=?, last_error_summary=?, updated_at_ms=?, completed_at_ms=? WHERE id=? AND lease_owner=? AND lease_expires_at_ms=?`, outcome.State, next, nullable(string(outcome.Evidence)), nullable(digestJSON(outcome.Evidence)), nullable(string(outcome.ErrorClass)), nullable(outcome.ErrorSummary), outcome.NowMS, completed, claim.ID, claim.LeaseOwner, claim.LeaseExpiresAtMS)
+	_, err = tx.ExecContext(ctx, `UPDATE outbox_operations SET state=?, lease_owner=NULL, lease_expires_at_ms=NULL, next_attempt_at_ms=?, remote_evidence_json=?, remote_evidence_digest=?, last_error_class=?, last_error_summary=?, version=version+1, updated_at_ms=?, completed_at_ms=? WHERE id=? AND lease_owner=? AND lease_expires_at_ms=?`, outcome.State, next, nullable(string(outcome.Evidence)), nullable(digestJSON(outcome.Evidence)), nullable(string(outcome.ErrorClass)), nullable(outcome.ErrorSummary), outcome.NowMS, completed, claim.ID, claim.LeaseOwner, claim.LeaseExpiresAtMS)
 	if err != nil {
 		return err
 	}

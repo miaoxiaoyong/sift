@@ -81,6 +81,25 @@ func TestRecoverKeepsLiveStartingOwner(t *testing.T) {
 	}
 }
 
+func TestRecoverStartupClassifiesAttemptBeforeBootBarrier(t *testing.T) {
+	db, _, attempt, now := seedRecoveryCoordinator(t, "starting", 0)
+	boot, err := db.StartDaemonBoot(context.Background(), "hash-cfg", "test", 1, 123, now.UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := &TerminationCoordinator{DB: db, Terminator: runtimepkg.Terminator{Inspector: recoveryInspector{observation: runtimepkg.ProcessObservation{Exists: true, ProcessIdentity: runtimepkg.ProcessIdentity{PID: attempt.WrapperPID, StartedAtMS: attempt.WrapperStartedAtMS, Executable: attempt.WrapperExecutable, PGID: attempt.WrapperPGID, ControlNonceHash: attempt.ControlNonceHash}}}}, Runtime: config.Runtime{HeartbeatStaleAfter: time.Second}, AttentionDailyQuota: recoveryQuota(), Now: func() time.Time { return now }}
+	if err := coordinator.RecoverStartup(context.Background(), boot); err != nil {
+		t.Fatal(err)
+	}
+	attempts, operations, err := db.StartupRecoveryPending(context.Background(), boot)
+	if err != nil || len(attempts) != 0 || len(operations) != 0 {
+		t.Fatalf("pending recovery candidates = %#v %#v, %v", attempts, operations, err)
+	}
+	if err := db.CompleteStartupRecovery(context.Background(), boot, now.UnixMilli()+1); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRecoverRoutesStaleHeartbeatThroughTermination(t *testing.T) {
 	db, raw, attempt, now := seedRecoveryCoordinator(t, "running", nowMillis(time.UnixMilli(10_000).Add(-2*time.Second)))
 	signaler := &recoverySignaler{}

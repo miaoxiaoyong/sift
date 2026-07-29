@@ -28,6 +28,16 @@ func TestLaunchClaimWaitsForCurrentBootRecoveryBarrier(t *testing.T) {
 	if claim, err := db.ClaimLaunchOperation(ctx, boot, "launch", testNow, 10); err != nil || claim != nil {
 		t.Fatalf("claim before recovery = %#v, %v", claim, err)
 	}
+	if err := db.CompleteStartupRecovery(ctx, boot, testNow+1); err != ErrRejectedStale {
+		t.Fatalf("completion with an unclassified launch = %v, want stale", err)
+	}
+	_, pending, err := db.StartupRecoveryPending(ctx, boot)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending launch recovery = %#v, %v", pending, err)
+	}
+	if err := db.ApplyStartupRecoveryAction(ctx, StartupRecoveryAction{BootID: boot, OperationID: pending[0].ID, ExpectedOperationVersion: pending[0].Version, ObservationDigest: "test-observation", Action: "launch_operation_held", NowMS: testNow + 1}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.CompleteStartupRecovery(ctx, boot, testNow+1); err != nil {
 		t.Fatal(err)
 	}

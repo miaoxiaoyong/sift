@@ -45,9 +45,22 @@ func (d *DB) CompleteStartupRecovery(ctx context.Context, bootID string, nowMS i
 	if bootID == "" || nowMS <= 0 {
 		return errors.New("storage: invalid startup recovery completion")
 	}
+	// The final query is part of the barrier write, not a best-effort check in
+	// the coordinator. A crash or a newly visible candidate cannot open the
+	// launch gate until it has a boot-scoped classification receipt.
 	result, err := d.db.ExecContext(ctx, `UPDATE daemon_boots
 		SET recovery_completed_at_ms=?
-		WHERE id=? AND recovery_completed_at_ms IS NULL`, nowMS, bootID)
+		WHERE id=? AND recovery_completed_at_ms IS NULL
+		AND NOT EXISTS (
+			SELECT 1 FROM attempts a WHERE a.phase NOT IN ('finished','orphaned')
+			AND NOT EXISTS (SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=?
+				AND s.candidate_key='attempt:' || a.run_id || ':' || a.attempt_no || ':' || a.generation)
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM outbox_operations o WHERE o.kind='launch_agent' AND o.state NOT IN ('succeeded','failed','stale','conflict')
+			AND NOT EXISTS (SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=?
+				AND s.candidate_key='operation:' || o.id || ':' || o.version)
+		)`, nowMS, bootID, bootID, bootID)
 	if err != nil {
 		return err
 	}

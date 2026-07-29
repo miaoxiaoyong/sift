@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -37,32 +39,88 @@ func (c *TerminationCoordinator) Recover(ctx context.Context) error {
 		return err
 	}
 	for _, attempt := range attempts {
-		// pending attempts have no execution body. They are intentionally left
-		// for the launch recovery path; only possible owners enter termination.
-		if attempt.Phase == "pending" {
-			continue
-		}
-		if disposition, err := c.resolveLateFact(ctx, attempt); err != nil {
-			return err
-		} else if disposition == storage.AttemptRaceSupersededByFact || disposition == storage.AttemptRaceDuplicate {
-			continue
-		}
-		// A matching owner is still the single owner. Recovery must resume its
-		// handoff/supervision rather than kill it merely because siftd restarted.
-		// Running attempts additionally require a fresh heartbeat; a stale one
-		// enters the same controlled-termination path as supervisor timeout.
-		live, err := c.ownerIsLive(ctx, attempt)
-		if err != nil {
-			return err
-		}
-		if live && (attempt.Phase == "starting" || attempt.Phase == "spawning" || (attempt.Phase == "running" && !c.heartbeatStale(attempt))) {
-			continue
-		}
-		if err := c.terminate(ctx, attempt, storage.TerminationRecovery, attempt.RunVersion); err != nil {
+		if _, err := c.recoverAttempt(ctx, attempt); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// RecoverStartup is the boot-barrier coordinator. It repeatedly reads the
+// attempt/launch-operation union and persists one CAS-protected classification
+// for every candidate before the caller may open the launch gate.
+func (c *TerminationCoordinator) RecoverStartup(ctx context.Context, bootID string) error {
+	for {
+		attempts, operations, err := c.DB.StartupRecoveryPending(ctx, bootID)
+		if err != nil {
+			return err
+		}
+		if len(attempts) == 0 && len(operations) == 0 {
+			return nil
+		}
+		for _, attempt := range attempts {
+			observation, err := c.recoverAttempt(ctx, attempt)
+			if err != nil {
+				return err
+			}
+			err = c.DB.ApplyStartupRecoveryAction(ctx, storage.StartupRecoveryAction{BootID: bootID, RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedGeneration: attempt.Generation, ObservationDigest: recoveryDigest(attempt, observation), Action: "attempt_" + attempt.Phase, NowMS: c.nowMS()})
+			if err != nil && err != storage.ErrRejectedStale {
+				return err
+			}
+		}
+		for _, operation := range operations {
+			digest := recoveryOperationDigest(operation)
+			err := c.DB.ApplyStartupRecoveryAction(ctx, storage.StartupRecoveryAction{BootID: bootID, OperationID: operation.ID, ExpectedOperationVersion: operation.Version, ObservationDigest: digest, Action: "launch_operation_held", NowMS: c.nowMS()})
+			if err != nil && err != storage.ErrRejectedStale {
+				return err
+			}
+		}
+	}
+}
+
+func (c *TerminationCoordinator) recoverAttempt(ctx context.Context, attempt storage.RecoveryAttempt) (string, error) {
+	if attempt.Phase == "pending" {
+		return "no_execution_body", nil
+	}
+	if disposition, err := c.resolveLateFact(ctx, attempt); err != nil {
+		return "", err
+	} else if disposition == storage.AttemptRaceSupersededByFact || disposition == storage.AttemptRaceDuplicate {
+		return "late_fact", nil
+	}
+	live, err := c.ownerIsLive(ctx, attempt)
+	if err != nil {
+		return "", err
+	}
+	if live && (attempt.Phase == "starting" || attempt.Phase == "spawning" || (attempt.Phase == "running" && !c.heartbeatStale(attempt))) {
+		return "owner_live", nil
+	}
+	if err := c.terminate(ctx, attempt, storage.TerminationRecovery, attempt.RunVersion); err != nil {
+		return "", err
+	}
+	return "owner_not_live", nil
+}
+
+func (c *TerminationCoordinator) nowMS() int64 {
+	now := time.Now
+	if c.Now != nil {
+		now = c.Now
+	}
+	return now().UnixMilli()
+}
+
+func recoveryDigest(a storage.RecoveryAttempt, observation string) string {
+	b, _ := json.Marshal(struct {
+		Attempt     storage.RecoveryAttempt `json:"attempt"`
+		Observation string                  `json:"observation"`
+	}{a, observation})
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:])
+}
+
+func recoveryOperationDigest(o storage.RecoveryLaunchOperation) string {
+	b, _ := json.Marshal(o)
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:])
 }
 
 // Timeout scans persisted heartbeat facts; it never infers an orphan from a

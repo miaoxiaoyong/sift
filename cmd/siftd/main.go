@@ -55,7 +55,7 @@ func main() {
 	// Recovery runs before Assemble starts any worker. Incomplete process
 	// evidence deliberately fails closed and becomes a visible startup_stall
 	// instead of allowing a launch lease to be reclaimed.
-	if err := termination.Recover(ctx); err != nil {
+	if err := termination.RecoverStartup(ctx, bootID); err != nil {
 		fatal(err)
 	}
 	if err := db.CompleteStartupRecovery(ctx, bootID, time.Now().UnixMilli()); err != nil {
