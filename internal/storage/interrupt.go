@@ -76,7 +76,10 @@ type EmitInterruptCmd struct {
 	AttentionDailyQuota             map[InterruptSeverity]int
 	DayTimezone                     string
 	Source                          EventSource
-	NowMS                           int64
+	// CalibrationID is set only by RecordGateEvaluationAndEmitInterrupt. It
+	// binds a Gate HITL to the shadow prediction frozen in this transaction.
+	CalibrationID string
+	NowMS         int64
 }
 
 type Interrupt struct {
@@ -148,6 +151,16 @@ func BaseSeverity(reason InterruptReason, phase GatePhase, guard GuardrailLevel,
 // EmitInterrupt is the sole creation port. Its transaction contains the Run
 // transition, budget charge, Interrupt, audit event and forge-comment outbox.
 func (d *DB) EmitInterrupt(ctx context.Context, cmd EmitInterruptCmd) (Interrupt, error) {
+	if cmd.CalibrationID != "" {
+		return Interrupt{}, fmt.Errorf("%w: calibration binding requires gate recorder", ErrInterruptRejected)
+	}
+	return d.emitInterrupt(ctx, cmd, nil)
+}
+
+// emitInterrupt keeps the M3 emission sequence in one transaction while
+// allowing the Gate recorder to append its frozen evidence before the
+// Interrupt is inserted. The callback must not perform external IO.
+func (d *DB) emitInterrupt(ctx context.Context, cmd EmitInterruptCmd, before func(*sql.Tx) error) (Interrupt, error) {
 	t, ok := interruptTemplates[cmd.Reason]
 	if !ok {
 		return Interrupt{}, fmt.Errorf("%w: unknown reason", ErrInterruptRejected)
@@ -184,6 +197,11 @@ func (d *DB) EmitInterrupt(ctx context.Context, cmd EmitInterruptCmd) (Interrupt
 		return Interrupt{}, err
 	}
 	defer tx.Rollback()
+	if before != nil {
+		if err := before(tx); err != nil {
+			return Interrupt{}, err
+		}
+	}
 	if existing, found, err := interruptByKeyTx(ctx, tx, key); err != nil {
 		return Interrupt{}, err
 	} else if found {
@@ -260,7 +278,7 @@ func (d *DB) EmitInterrupt(ctx context.Context, cmd EmitInterruptCmd) (Interrupt
 	in := Interrupt{ID: newID(), RunID: cmd.RunID, AttemptNo: cmd.AttemptNo, GenerationKey: key, Reason: cmd.Reason, Severity: severity, Headline: t.headline, Brief: brief, Options: t.options, MinModality: t.modality, Links: links, ExpiresAtMS: cmd.NowMS + cmd.ExpiresAfterMS, OnExpire: cmd.OnExpire, ChargedBudgetEntryID: entryID}
 	optionsJSON, _ := json.Marshal(in.Options)
 	linksJSON, _ := json.Marshal(in.Links)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO interrupts (id,run_id,attempt_no,generation_key,reason,severity,headline,brief_markdown,options_json,min_modality,links_json,nonce,version,status,dispatch_state,expires_at_ms,on_expire,escalation_count,max_escalations,charged_budget_entry_id,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,? ,1,'open','ready',?,?,?,?,?,?,?)`, in.ID, in.RunID, in.AttemptNo, in.GenerationKey, in.Reason, in.Severity, in.Headline, in.Brief, string(optionsJSON), in.MinModality, string(linksJSON), newID(), in.ExpiresAtMS, in.OnExpire, cmd.EscalationCount, cmd.MaxEscalations, in.ChargedBudgetEntryID, cmd.NowMS, cmd.NowMS); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO interrupts (id,run_id,attempt_no,generation_key,reason,severity,headline,brief_markdown,options_json,min_modality,links_json,nonce,version,status,dispatch_state,expires_at_ms,on_expire,escalation_count,max_escalations,charged_budget_entry_id,calibration_id,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,? ,1,'open','ready',?,?,?,?,?,?,?,?)`, in.ID, in.RunID, in.AttemptNo, in.GenerationKey, in.Reason, in.Severity, in.Headline, in.Brief, string(optionsJSON), in.MinModality, string(linksJSON), newID(), in.ExpiresAtMS, in.OnExpire, cmd.EscalationCount, cmd.MaxEscalations, in.ChargedBudgetEntryID, nullable(cmd.CalibrationID), cmd.NowMS, cmd.NowMS); err != nil {
 		// Two recovery/termination callers can discover the same stall at
 		// once. SQLite serializes the writers, so the loser may observe the
 		// unique generation-key constraint only after the winner commits.

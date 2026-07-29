@@ -393,11 +393,11 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - [x] 编写 `specs/gate.md`；`gate(changeFacts, effectivePolicy, riskScore)` 保持纯函数
 - [x] `gate_input_hash` 摘要整份规范化快照；缓存键仅 `(gate_input_hash, gate_version)`（`internal/gate`：`CanonicalInput`/`Cache.EvaluateCached`；持久化 evaluation 仍随本节 Shadow 事务项闭合）
 - [x] 默认硬护栏、Checks、review policy、auto merge 顺序按 PRD §5.4（`internal/gate.Evaluate` + `TestEvaluateOrderingAndShadow`）
-- [ ] 软护栏豁免默认仅本 Run 本次命中；“记住”必须是独立显式选项，并形成可审计的仓库 policy 例外变更
-- [ ] 硬护栏永远不进入一次性/记住豁免路径；测试同时覆盖两类软豁免与硬护栏拒绝
-- [ ] Gate 每次调用强制写快照与影子预判，无配置开关；行为测试断言每次调用新增 calibration 行
-- [ ] 需要 HITL 时，预判与 M3 发射器的 Interrupt 五件事同事务
-- [ ] 仅消费 M3 的“可创建 Change”事实；创建操作使用 marker 并持久化远端 ID
+- [x] 软护栏豁免默认仅本 Run 本次命中；“记住”必须是独立显式选项，并形成可审计的仓库 policy 例外变更（`internal/gate.Exemption` / `EffectivePolicyV1.protected_paths.soft_exceptions`）
+- [x] 硬护栏永远不进入一次性/记住豁免路径；测试同时覆盖两类软豁免与硬护栏拒绝（`internal/gate.TestSoftExemptionIsBoundToPaths` / `TestEvaluateOrderingAndShadow`）
+- [x] Gate 每次调用强制写快照与影子预判，无配置开关；行为测试断言每次调用新增 calibration 行（`storage.RecordGateEvaluation` / `TestRecordGateEvaluationAlwaysAppendsCalibration`）
+- [x] 需要 HITL 时，预判与 M3 发射器的 Interrupt 五件事同事务（`storage.RecordGateEvaluationAndEmitInterrupt` / `TestGateHITLIsAtomicWithCalibration`）
+- [x] 仅消费 M3 的“可创建 Change”事实；创建操作使用 marker 并持久化远端 ID（`gate.EnqueueCreateChange` / `forgeworker.ChangeWorker`）
 
 #### 4.4 Ledger、人类结果接口与认证投影
 

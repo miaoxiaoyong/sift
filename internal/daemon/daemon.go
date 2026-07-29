@@ -26,6 +26,7 @@ type Daemon struct {
 	Evaluators  []*intake.T1Evaluator
 	Reconcilers []*intake.Reconciler
 	Comments    []*forgeworker.CommentWorker
+	Changes     []*forgeworker.ChangeWorker
 	Replies     []*intake.ReplyConsumer
 	Launch      *launchworker.Worker
 	Now         func() time.Time
@@ -86,6 +87,7 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 		d.Evaluators = append(d.Evaluators, evaluator)
 		d.Reconcilers = append(d.Reconcilers, &intake.Reconciler{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now})
 		d.Comments = append(d.Comments, &forgeworker.CommentWorker{DB: db, Client: adapter, ProjectID: p.ID, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:comment:" + p.ID})
+		d.Changes = append(d.Changes, &forgeworker.ChangeWorker{DB: db, Client: adapter, ProjectID: p.ID, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:change:" + p.ID})
 		d.Replies = append(d.Replies, &intake.ReplyConsumer{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now})
 	}
 	return d, nil
@@ -126,6 +128,11 @@ func (d *Daemon) Tick(ctx context.Context) error {
 	for i, w := range d.Comments {
 		if err := w.RunOnce(ctx); err != nil {
 			return fmt.Errorf("comment[%d]: %w", i, err)
+		}
+	}
+	for i, w := range d.Changes {
+		if err := w.RunOnce(ctx); err != nil {
+			return fmt.Errorf("change[%d]: %w", i, err)
 		}
 	}
 	if d.Launch != nil {
