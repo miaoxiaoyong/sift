@@ -391,8 +391,8 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 #### 4.3 Gate、Shadow Gate 与 Change 创建
 
 - [x] 编写 `specs/gate.md`；`gate(changeFacts, effectivePolicy, riskScore)` 保持纯函数
-- [ ] `gate_input_hash` 摘要整份规范化快照；缓存键仅 `(gate_input_hash, gate_version)`
-- [ ] 默认硬护栏、Checks、review policy、auto merge 顺序按 PRD §5.4
+- [x] `gate_input_hash` 摘要整份规范化快照；缓存键仅 `(gate_input_hash, gate_version)`（`internal/gate`：`CanonicalInput`/`Cache.EvaluateCached`；持久化 evaluation 仍随本节 Shadow 事务项闭合）
+- [x] 默认硬护栏、Checks、review policy、auto merge 顺序按 PRD §5.4（`internal/gate.Evaluate` + `TestEvaluateOrderingAndShadow`）
 - [ ] 软护栏豁免默认仅本 Run 本次命中；“记住”必须是独立显式选项，并形成可审计的仓库 policy 例外变更
 - [ ] 硬护栏永远不进入一次性/记住豁免路径；测试同时覆盖两类软豁免与硬护栏拒绝
 - [ ] Gate 每次调用强制写快照与影子预判，无配置开关；行为测试断言每次调用新增 calibration 行
