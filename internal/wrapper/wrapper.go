@@ -14,7 +14,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
@@ -22,6 +24,13 @@ import (
 )
 
 func Run(ctx context.Context, bootstrapPath string) error {
+	ctx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer stopSignals()
+	// The wrapper is the process-group leader even when invoked outside the
+	// production backend, so every Agent descendant has one supervision scope.
+	if err := syscall.Setpgid(0, 0); err != nil && err != syscall.EPERM {
+		return fmt.Errorf("wrapper: create process group: %w", err)
+	}
 	b, err := readBootstrap(bootstrapPath)
 	if err != nil {
 		return err
@@ -52,7 +61,9 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	}
 	permit := secret()
 	pp := map[string]any{"run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "wrapper_identity": wi, "control_digest": digest, "control_nonce_hash": hash(nonce), "permit_candidate": permit}
-	if _, err := call(b.RunDir, "claim.permit_spawn", map[string]any{"kind": "wrapper_session", "session": session}, pp); err != nil {
+	// A lost response is not a new permit request: replay the exact candidate
+	// and params with a new envelope request ID until the bounded deadline.
+	if _, err := callPermit(ctx, b.RunDir, map[string]any{"kind": "wrapper_session", "session": session}, pp); err != nil {
 		return err
 	}
 	// The gate is adjacent to the sole launcher invocation; no permit replay can
@@ -95,15 +106,29 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	if err != nil {
 		return err
 	}
+	cleanup := func() {
+		_ = syscall.Kill(-syscall.Getpgrp(), syscall.SIGTERM)
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			cleanup()
+		case <-done:
+		}
+	}()
 	ai := map[string]any{"pid": int64(cmd.Process.Pid), "started_at_ms": time.Now().UnixMilli(), "executable": b.Agent.Executable}
 	control["agent_identity"] = ai
 	control["updated_at_ms"] = time.Now().UnixMilli()
 	digest, err = writeJSON(filepath.Join(b.RunDir, "control.json"), control)
 	if err != nil {
+		cleanup()
 		return err
 	}
 	sp := map[string]any{"run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "agent_identity": ai, "control_digest": digest, "result_digest": nil}
 	if _, err = call(b.RunDir, "claim.started", map[string]any{"kind": "wrapper_started", "session": session, "permit": permit}, sp); err != nil {
+		cleanup()
 		return err
 	}
 	stopHeartbeat := make(chan struct{})
@@ -154,6 +179,36 @@ func secret() string {
 }
 func hash(s string) string      { return hashBytes([]byte(s)) }
 func hashBytes(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+type rpcError struct{ code string }
+
+func (e *rpcError) Error() string { return "wrapper: RPC rejected: " + e.code }
+
+func callPermit(ctx context.Context, runDir string, auth, params map[string]any) (map[string]any, error) {
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	for {
+		result, err := call(runDir, "claim.permit_spawn", auth, params)
+		if err == nil {
+			return result, nil
+		}
+		var rejected *rpcError
+		if errors.As(err, &rejected) {
+			return nil, err
+		}
+		backoff := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			backoff.Stop()
+			return nil, ctx.Err()
+		case <-deadline.C:
+			backoff.Stop()
+			return nil, err
+		case <-backoff.C:
+		}
+	}
+}
+
 func call(runDir, method string, auth, params map[string]any) (map[string]any, error) {
 	c, err := net.DialTimeout("unix", filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(runDir))), "run.sock"), 5*time.Second)
 	if err != nil {
@@ -185,7 +240,10 @@ func call(runDir, method string, auth, params map[string]any) (map[string]any, e
 		return nil, err
 	}
 	if !r.OK {
-		return nil, fmt.Errorf("wrapper: %s rejected: %s", method, r.Error.Code)
+		if r.Error == nil {
+			return nil, errors.New("wrapper: malformed RPC error")
+		}
+		return nil, &rpcError{code: r.Error.Code}
 	}
 	return r.Result, nil
 }

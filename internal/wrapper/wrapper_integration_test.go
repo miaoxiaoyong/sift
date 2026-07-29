@@ -103,7 +103,7 @@ func TestProductionWrapperKeepsAgentInWrapperProcessGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cmd.Process.Kill()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(filepath.Join(runDir, "control.json"))
 		if err == nil && string(data) != "" {

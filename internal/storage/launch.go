@@ -7,6 +7,53 @@ import (
 	"fmt"
 )
 
+// RevalidateLaunchLease fences every external launch-worker step. A lease that
+// expired or moved to another worker is never authority to write a bootstrap
+// file or start a wrapper.
+func (d *DB) RevalidateLaunchLease(ctx context.Context, claim ClaimedOperation, nowMS int64) error {
+	if claim.Kind != OperationLaunchAgent || claim.ID == "" || claim.LeaseOwner == "" || claim.LeaseExpiresAtMS <= 0 || nowMS <= 0 {
+		return ErrRejectedStaleWorker
+	}
+	var one int
+	err := d.db.QueryRowContext(ctx, `SELECT 1 FROM outbox_operations WHERE id=? AND kind='launch_agent' AND state='executing' AND lease_owner=? AND lease_expires_at_ms=? AND lease_expires_at_ms>=?`, claim.ID, claim.LeaseOwner, claim.LeaseExpiresAtMS, nowMS).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrRejectedStaleWorker
+	}
+	return err
+}
+
+// RecordBootstrapDigest binds the durable dispatch to the exact bootstrap
+// bytes written by its lease owner. Recovery must not infer a credential file
+// from hashes alone.
+func (d *DB) RecordBootstrapDigest(ctx context.Context, claim ClaimedOperation, dispatchID, digest string, nowMS int64) error {
+	if dispatchID == "" || len(digest) != 64 || !isLowerHex(digest) {
+		return ErrRejectedStaleWorker
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM outbox_operations WHERE id=? AND kind='launch_agent' AND state='executing' AND lease_owner=? AND lease_expires_at_ms=? AND lease_expires_at_ms>=?`, claim.ID, claim.LeaseOwner, claim.LeaseExpiresAtMS, nowMS).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrRejectedStaleWorker
+		}
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE attempt_claims SET bootstrap_digest=?,updated_at_ms=?
+		WHERE dispatch_id=? AND bootstrap_digest IS NULL
+		AND run_id=(SELECT run_id FROM outbox_operations WHERE id=?)
+		AND attempt_no=(SELECT attempt_no FROM outbox_operations WHERE id=?)`, digest, nowMS, dispatchID, claim.ID, claim.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrRejectedStaleWorker
+	}
+	return tx.Commit()
+}
+
 // LaunchDispatch is the durable, non-secret launch fact returned after the
 // worker has atomically prepared its capabilities.
 type LaunchDispatch struct {

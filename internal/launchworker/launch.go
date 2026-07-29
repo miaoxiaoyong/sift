@@ -4,6 +4,7 @@ package launchworker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -76,7 +77,18 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		return err
 	}
 	path := filepath.Join(runDir, "bootstrap.json")
+	// File creation and spawn are separate external effects; fence both.
+	if err := w.DB.RevalidateLaunchLease(ctx, *claim, now().UnixMilli()); err != nil {
+		return err
+	}
 	if err := runtime.WriteControlFile(path, b); err != nil {
+		return err
+	}
+	sum := sha256.Sum256(b)
+	if err := w.DB.RecordBootstrapDigest(ctx, *claim, dispatch.DispatchID, hex.EncodeToString(sum[:]), now().UnixMilli()); err != nil {
+		return err
+	}
+	if err := w.DB.RevalidateLaunchLease(ctx, *claim, now().UnixMilli()); err != nil {
 		return err
 	}
 	if _, err := w.Backend.Spawn(ctx, path); err != nil {
