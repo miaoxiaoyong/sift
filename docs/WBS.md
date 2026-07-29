@@ -509,7 +509,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 ### 先写/增补 spec
 
 - [ ] 完成 `specs/interrupt.md`
-- [ ] `specs/command.md`
+- [x] `specs/command.md`（draft；覆盖鉴权、语法、nonce/options、回执、Ledger/transition 与 startup_stall 两段式）
 - [ ] `specs/report.md`
 - [ ] 增补 `specs/brain.md`（T4/T6/T7）
 - [x] 增补 `specs/config.md`（配额、熔断、reason 上限去向、指标权重）

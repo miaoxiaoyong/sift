@@ -355,6 +355,7 @@ PRAGMA wal_autocheckpoint = 1000;
 | `min_modality` | TEXT | `voice \| text \| visual` |
 | `links_json` | TEXT | NOT NULL，默认 `[]` |
 | `nonce` | TEXT | NOT NULL |
+| `nonce_issued_at_ms` | INTEGER | NOT NULL；当前 nonce 成为有效值的时间 |
 | `version` | INTEGER | NOT NULL，初值 1；nonce/超时更新时 +1 |
 | `status` | TEXT | `open \| closed` |
 | `dispatch_state` | TEXT | `ready \| batched \| held \| probe_in_progress` |
@@ -374,7 +375,7 @@ PRAGMA wal_autocheckpoint = 1000;
 - `status=open` 时 close 字段为空；closed 时同为非空。
 - `startup_stall` 禁止 `on_expire=auto_reject`。
 - escalation 重推不新增 budget charge；关闭不退款。
-- 每次 escalation 轮换 nonce 并递增 version。
+- 初始 nonce 的 `nonce_issued_at_ms` 等于 `created_at_ms`；每次 nonce 轮换必须同一 CAS 更新 `nonce_issued_at_ms` 并递增 version。非 nonce 更新不得改写该时间。
 - `probe_in_progress` 时拒绝新指令，但合法迟到事实仍可经仲裁入口提交。
 
 `close_reason` 只说明该 Interrupt 为何不再待决，不替代 attempt resolution 或 RPC disposition：
