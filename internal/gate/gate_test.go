@@ -48,22 +48,38 @@ func TestEvaluateOrderingAndShadow(t *testing.T) {
 		t.Fatalf("merge: %#v %v", v, e)
 	}
 }
-func TestInputHashCoversChecksAndPathsIncompleteDoesNotHash(t *testing.T) {
-	in := input(t)
-	_, a, e := CanonicalInput(in)
-	if e != nil {
-		t.Fatal(e)
+func TestInputHashCoversMutableGateInputsAndPathsIncompleteDoesNotHash(t *testing.T) {
+	base := input(t)
+	_, hash, err := CanonicalInput(base)
+	if err != nil {
+		t.Fatal(err)
 	}
-	in.Checks.ExternalURL = "https://ci.example/other"
-	_, b, e := CanonicalInput(in)
-	if e != nil {
-		t.Fatal(e)
+	vectors := []struct {
+		name   string
+		mutate func(*Input)
+	}{
+		{"checks", func(in *Input) { in.Checks.ExternalURL = "https://ci.example/other" }},
+		{"review", func(in *Input) { in.Change.ReviewState = "not_approved" }},
+		{"mergeability", func(in *Input) { in.Change.Mergeability = "unknown" }},
+		{"risk value", func(in *Input) { in.Risk.RiskScore = 2 }},
+		{"risk source", func(in *Input) {
+			in.Risk.Source = Source{Kind: "fallback", Version: "T3/fallback/v1", Reason: "provider_disabled"}
+		}},
+		{"certification revision", func(in *Input) {
+			in.CertificationVersion = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		}},
 	}
-	if a == b {
-		t.Fatal("checks drift must miss cache")
+	for _, tc := range vectors {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base
+			tc.mutate(&in)
+			if _, got, err := CanonicalInput(in); err != nil || got == hash {
+				t.Fatalf("mutation hash=%q base=%q err=%v", got, hash, err)
+			}
+		})
 	}
-	in.Change.PathsComplete = false
-	if _, _, e := CanonicalInput(in); e == nil {
+	base.Change.PathsComplete = false
+	if _, _, err := CanonicalInput(base); err == nil {
 		t.Fatal("incomplete paths accepted")
 	}
 }

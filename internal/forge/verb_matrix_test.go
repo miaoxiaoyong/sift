@@ -55,7 +55,7 @@ func TestV3AllVerbsDualPlatformMatrix(t *testing.T) {
 			if proven, evidence := a.ProbeAutoMergeCapability(ctx, project); !proven {
 				t.Fatalf("ProbeAutoMergeCapability: %s", evidence)
 			}
-			if got, err := a.MergeChange(ctx, project, "7", "head-7", "merge"); err != nil || got.State != ChangeMerged {
+			if got, err := a.MergeChange(ctx, project, "7", "head-7", "merge"); err != nil || got.State != ChangeMerged || got.MergeSHA == "" {
 				t.Fatalf("MergeChange: %#v %v", got, err)
 			}
 		})
@@ -219,7 +219,7 @@ func matrixRunner(kind Kind) Runner {
 			return []byte(`[` + matrixChange(kind, "sift-op") + `]`), nil, nil
 		}
 		if strings.HasSuffix(path, "/merge") {
-			return []byte(`{"merged":true}`), nil, nil
+			return []byte(matrixChange(kind, "")), nil, nil
 		}
 		if strings.Contains(path, "/labels") {
 			return []byte(`{}`), nil, nil
@@ -247,7 +247,7 @@ func matrixIssue(kind Kind) string {
 
 func matrixChange(kind Kind, body string) string {
 	if kind == KindGitLab {
-		return `{"iid":7,"web_url":"https://forge/7","state":"merged","merged_at":"2026-01-01T00:00:00Z","diff_refs":{"head_sha":"head-7"},"title":"title","body":"` + body + `","labels":[{"name":"ready"}]}`
+		return `{"iid":7,"web_url":"https://forge/7","state":"merged","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"merge-commit-gitlab-7","diff_refs":{"head_sha":"head-7"},"title":"title","body":"` + body + `","labels":[{"name":"ready"}]}`
 	}
-	return `{"number":7,"html_url":"https://forge/7","state":"closed","merged_at":"2026-01-01T00:00:00Z","head":{"sha":"head-7"},"body":"` + body + `"}`
+	return `{"number":7,"html_url":"https://forge/7","state":"closed","merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"merge-commit-github-7","head":{"sha":"head-7"},"body":"` + body + `"}`
 }

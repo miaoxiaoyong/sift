@@ -44,6 +44,14 @@ func mergeState(t *testing.T, db *storage.DB, head string) storage.OperationStat
 // Gate(A) operation cannot merge B, and that B reaches the worker only after a
 // second production Gate reconciliation freezes B's facts and evaluation.
 func TestMergeWorkerRequiresProductionGateForReplacementHead(t *testing.T) {
+	testMergeWorkerProductionReplacementHead(t, false)
+}
+
+func TestMergeWorkerRecognizesAlreadyMergedReplacementHeadFromProductionGate(t *testing.T) {
+	testMergeWorkerProductionReplacementHead(t, true)
+}
+
+func testMergeWorkerProductionReplacementHead(t *testing.T, mergedB bool) {
 	ctx := context.Background()
 	db := openWorkerDB(t)
 	if err := db.SeedProjectForTest(ctx, "cfg1", "p1", cwNow); err != nil {
@@ -79,6 +87,11 @@ func TestMergeWorkerRequiresProductionGateForReplacementHead(t *testing.T) {
 	}
 	if err := r.ReconcileOnce(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if mergedB {
+		if _, err := f.InjectMerged(ref, "c1", time.UnixMilli(cwNow)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := w.RunOnce(ctx); err != nil {
 		t.Fatal(err)

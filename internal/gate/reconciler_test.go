@@ -87,15 +87,38 @@ func TestReconcilerAssemblyEvidence(t *testing.T) {
 			if !strings.Contains(exported.String(), `"record_type":"gate"`) {
 				t.Fatalf("missing frozen Gate snapshot: %s", exported.String())
 			}
-			if tc.wantT5 && !strings.Contains(exported.String(), `"touchpoint":"T5"`) {
-				t.Fatalf("missing T5 trace: %s", exported.String())
+			check, err := sql.Open("sqlite", db.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, err := check.QueryContext(ctx, `SELECT c.touchpoint,COUNT(l.gate_input_snapshot_id) FROM brain_calls c LEFT JOIN brain_gate_input_links l ON l.logical_call_id=c.id WHERE c.run_id='r' AND c.touchpoint IN ('T3','T5') GROUP BY c.id,c.touchpoint`)
+			if err != nil {
+				check.Close()
+				t.Fatal(err)
+			}
+			links := map[string]int{}
+			for rows.Next() {
+				var touchpoint string
+				var count int
+				if err := rows.Scan(&touchpoint, &count); err != nil {
+					rows.Close()
+					t.Fatal(err)
+				}
+				links[touchpoint] += count
+			}
+			if err := rows.Close(); err != nil {
+				check.Close()
+				t.Fatal(err)
+			}
+			if err := check.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if links["T3"] == 0 || (tc.wantT5 && links["T5"] == 0) {
+				t.Fatalf("actual Brain-to-Gate snapshot links=%v", links)
 			}
 			operation, err := db.ClaimOutboxOperationKindProject(ctx, "test", storage.OperationMergeChange, "p", now.UnixMilli(), int64(time.Minute/time.Millisecond))
 			if err != nil || (operation != nil) != tc.wantMerge {
 				t.Fatalf("merge operation = %#v, %v; want present=%v", operation, err, tc.wantMerge)
-			}
-			if !strings.Contains(exported.String(), `"gate_input_snapshot_ids":[`) {
-				t.Fatalf("Brain trace was not linked to Gate snapshot: %s", exported.String())
 			}
 			if _, err := replay.ReplayGateJSONL(bytes.NewReader(exported.Bytes())); err != nil {
 				t.Fatalf("Gate replay: %v", err)
@@ -180,6 +203,22 @@ func TestM4VerticalVerifiedSuccessToExternalMerge(t *testing.T) {
 	if err != nil || run.ChangeID == "" {
 		t.Fatalf("create worker run=%+v err=%v", run, err)
 	}
+	var createKey string
+	var createPayload []byte
+	if err := q.QueryRow(`SELECT operation_key,payload_json FROM outbox_operations WHERE run_id='r' AND kind='create_change'`).Scan(&createKey, &createPayload); err != nil {
+		t.Fatal(err)
+	}
+	marker := forge.OperationMarker(createKey, forge.PayloadDigest(createPayload))
+	if !strings.Contains(client.createdBody, marker) {
+		t.Fatalf("create body missing operation marker %q: %q", marker, client.createdBody)
+	}
+	if err := (&forgeworker.ChangeWorker{DB: db, Client: client, ProjectID: "p", WorkerID: "create-replay", Lease: time.Minute, Now: func() time.Time { return now }}).RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	run, err = db.Run(ctx, "r")
+	if err != nil || run.ChangeID == "" {
+		t.Fatalf("create replay run=%+v err=%v", run, err)
+	}
 
 	provider := &brain.FakeProvider{Responses: []brain.FakeResponse{{ResultText: `{"risk_score":1,"risk_points":["small"],"rationale":"bounded"}`}, {ResultText: `{"classification":"real_failure","rationale":"real failure"}`}}}
 	brainCfg := config.Brain{Executable: "fake", DailyTokenLimit: 100, MaxInputBytes: 1 << 20, MaxRawOutputBytes: 1 << 20}
@@ -253,10 +292,12 @@ func TestM4VerticalVerifiedSuccessToExternalMerge(t *testing.T) {
 
 type verticalForge struct {
 	*forge.Fake
-	head string
+	head        string
+	createdBody string
 }
 
 func (f *verticalForge) CreateChange(ctx context.Context, p forge.ProjectRef, branch, base, title, body string) (forge.Change, error) {
+	f.createdBody = body
 	if _, err := f.Fake.CreateChange(ctx, p, branch, base, title, body); err != nil {
 		return forge.Change{}, err
 	}
@@ -329,7 +370,11 @@ func TestReconcilerPolicyReadErrorMatrixIsolatesOnlyBadProject(t *testing.T) {
 			newReconciler := func(project, repo, base string) *gate.Reconciler {
 				return &gate.Reconciler{DB: db, Forge: &phaseForge{path: "cmd/a.go", checks: "success"}, Brain: brain.NewShell(db, config.Brain{Executable: "fake", DailyTokenLimit: 100, MaxInputBytes: 1 << 20, MaxRawOutputBytes: 1 << 20}, &brain.FakeProvider{Responses: []brain.FakeResponse{{ResultText: `{"risk_score":1,"risk_points":["small"],"rationale":"bounded"}`}}}, func() time.Time { return now }), ProjectID: project, Project: forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo-" + project}, Repo: repo, Defaults: config.GateDefaults{ReviewPolicy: config.ReviewPolicyNever, RiskyReviewThreshold: 100, ChecksPendingTimeout: time.Hour, FlakyRetryLimit: 1}, Now: func() time.Time { return now }}
 			}
-			if err := newReconciler("bad", badRepo, badBase).ReconcileOnce(ctx); err != nil {
+			badReconciler := newReconciler("bad", badRepo, badBase)
+			if err := badReconciler.ReconcileOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := badReconciler.ReconcileOnce(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if err := newReconciler("good", initPolicyRepo(t), "main").ReconcileOnce(ctx); err != nil {
@@ -344,7 +389,7 @@ func TestReconcilerPolicyReadErrorMatrixIsolatesOnlyBadProject(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer check.Close()
-			var badGates, badMerges, goodGates int
+			var badGates, badMerges, goodGates, isolations, alerts int
 			if err := check.QueryRow(`SELECT COUNT(*) FROM gate_evaluations WHERE run_id='run-bad'`).Scan(&badGates); err != nil {
 				t.Fatal(err)
 			}
@@ -354,11 +399,17 @@ func TestReconcilerPolicyReadErrorMatrixIsolatesOnlyBadProject(t *testing.T) {
 			if err := check.QueryRow(`SELECT COUNT(*) FROM gate_evaluations WHERE run_id='run-good'`).Scan(&goodGates); err != nil {
 				t.Fatal(err)
 			}
-			if tc.wantIsolated && (badGates != 0 || badMerges != 0) {
-				t.Fatalf("isolated project wrote gates=%d merges=%d", badGates, badMerges)
+			if err := check.QueryRow(`SELECT COUNT(*) FROM events WHERE project_id='bad' AND type='project.isolated'`).Scan(&isolations); err != nil {
+				t.Fatal(err)
 			}
-			if !tc.wantIsolated && badGates != 1 {
-				t.Fatalf("missing policy must use defaults, gates=%d", badGates)
+			if err := check.QueryRow(`SELECT COUNT(*) FROM outbox_operations WHERE kind='forge_alert' AND operation_key=?`, storage.AlertOperationKey("project_isolated", "project:bad", 1)).Scan(&alerts); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantIsolated && (badGates != 0 || badMerges != 0 || isolations != 1 || alerts != 1) {
+				t.Fatalf("isolated project gates=%d merges=%d events=%d alerts=%d", badGates, badMerges, isolations, alerts)
+			}
+			if !tc.wantIsolated && (badGates != 2 || isolations != 0 || alerts != 0) {
+				t.Fatalf("missing policy defaults: gates=%d events=%d alerts=%d", badGates, isolations, alerts)
 			}
 			if goodGates != 1 {
 				t.Fatalf("healthy project was not reconciled, gates=%d", goodGates)

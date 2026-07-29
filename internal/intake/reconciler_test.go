@@ -127,11 +127,77 @@ func TestReconcilerOnceExternalMergeCompletesWaitingHuman(t *testing.T) {
 }
 
 func intakeGateRecord(runID string) storage.GateEvaluationRecord {
-	return storage.GateEvaluationRecord{RunID: runID, GateInputHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", GateVersion: "gate/v1", SnapshotSchemaVersion: 1, SnapshotJSON: []byte(`{"schema_version":1}`), VerdictJSON: []byte(`{"schema_version":1,"kind":"hitl"}`), HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", EffectivePolicyHash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", CertificationVersion: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", RiskSourceVersion: "T3/fallback/v1", VerdictDigest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", ShadowDecision: "block", FeaturesJSON: []byte(`{"schema_version":1}`), NowMS: reconcilerNow}
+	return intakeGateRecordWithShadow(runID, "block")
+}
+
+func intakeGateRecordWithShadow(runID, shadow string) storage.GateEvaluationRecord {
+	return storage.GateEvaluationRecord{RunID: runID, GateInputHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", GateVersion: "gate/v1", SnapshotSchemaVersion: 1, SnapshotJSON: []byte(`{"schema_version":1}`), VerdictJSON: []byte(`{"schema_version":1,"kind":"hitl"}`), HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", EffectivePolicyHash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", CertificationVersion: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", RiskSourceVersion: "T3/fallback/v1", VerdictDigest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", ShadowDecision: shadow, FeaturesJSON: []byte(`{"schema_version":1}`), NowMS: reconcilerNow}
 }
 
 func intakeGateInterrupt(runID string) storage.EmitInterruptCmd {
 	return storage.EmitInterruptCmd{RunID: runID, ExpectedRunVersion: 2, Reason: storage.InterruptCodeReview, Facts: map[string]string{"change_ref": "https://example.test/c1", "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "review_requirement": "required", "recommended_action": "approve", "diff_ref": "https://example.test/c1/diff"}, Generation: storage.InterruptGeneration{ChangeID: "c1", HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, GatePhase: storage.GateReview, GuardrailLevel: storage.GuardrailNone, AttentionDailyQuota: map[storage.InterruptSeverity]int{storage.SeverityLow: 3, storage.SeverityNormal: 3, storage.SeverityHigh: 3}, DayTimezone: "UTC", Source: storage.SourceSystem, NowMS: reconcilerNow}
+}
+
+func TestReconcilerExternalInconclusiveMergeConvergesWithoutSettlement(t *testing.T) {
+	db, project := reconcilerDB(t, "inconclusive")
+	fc := forge.NewFake()
+	addIssue(fc, project.Ref, "1", forge.IssueOpen)
+	change := fc.AddChange(project.Ref, "c1", "head1")
+	change.URL = "https://example.test/c1"
+	if _, err := fc.InjectMerged(project.Ref, "c1", time.UnixMilli(reconcilerNow)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedForgeRunForTest(context.Background(), "run-inconclusive", project.ID, "cfg-"+project.ID, "1", reconcilerNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordCreatedChange(context.Background(), "run-inconclusive", "c1", reconcilerNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.RecordGateEvaluationAndEmitInterrupt(context.Background(), intakeGateRecordWithShadow("run-inconclusive", "inconclusive"), intakeGateInterrupt("run-inconclusive")); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, db, fc, project)
+	run, err := db.Run(context.Background(), "run-inconclusive")
+	if err != nil || run.Status != storage.RunDone || !run.GateBypassed {
+		t.Fatalf("inconclusive external merge run=%+v err=%v, want done + bypassed", run, err)
+	}
+	check, err := sql.Open("sqlite", db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	var facts, decisions, bindings, certified int
+	var decision sql.NullString
+	if err := check.QueryRow(`SELECT COUNT(*) FROM events WHERE type='forge_change_merged' AND run_id='run-inconclusive'`).Scan(&facts); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM ledger_entries WHERE run_id='run-inconclusive' AND entry_kind='human_decision'`).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM external_decision_bindings`).Scan(&bindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT human_decision FROM calibration_entries WHERE run_id='run-inconclusive'`).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM certification_current`).Scan(&certified); err != nil {
+		t.Fatal(err)
+	}
+	if facts != 1 || decisions != 1 || bindings != 1 || decision.Valid || certified != 0 {
+		t.Fatalf("inconclusive audit facts=%d decisions=%d bindings=%d human=%q valid=%v certifications=%d", facts, decisions, bindings, decision.String, decision.Valid, certified)
+	}
+	reconcile(t, db, fc, project)
+	var factsAfter, decisionsAfter int
+	if err := check.QueryRow(`SELECT COUNT(*) FROM events WHERE type='forge_change_merged' AND run_id='run-inconclusive'`).Scan(&factsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM ledger_entries WHERE run_id='run-inconclusive' AND entry_kind='human_decision'`).Scan(&decisionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if factsAfter != facts || decisionsAfter != decisions {
+		t.Fatalf("inconclusive recovery appended facts=%d decisions=%d", factsAfter, decisionsAfter)
+	}
 }
 
 func TestReconcilerClassifiesSucceededGateMergeWithoutBypass(t *testing.T) {

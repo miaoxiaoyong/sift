@@ -36,7 +36,9 @@ type HumanDecisionResult struct{ LedgerEntryID, CalibrationID, CertificationVers
 
 // AppendExternalMergeFact atomically records a Forge merge fact with the exact
 // immutable Gate identity already bound to the waiting-human Interrupt. This
-// port never derives it from a Run, head, time, or candidate set.
+// port never derives it from a Run, head, time, or candidate set. Both binary
+// and inconclusive predictions are valid audit bindings; only binary ones can
+// subsequently settle a calibration.
 func (d *DB) AppendExternalMergeFact(ctx context.Context, cmd EventCmd, headSHA, gateEvaluationID, calibrationID string) (string, error) {
 	if cmd.Type != "forge_change_merged" || cmd.RunID == "" || cmd.ProjectID == "" || headSHA == "" || gateEvaluationID == "" || calibrationID == "" || !validSource(cmd.Source) || !json.Valid(cmd.PayloadJSON) || cmd.OccurredAtMS <= 0 || cmd.RecordedAtMS < cmd.OccurredAtMS {
 		return "", errors.New("storage: invalid external merge fact")
@@ -61,11 +63,11 @@ func (d *DB) AppendExternalMergeFact(ctx context.Context, cmd EventCmd, headSHA,
 		return "", err
 	}
 	var valid bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM calibration_entries WHERE id=? AND gate_evaluation_id=? AND run_id=? AND predicted_decision IN ('allow','block'))`, calibrationID, gateEvaluationID, cmd.RunID).Scan(&valid); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM calibration_entries WHERE id=? AND gate_evaluation_id=? AND run_id=? AND predicted_decision IN ('allow','block','inconclusive'))`, calibrationID, gateEvaluationID, cmd.RunID).Scan(&valid); err != nil {
 		return "", err
 	}
 	if !valid {
-		return "", errors.New("storage: external merge binding is not an exact binary Gate calibration for this run")
+		return "", errors.New("storage: external merge binding is not an exact Gate calibration for this run")
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO external_decision_bindings (forge_fact_event_id,calibration_id,created_at_ms) VALUES (?,?,?)`, id, calibrationID, cmd.RecordedAtMS); err != nil {
 		return "", err
