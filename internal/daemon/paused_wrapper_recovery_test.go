@@ -48,7 +48,7 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 			if err := db.SeedLaunchRunForTest(ctx, "run-1", "project", "cfg", now.UnixMilli(), t.TempDir()); err != nil {
 				t.Fatal(err)
 			}
-			boot, err := db.StartDaemonBoot(ctx, "cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), now.UnixMilli())
+			boot, err := db.StartDaemonBoot(ctx, "hash-cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), now.UnixMilli())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -91,7 +91,7 @@ func TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner(t *testing.T) {
 			}
 
 			restartedAt := now.Add(time.Second)
-			restarted, err := db.StartDaemonBoot(ctx, "cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), restartedAt.UnixMilli())
+			restarted, err := db.StartDaemonBoot(ctx, "hash-cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), restartedAt.UnixMilli())
 			if err != nil {
 				t.Fatal(err)
 			}
