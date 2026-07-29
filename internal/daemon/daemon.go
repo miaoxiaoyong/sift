@@ -16,6 +16,7 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/forgebudget"
 	"github.com/miaoxiaoyong/sift/internal/forgeworker"
 	"github.com/miaoxiaoyong/sift/internal/intake"
+	"github.com/miaoxiaoyong/sift/internal/launchworker"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -26,6 +27,7 @@ type Daemon struct {
 	Reconcilers []*intake.Reconciler
 	Comments    []*forgeworker.CommentWorker
 	Replies     []*intake.ReplyConsumer
+	Launch      *launchworker.Worker
 	Now         func() time.Time
 	mu          sync.Mutex
 }
@@ -89,6 +91,10 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 	return d, nil
 }
 
+// SetLaunchWorker installs the sole launch_agent consumer after startup
+// recovery has produced this daemon's boot ID.
+func (d *Daemon) SetLaunchWorker(w *launchworker.Worker) { d.Launch = w }
+
 func operators(o config.Operators, k forge.Kind) []string {
 	if k == forge.KindGitLab {
 		return append([]string(nil), o.GitLab...)
@@ -120,6 +126,11 @@ func (d *Daemon) Tick(ctx context.Context) error {
 	for i, w := range d.Comments {
 		if err := w.RunOnce(ctx); err != nil {
 			return fmt.Errorf("comment[%d]: %w", i, err)
+		}
+	}
+	if d.Launch != nil {
+		if err := d.Launch.RunOnce(ctx); err != nil {
+			return fmt.Errorf("launch_agent: %w", err)
 		}
 	}
 	return nil

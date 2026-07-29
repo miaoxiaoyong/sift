@@ -12,6 +12,7 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
 	"github.com/miaoxiaoyong/sift/internal/daemon"
+	"github.com/miaoxiaoyong/sift/internal/launchworker"
 	"github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 	"path/filepath"
@@ -64,6 +65,15 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	daemonPath, err := os.Executable()
+	if err != nil {
+		fatal(err)
+	}
+	backend, err := runtime.NewProcessBackend(daemonPath, controlplane.Version)
+	if err != nil {
+		fatal(err)
+	}
+	workers.SetLaunchWorker(&launchworker.Worker{DB: db, BootID: bootID, WorkerID: "siftd:launch_agent", Root: home.Path, Lease: snapshot.Config.Runtime.SpawnOperationLeaseTTL, Now: time.Now, Backend: launchworker.ProcessBackend{Backend: backend}, Agents: snapshot.Config.Agents})
 	s, err := controlplane.Start(home, db)
 	if err != nil {
 		fatal(err)

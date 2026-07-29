@@ -1,13 +1,13 @@
 // Command sift-agent-wrapper is the per-attempt agent wrapper.
-//
-// This is a WBS M1 bootstrap stub; see docs/plans/2026-07-29-s1-m1-bootstrap-decode.md.
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/miaoxiaoyong/sift/internal/wrapper"
 )
 
 func main() {
@@ -15,5 +15,12 @@ func main() {
 		fmt.Println(controlplane.Version)
 		return
 	}
-	fmt.Fprintln(os.Stderr, "sift-agent-wrapper: wrapper stub — not implemented (WBS M1 bootstrap)")
+	if len(os.Args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: sift-agent-wrapper <bootstrap.json>")
+		os.Exit(2)
+	}
+	if err := wrapper.Run(context.Background(), os.Args[1]); err != nil {
+		fmt.Fprintln(os.Stderr, "sift-agent-wrapper:", err)
+		os.Exit(1)
+	}
 }

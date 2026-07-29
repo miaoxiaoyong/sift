@@ -113,6 +113,16 @@ func (d *DB) AcquireLaunchClaim(ctx context.Context, c AcquireLaunchClaim) error
 	if err := appendHandoffEvent(ctx, tx, c.RunID, c.AttemptNo, "attempt.acquired", c.NowMS); err != nil {
 		return err
 	}
+	// acquire is the operation's single completion point. The worker only
+	// prepares/file-spawns; a wrapper that never acquires must remain visible to
+	// recovery instead of being incorrectly marked launched by the worker.
+	key := LaunchOperationKey(c.RunID, c.AttemptNo, c.Generation)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO outbox_attempt_results(attempt_id,finished_at_ms,outcome) SELECT oa.id,?,'success' FROM outbox_attempts oa JOIN outbox_operations o ON o.id=oa.operation_id WHERE o.operation_key=? AND o.kind='launch_agent' AND o.state='executing' AND oa.attempt_no=o.attempt_count`, c.NowMS, key); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE outbox_operations SET state='succeeded',lease_owner=NULL,lease_expires_at_ms=NULL,completed_at_ms=?,updated_at_ms=? WHERE operation_key=? AND kind='launch_agent' AND state='executing'`, c.NowMS, c.NowMS, key); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
