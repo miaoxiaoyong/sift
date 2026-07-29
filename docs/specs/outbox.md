@@ -62,7 +62,8 @@ Brain 字段级评审 [2026-07-28-brain-review-pi-gpt-5.6-sol.md](../reviews/202
 | `create_change` | `run:<run_id>:create-change:<head_sha>` |
 | `merge_change` | `run:<run_id>:merge:<expected_head_sha>` |
 | `rerun_checks` | `run:<run_id>:checks-rerun:<head_sha>:<check_run_id>:<retry_no>` |
-| `channel_publish` | `interrupt:<interrupt_id>:publish:<escalation_no>` |
+| `channel_publish`（单 Interrupt） | `interrupt:<interrupt_id>:publish:<escalation_no>` |
+| `channel_publish`（attention batch） | `attention-batch:<batch_id>:publish:1` |
 | `launch_agent` | `run:<run_id>:attempt:<attempt_no>:generation:<generation>:launch` |
 | `command_ack` | `command:<forge_event_id>:ack` |
 | `forge_alert` | `alert:<alert_kind>:<subject_id>:<generation>` |
@@ -235,20 +236,35 @@ Payload：
 
 ## 10. Channel publish
 
-Payload：
+`channel_publish` 的 `body.delivery_kind` 是 closed `interrupt | attention_batch` tagged union。单 Interrupt payload 为：
 
 ```json
 {
-  "interrupt_id":"...","escalation_no":0,"priority":"normal",
+  "delivery_kind":"interrupt","interrupt_id":"...","escalation_no":0,"priority":"normal",
   "rendered_text":"..."
 }
 ```
 
+attention batch payload 只能由 [`storage.md` §6.3](storage.md) 的 `PrepareAttentionBatch` 从 sealed member 快照生成，不能由 Channel worker 拼接或改写：
+
+```json
+{
+  "delivery_kind":"attention_batch","batch_id":"...","batch_kind":"daily_summary",
+  "scope":"day","scope_id":"Asia/Shanghai:2026-07-29","due_at_ms":0,
+  "members":[{
+    "interrupt_id":"...","interrupt_version":1,"nonce":"...","headline":"...",
+    "reason":"agent_blocked","severity":"high","links":[],"options":[],"command_lines":[]
+  }],"rendered_text":"..."
+}
+```
+
+`members` 按 `interrupt_id` UTF-8 bytes 排序，至少一项；每项只引用原 Interrupt 的 frozen headline/links/options/nonce/version，且 `command_lines` 是该 nonce 下逐 option 的完整 Command。摘要没有可执行的 batch action，也没有 summary reason：人必须以成员的 `interrupt_id + nonce + option` 回复，任何试图对 `batch_id` 执行 Command 都拒绝。payload 的 batch ID、kind/scope、due_at 和 members 必须与 sealed batch 完全一致；不匹配为 `contract_violation`。它携带由 operation key 生成的可见标识，响应丢失重放相同的 immutable payload。
+
 worker 由 operation key 生成并追加可见标识；payload 不接受调用方 marker。Channel 无查询证据，每个 executing attempt 都可能真实推送；语义明确为 at-least-once。成功响应只证明本次调用返回成功，不证明未重复。
 
-连续失败次数来自同 operation 的 attempt results。达到 config `channel_failure_alert_after` 时，complete 事务以稳定键创建一个 `forge_alert`，并更新 interrupt delivery/doctor 投影；继续重试原 Channel operation。alert 自身失败不递归创建 alert。
+连续失败次数来自同 operation 的 attempt results。达到 config `channel_failure_alert_after` 时，complete 事务以稳定键创建一个 `forge_alert`，并更新单 Interrupt 或 batch delivery/doctor 投影；继续重试原 Channel operation。alert 自身失败不递归创建 alert。
 
-escalation 使用新 operation key但复用原 attention charge；同 escalation 重试不新扣费。
+escalation 使用新 operation key但复用原 attention charge；同 escalation 重试不新扣费。batch member 的 `quota_batched` admission 没有虚构 charge；其 delivery/metric 身份使用 admission ID。
 
 ## 11. Launch Agent
 
@@ -307,7 +323,7 @@ M1 必须完整实现通用 claim/complete、退避、immutable attempts/results
 5. create Change 全状态 marker 搜索；同 base/head 非本 operation 对象必须 conflict。
 6. merge 的预读相等但远端 CAS mismatch 仍 stale；无 CAS capability 不自动 merge。
 7. labels 不删除非 Sift 标签；重复执行得到同集合。
-8. Channel 注入响应丢失可产生可辨认重复；达到失败阈值只创建一个 forge alert且不递归。
+8. 单 Interrupt 或 immutable attention batch 的 Channel 注入响应丢失可产生可辨认重复；达到失败阈值只创建一个 forge alert且不递归。并发入批只产生一个 stable batch operation，sealing 前关闭成员不在 payload 中，batch Command 不能批量执行。
 9. launch 在 prepare/bootstrap/spawn/acquire 每个边界崩溃均不签发两个 permit、不双起有效 Agent。
 10. 每次 Forge 证据查询和动作调用均唯一收费；预算不足时不发起调用。
 11. max_attempts、指数退避与 Retry-After 使用注入时间可确定测试。
@@ -322,7 +338,7 @@ M1 必须完整实现通用 claim/complete、退避、immutable attempts/results
 
 ## 16. 自查结果
 
-- [x] 九类 operation 均有稳定 key、closed payload 与明确投递语义；`rerun_checks` 明确为最多一次远端调用；intake 评论与 token 告警目的不伪造 run 关联、不突破注意力配额。
+- [x] 九类 operation 均有稳定 key、closed payload 与明确投递语义；`rerun_checks` 明确为最多一次远端调用；attention batch 以真实 batch/member 生成 immutable payload，intake 评论与 token 告警目的不伪造 run 关联、不突破注意力配额。
 - [x] effectively-once 声明均有 marker/set/CAS/handoff 证据；Channel 如实为 at-least-once。
 - [x] create Change 不接管同 base/head 的人工对象；merge 不以预读替代远端 CAS。
 - [x] launch payload 无 capability 明文，prepare/file/spawn/acquire 窗口有唯一恢复动作。

@@ -64,7 +64,7 @@ M4 实现的唯一生成源为 `internal/ledger/contract/ledger_v1.go`；它生�
 
 `SemanticMaterialV1` 除 envelope 外必有 closed `material_kind=reject_reason|ask_text`、非空 `command_event_id`、`interrupt_id: string|null` 和 `text`（1–16384 UTF-8 bytes）。它只能随 command 的 `reject` 或 `ask` 同事务写入；原文不摘要、不经 LLM 改写。
 
-`AttentionDeliveryV1` 除 envelope 外必有 `interrupt_id`、`delivery_id`、`reason`、`severity`、`delivered_at_ms`、`batched`、`batch_id`、`attention_charge_entry_id`、`quota_day`。reason 为 PRD 七种枚举，severity 为 `low|normal|high|critical`，时间非负整数，ID 非空；`quota_day` 是 `YYYY-MM-DD`。`batched=true` 时 `batch_id` 必填，反之为 null。只在 delivery 首次成功转为 `delivered` 后按 `delivery_id` 幂等追加；重推可另记 delivery，但复用同一 charge ID，不重复收费。
+`AttentionDeliveryV1` 除 envelope 外必有 `interrupt_id`、`delivery_id`、`reason`、`severity`、`delivered_at_ms`、`batched`、`batch_id`、`attention_admission_id`、`attention_charge_entry_id`、`quota_day`。reason 为 PRD 七种枚举，severity 为 `low|normal|high|critical`，时间非负整数，`interrupt_id`、`delivery_id` 与 `attention_admission_id` 非空；`quota_day` 是 `YYYY-MM-DD` 或 null（critical）。`attention_admission_id` 必须引用 [`storage.md` §6.3](storage.md) 的唯一 admission；`attention_charge_entry_id` 是实际 budget charge ID 或 null，且只可在 `quota_batched` member 时为 null，不能伪造零额 charge。`batched=true` 时 `batch_id` 必填，反之为 null。batch 成功时对每个 sealed member 各写一条，`delivery_id=<batch_id>:<interrupt_id>`；单条 delivery 使用其 delivery projection ID。只在首次成功转为 `delivered` 后按 `delivery_id` 幂等追加；重推可另记 delivery，但复用同一 admission/charge，不重复收费或计权。
 
 ## 3. Shadow decision、因果关系与唯一写入口
 

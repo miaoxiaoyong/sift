@@ -26,6 +26,8 @@ C1–C5 已全部处置，本规格转 `active`；后续字段变更须与代码
 
 Brain 字段级评审 [2026-07-28-brain-review-pi-gpt-5.6-sol.md](../reviews/2026-07-28-brain-review-pi-gpt-5.6-sol.md) 的交叉补丁：B5 新增 `brain.protocol`（V0 限定 `claude-json-v1`）；B3 新增 `brain.max_input_bytes` 输入总上限；B4 明确 `daily_token_limit` 的发起前阈值 + 事后越界语义。
 
+M5 配额字段的后续契约落点见 [2026-07-29-m5-config-field-review-pi-gpt-5.6-sol.md](../reviews/2026-07-29-m5-config-field-review-pi-gpt-5.6-sol.md)：CAS/回滚与 critical admission 在 [`storage.md` §6.3、§9](storage.md)，batch/member/operation 在 [`storage.md` §6.3–§6.4](storage.md) 与 [`outbox.md` §10](outbox.md)，逐成员 Ledger 身份在 [`ledger.md` §2.4](ledger.md)。此处只记录当前字段契约，不改变该存档评审的历史结论。
+
 ## 1. 适用范围与不变量
 
 1. 全局配置是 **closed contract**：未知字段、字段缺失导致的歧义、错误类型和未知枚举一律拒绝。
@@ -307,7 +309,7 @@ attention:
 
 | 字段 | 默认 | 约束 |
 |------|------|------|
-| `day_timezone` | `local` | `local` 或 IANA timezone |
+| `day_timezone` | `local` | `local` 或 IANA timezone；有效快照中一律为具体 IANA zone |
 | `daily_quota.low` | `3` | `0..1000` |
 | `daily_quota.normal` | `5` | `0..1000` |
 | `daily_quota.high` | `5` | `0..1000` |
@@ -319,9 +321,15 @@ attention:
 | `hold_max_duration` | `720h`（30 天） | `1m..8760h` |
 | `channel_failure_alert_after` | `3` | `1..100`；连续失败后改走 forge 告警评论 |
 
-`daily_quota` 是 closed map，只允许 `low`、`normal`、`high` 三个键；省略的键采用表中默认值，不得声明 `critical` 或其他 severity。每个非 critical Interrupt 在首次发射时以其确定性 severity 原子扣一格对应日配额；同 generation 重放、Channel 重试、升级重推和关闭均不得再扣或退款。日桶和 `daily_summary_at` 都按发射时冻结的 `day_timezone` 计算。额度为零或 CAS 失败时不得借支、不得以更高 severity 重试，也不得因 T4/T6、Channel、token/API 降级或任何 fallback 绕过；原 Interrupt 进入当日合批，最多在该日的 `daily_summary_at` 发一条摘要。
+`daily_quota` 是 closed map，只允许 `low`、`normal`、`high` 三个键；省略的键采用表中默认值，不得声明 `critical` 或其他 severity。每个非 critical Interrupt 在首次发射时以其确定性 severity 尝试原子扣一格对应日配额；同 generation 重放、Channel 重试、升级重推和关闭均不得再扣或退款。日桶和 `daily_summary_at` 都按发射时冻结的规范化 `day_timezone` 计算。扣费比较-and-set 的零行结果**不是**额度耗尽：必须以同一稳定 generation/admission key 重读权威 counter；若 `consumed + 1 <= limit`，在有界重试内重新 CAS，只有重读证明 `consumed + 1 > limit` 才可把原 Interrupt 入批。不可恢复的 SQLite/事务/存储错误整笔回滚，不得伪装成额度耗尽或合批。成功扣费与配额拒绝入批分别写不可变 admission；后者不产生借支或伪造 charge，见 [`storage.md` §6.3、§9.1](storage.md)。
 
-`critical_fuse` 使用真实滑动窗口，不得以自然日或固定桶近似。首次发射为 critical、或升级后首次成为 critical 的候选，都必须在同一 `EmitInterrupt` 事务中同时检查全局和 Run 两个计数；任一候选会使计数超过对应 limit 时，熔断该候选的单独 critical 递送，归入该窗口的唯一汇总 HITL。汇总不是对原 critical 的借支、升级重推或第二条逐项 critical 递送；源事实和熔断决定必须可审计。首次进入 critical 的计数、窗口边界和 append-only 证据以 [`storage.md` §9.3](storage.md) 为准。重放或同一 Interrupt 的重推不重复占用熔断名额。
+`critical_fuse` 使用真实滑动窗口，不得以自然日或固定桶近似。首次发射为 critical 由 `EmitInterrupt`、升级后首次成为 critical 由 `AdvanceInterrupt` 在各自的 Interrupt CAS 事务中执行同一全局和 per-Run 检查；二者都以每个 Interrupt 至多一条的 append-only critical admission evidence 计数，而不是以 attention charge 计数。任一候选会使计数超过对应 limit 时，熔断该候选的单独 critical 递送，归入该窗口的唯一汇总 HITL；同刻同时命中时全局 scope 优先于 per-Run scope，因此一个 Interrupt 只属于一个汇总。重放、重推和旧 tick 不重复写 admission，升级也不新增 attention charge。汇总不是对原 critical 的借支、升级重推或第二条逐项 critical 递送；源事实和熔断决定必须可审计。证据、窗口边界、episode 和 batch 身份以 [`storage.md` §6.3、§9.3](storage.md) 为准。
+
+#### 日历与摘要 batch
+
+启动规范化时，`day_timezone=local` 必须解析为当次启动环境可识别的具体 IANA zone；该解析后的 IANA 名称替换 `local` 进入有效 canonical JSON、`config_hash` 和持久化 config snapshot。不能取得稳定 IANA 名称时拒绝启动并要求显式 IANA zone；运行期不得再次读取机器 local zone。显式 IANA zone 同样在启动期加载并校验。
+
+对在 `t` 入批的对象，`due_at` 是其冻结 zone 中**严格晚于** `t` 的下一次 `daily_summary_at`；恰在该时刻入批也取次日，不立即补发。该 local wall-clock 时刻落入 DST gap 时取 gap 后第一个有效 instant；落入 DST fold 时取第一次出现（较早的 UTC instant）。batch 同时冻结 quota day、zone、`due_at` 和成员快照；因此午夜两侧、时刻之后入批及 DST 转换均可重放。daily batch 的稳定键和关闭成员、发送 payload 的规则见 [`storage.md` §6.3](storage.md) 与 [`outbox.md` §10](outbox.md)。
 
 #### `attention.reason_defaults`
 
@@ -419,7 +427,7 @@ metrics:
 | `failure_review` | `5` |
 | `startup_stall` | `5` |
 
-加权打扰分子对每个首次成功送达的 attention charge 恰取一次其 reason 的权重；同一 charge 的重试、升级重推和重复送达不得重复加权。非 critical 合批仍保留其源 Interrupt/charge 的 reason，以便按相同规则计入；未成功送达的 charge 不计入该北极星分子。权重取该 charge 所属 Run 创建时冻结的 `config_snapshot_id` 中的值；指标查询必须使用持久化快照，而不得以当前配置重算历史。配置变更后，新 Run 使用新值，既有 Run 与历史序列保持原值。
+加权打扰分子对每个首次成功送达的 attention admission 恰取一次其 reason 的权重；同一 admission 的重试、升级重推和重复送达不得重复加权。非 critical 合批保留源 Interrupt/admission 的 reason；配额拒绝的 batch member 没有伪造 budget charge，仍按其唯一 admission 与真实成功 batch delivery 计入。未成功送达的 admission 不计入该北极星分子。权重取该 admission 所属 Run 创建时冻结的 `config_snapshot_id` 中的值；指标查询必须使用持久化快照，而不得以当前配置重算历史。配置变更后，新 Run 使用新值，既有 Run 与历史序列保持原值。
 
 人的响应间隔只能作为 T6 调度特征；不得替代、校正或隐式乘入本权重。权重表仅定义北极星分子，不能改变注意力配额、critical 熔断、Gate 阈值或单条 HITL 决定。
 
@@ -514,9 +522,9 @@ Daemon 不可用时，doctor 输出必须标记 `offline: true`；只能读取�
 | 1.4 / V12 | 文件缺失健康 idle；最小配置所有可选值均有默认 |
 | 1.5 / V10 | 双 socket、权限、探测分级和 doctor 退出码可确定验证 |
 | H16 | 全局配置只启动期生效；漂移只告警 |
-| M5 §5.2–§5.3 / V8、V13 | 非 critical 不借支而合批；critical 用真实滑动全局/每 Run 双阈值熔断，首次进入 critical 和重推边界均可验证 |
+| M5 §5.2–§5.3 / V8、V13 | 非 critical CAS 竞争重读重试、权威超额才合批；critical 用真实滑动全局/每 Run 双阈值 admission 熔断，初发/升级首次进入、重推和 batch 边界均可验证 |
 | M5 §5.3 | 七个 reason 的 expiry/封顶去向冻结；`startup_stall` 的 `auto_reject` 在 schema 与运行时都被拒绝 |
-| M5 §5.7 | 七项权重 closed/default/range 可校验；同一 attention charge 只贡献一次、历史权重不被新配置改写 |
+| M5 §5.7 | 七项权重 closed/default/range 可校验；同一 attention admission 只贡献一次、历史权重不被新配置改写 |
 | DESIGN §14.2 | 开放数值及启动协议时限均有本文件中的确定性默认值 |
 
 ## 9. 自查结果
@@ -526,6 +534,6 @@ Daemon 不可用时，doctor 输出必须标记 `offline: true`；只能读取�
 - [x] C3：全局 Context、控制文件与单实例锁均有路径、权限和生命周期。
 - [x] C4：Report 子配额只统计 Report 直接致扰，并确定触顶动作及 critical 口径。
 - [x] C5：漂移周期/新文件、权限拒启、Agent/Brain 探测、hold 上限、持续项目探测与委派文档均明确。
-- [x] M5：非 critical 配额、critical 双阈值熔断、reason 封顶去向与指标权重均有 closed/default/freeze 契约。
+- [x] M5：非 critical 配额的 CAS/回滚边界、critical admission、摘要日历/批次引用、reason 封顶去向与指标权重均有 closed/default/freeze 契约；本项不改变任何字段评审的历史结论。
 - [x] canonical JSON 只在 §4 定义，storage 通过链接引用。
 - [x] 所有 markdown 相对链接存在、代码围栏闭合、无尾随空白。

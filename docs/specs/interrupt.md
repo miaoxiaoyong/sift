@@ -227,7 +227,7 @@ forge comment 仍是可回复的首发面；Channel 是同一 Interrupt 的附�
 - `min_modality=visual` 的对象只能路由至声明 visual capability 的 Channel；语音或纯 voice renderer 必须在入口拒绝该路径。拒绝后保留 forge comment 和可见的 held delivery，不得降格为语音批准。
 - 连续失败计数、稳定 `forge_alert(channel_failure)`、继续重试和 `ps`/`doctor` 故障投影完全遵守 [`outbox.md` §10](outbox.md)。alert 不是新的 Interrupt，不得递归告警或消耗第二次 attention charge。
 
-合批是一次 Channel 摘要 delivery，不是将多个 Interrupt 改写为一个新 reason：摘要只列出既有 open Interrupt 的稳定 ID、headline、链接和各自可执行 options；回复仍必须携带目标 Interrupt 的当前 nonce，不能对摘要整体执行动作。批次身份、成员冻结、payload 与 operation key 的字段契约由 `outbox.md` / `storage.md` 承接；M5 实现前必须在这两份字段权威中补齐摘要 delivery，本文不另立一份 Channel payload 协议。
+合批是一次 Channel 摘要 delivery，不是将多个 Interrupt 改写为一个新 reason：摘要只列出既有 open Interrupt 的稳定 ID、headline、链接和各自可执行 options；回复仍必须携带目标 Interrupt 的当前 nonce，不能对摘要整体执行动作。batch identity、episode、成员冻结/关闭排除、sealing 与 delivery 投影由 [`storage.md` §6.3–§6.4](storage.md) 唯一规定；payload、operation key 和逐成员完整命令 renderer 由 [`outbox.md` §10](outbox.md) 唯一规定，本文不另立 Channel payload 协议。
 
 ### 8.2 Supervisor 调度与超时
 
@@ -244,9 +244,9 @@ Supervisor 使用注入时间扫描 `status=open` 的 Interrupt：到期扫描�
 
 ### 8.3 critical 熔断、配额与合批
 
-非 critical 首发先在 `EmitInterrupt` 的同一事务按 severity 日配额 CAS 收费；额度不足时对象进入合批，不借支、不以 T4/T6 fallback 或升级另行收费。首次 critical 仍写其唯一 attention entry，但不占日配额；它必须在同一发射事务检查 append-only entry 的真实滑动窗口，分别比较全局和 per-Run `critical_fuse` 上限（配置唯一见 [`config.md` §3.9](config.md)，计数口径见 [`storage.md` §9.2](storage.md)）。
+非 critical 首发先在 `EmitInterrupt` 的同一事务按 severity 日配额 CAS 收费；CAS 竞争必须以相同 stable admission key 重读并有界重试，只有权威 counter 证明超额才把对象入批。不可恢复存储错误回滚，不借支、不以 T4/T6 fallback 或升级另行收费，也不得冒充额度不足。配额结果写 `quota_charged|quota_batched` admission；后者没有伪造 budget entry，字段权威见 [`storage.md` §6.3、§9.1](storage.md)。
 
-任一 critical 窗口达到上限时，发射器不允许把后续对象作为额外的即时 critical delivery。它必须将这些**既有 reason**的 Interrupt 原子纳入一个可见的 critical 汇总批次：每个成员仍保留自己的 generation key、Run、facts、options、nonce 与审计事件；汇总只改变 delivery 调度，绝不伪造 `critical_summary` 等新 reason，也不允许一个汇总指令影响多个 Interrupt。每个 scope 的熔断期至多安排一次汇总 delivery；窗口恢复后再按当时对象的当前 version/状态重新裁决。
+首次 critical 由 `EmitInterrupt`、升级后首次成为 critical 由 `AdvanceInterrupt` 在各自的 Interrupt CAS 事务中检查 append-only `critical_admitted` evidence 的真实滑动窗口，分别比较全局和 per-Run `critical_fuse` 上限（配置唯一见 [`config.md` §3.9](config.md)，计数口径见 [`storage.md` §9.3](storage.md)）。初发 critical 仍有唯一 attention charge、但不占日配额；升级复用原 charge。任一 critical 窗口达到上限时，对应端口原子写一次 `critical_fused` evidence 并将该**既有 reason**的 Interrupt 纳入唯一 critical 汇总 batch。全局与 per-Run 同时命中时归全局 batch；成员仍保留自己的 generation key、Run、facts、options、nonce 与审计事件。汇总只改变 delivery 调度，绝不伪造 `critical_summary` 等新 reason，也不允许一个汇总指令影响多个 Interrupt。episode 的起止/复用、窗口恢复和每 scope 至多一次 delivery 以 [`storage.md` §6.3](storage.md) 为准。
 
 熔断、配额耗尽和 T6 合批都只是同一发射器/调度器对既有对象的确定性投递降级：
 
@@ -270,4 +270,6 @@ Supervisor 使用注入时间扫描 `status=open` 的 Interrupt：到期扫描�
 - T6 无效/超预算/不可用时运行确定性阈值；其建议不能升级 severity、绕过 `min_modality`、选择未冻结 Channel 或令对象无限 defer。
 - Channel 注入成功响应丢失时可能重复但带可见标识；连续失败到阈值只建一个 forge alert，仍继续重试且 `ps`/`doctor` 可见。
 - 到期、首次升级、`max_escalations=0`、恰达/超过上限、`auto_reject` 与 `hold` 分别覆盖；每次合法升级只重推一次并轮换 nonce/version，`startup_stall` 上限仍为 open + hold + 无 resolution。
-- 配额耗尽的非 critical 合批、critical 全局/per-Run 滑动窗口、并发撞熔断和窗口恢复均可确定性重放；没有借支、重复 charge、第二 reason、可批量执行的 summary 指令或 reason 专用发射入口。
+- `limit=2` 的双并发非 critical 都收费成功；`limit=1` 的双并发恰一条收费、一条权威超额合批；CAS/SQLite 故障整笔回滚而非合批。
+- 初发 critical、high→critical 首次升级、同一升级旧 tick/重推、并发撞线与窗口恢复均以唯一 admission evidence 可确定性重放；没有重复 charge、第二 reason 或 reason 专用发射入口。
+- 跨 midnight、恰在/晚于摘要时刻、DST gap/fold 的 daily batch `due_at` 固定；并发入批只得一个 batch/member，成员 sealing 前关闭被排除，全局/per-Run 双命中只入全局 batch；响应丢失重放同一 immutable payload，summary 指令不可批量执行。

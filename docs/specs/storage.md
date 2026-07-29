@@ -365,7 +365,7 @@ PRAGMA wal_autocheckpoint = 1000;
 | `max_escalations` | INTEGER | NOT NULL；创建时冻结配置 |
 | `close_reason` | TEXT | NULL 或 `responded \| expired_auto_reject \| superseded_by_fact \| superseded_by_decision \| external_fact` |
 | `closed_at_ms` | INTEGER | NULL |
-| `charged_budget_entry_id` | TEXT | NOT NULL UNIQUE FK budget_entries |
+| `charged_budget_entry_id` | TEXT | NULL UNIQUE FK budget_entries；仅实际 attention charge |
 | `calibration_id` | TEXT | NULL UNIQUE FK calibration_entries；仅 Gate HITL 创建时不可变绑定 |
 | `created_at_ms` | INTEGER | NOT NULL |
 | `updated_at_ms` | INTEGER | NOT NULL |
@@ -375,6 +375,7 @@ PRAGMA wal_autocheckpoint = 1000;
 - `status=open` 时 close 字段为空；closed 时同为非空。
 - `startup_stall` 禁止 `on_expire=auto_reject`。
 - escalation 重推不新增 budget charge；关闭不退款。
+- `charged_budget_entry_id` 只在首次发射实际写入 attention charge 时非空；`quota_batched` admission 的 Interrupt 必为 NULL，不能用零额或虚构 entry 充数。该列与 admission 的对应约束见 §6.3。
 - 初始 nonce 的 `nonce_issued_at_ms` 等于 `created_at_ms`；每次 nonce 轮换必须同一 CAS 更新 `nonce_issued_at_ms` 并递增 version。非 nonce 更新不得改写该时间。
 - `probe_in_progress` 时拒绝新指令，但合法迟到事实仍可经仲裁入口提交。
 
@@ -407,6 +408,49 @@ PRAGMA wal_autocheckpoint = 1000;
 | `delivered_at_ms` | INTEGER | NULL |
 
 投递执行仍由 outbox 驱动；本表只给 `ps/doctor` 一致查询面，不替代 outbox 历史。
+
+### 6.3 `attention_admissions`、`attention_batches` 与成员
+
+`attention_admissions` 是不可变的注意力准入事实，不以 `budget_entries` 代替。它使「扣到配额」「配额拒绝后合批」「critical 获准」和「critical 熔断」成为不同、可审计的结果。
+
+| 列 | 类型 | 约束/说明 |
+|----|------|-----------|
+| `id` | TEXT | PK |
+| `interrupt_id` | TEXT | NOT NULL FK interrupts |
+| `run_id` | TEXT | NOT NULL FK runs；与 Interrupt 一致，供 per-Run fuse 查询 |
+| `kind` | TEXT | `quota_charged \| quota_batched \| critical_admitted \| critical_fused` |
+| `admission_key` | TEXT | NOT NULL UNIQUE；由 interrupt ID 与 `initial` 或首次 critical transition 组成 |
+| `attention_charge_entry_id` | TEXT | NULL FK budget_entries；仅实际 charge 非空，可被升级 admission 复用 |
+| `severity` | TEXT | 准入时的最终 severity |
+| `quota_day` | TEXT | NULL；非 critical 初发为冻结 zone 的 `YYYY-MM-DD` |
+| `day_timezone` | TEXT | NULL；规范化 IANA zone |
+| `critical_source` | TEXT | NULL 或 `initial \| escalation` |
+| `created_at_ms` | INTEGER | NOT NULL |
+
+每个 Interrupt 最多一行初发 `quota_charged|quota_batched`，或一行初发 `critical_admitted|critical_fused`；首次由 high/normal 等升级至 critical 时，至多额外一行 `critical_admitted|critical_fused`，且 `critical_source=escalation`。`critical_admitted|critical_fused` 的 `critical_source` 必填，其他 kind 为 NULL。`quota_charged` 和任一 `critical_*` 必须引用该 Interrupt 的实际 `charged_budget_entry_id`（升级 admission 因而复用原 charge）；`quota_batched` 的两列均为 NULL。两个 partial unique index `UNIQUE(interrupt_id) WHERE kind IN (quota_charged,quota_batched)` 与 `UNIQUE(interrupt_id) WHERE kind IN (critical_admitted,critical_fused)` 保证每 Interrupt 最多一次 initial decision 与最多一次 critical transition；INSERT 后禁止 UPDATE/DELETE。
+
+`attention_batches` 是 versioned、可恢复的摘要对象，不把摘要伪造成 Interrupt/reason。`id` 是由其稳定 identity 生成的 batch ID，`operation_key` 由该 ID 固定导出；均不得使用当前时间、worker 或可变文本。
+
+| 列 | 类型 | 约束/说明 |
+|----|------|-----------|
+| `id` | TEXT | PK；`daily:<zone>:<quota_day>:<due_at_ms>` 或 `critical:<scope>:<scope_id>:<episode_admission_id>` 的稳定 identity |
+| `kind` | TEXT | `daily_summary \| critical_fuse` |
+| `scope` / `scope_id` | TEXT | daily 为 `day` / `<zone>:<quota_day>`；critical 为 `global` / `global` 或 `run` / `<run_id>` |
+| `quota_day` / `day_timezone` | TEXT | daily 必填；critical 为 NULL |
+| `episode_admission_id` | TEXT | critical 必填，daily 为 NULL；首个 fused admission 标识本 episode |
+| `due_at_ms` | INTEGER | NOT NULL；创建后不可改 |
+| `state` | TEXT | `collecting \| sealed \| delivered \| cancelled` |
+| `operation_key` | TEXT | NULL UNIQUE；sealed 时写 `attention-batch:<batch_id>:publish:1` |
+| `payload_json` / `payload_digest` | TEXT | NULL；sealed 时写入，不可改 |
+| `created_at_ms` / `sealed_at_ms` / `delivered_at_ms` | INTEGER | 创建必填；其余 NULL 或一次性写入 |
+
+daily batch 的 `due_at_ms` 是 config §3.9 所定义的下一本地摘要时刻。critical episode 在首个 `critical_fused` 时打开；其 `due_at_ms` 是使该 scope 的当前 admitted evidence 首次少于 limit 的最早 expiry（最早计数 evidence 的 `created_at_ms + window`）。同 scope 的后续 fused candidate 在 batch 仍 `collecting` 时复用该 episode；到时重新裁决，恢复后才可创建新 episode。候选同时命中 global 和 per-Run 时只归 global batch；因此一个 Interrupt 绝不进入两批。
+
+`attention_batch_members` 保存 batch 的不可重复成员与发送时需要的冻结展示绑定：主键 `(batch_id, interrupt_id)`，另有唯一 `member_key=<batch_id>:<interrupt_id>`；列为 `admission_id`（FK attention_admissions）、`interrupt_version`、`nonce`、`headline`、`reason`、`severity`、`links_json`、`options_json`、`joined_at_ms`、`excluded_at_ms`。入批时冻结这些值；同一 Interrupt 不能在同一 batch 有第二成员。关闭或由事实 supersede 的事务在 batch 仍为 `collecting` 时必须把成员标为 excluded。到期的 `PrepareAttentionBatch` 在同一事务重读其余成员的 open/version/nonce，排除不再匹配者；有成员时冻结 sorted payload、写唯一 `channel_publish` operation 并把 batch 置 `sealed`，无成员则 `cancelled`。sealed payload、member 快照、operation 和成功 delivery evidence 均不可改；这一定义以 sealing 为发送前的最后关闭排除边界，之后的关闭不会改写已经冻结的外部请求。
+
+### 6.4 Batch delivery 投影
+
+每个 sealed batch 有一条 `batch_deliveries` 投影：`batch_id` PK/FK、`operation_key` UNIQUE、`state=pending|delivered|failed`、`attempt_count`、`remote_ref`、`last_error`、`created_at_ms`、`delivered_at_ms`。它与 `interrupt_deliveries` 同样只提供查询面。`CompleteOutboxAttempt` 成功时原子标记该投影、batch 和逐成员的 Ledger delivery；响应丢失的重放沿用同一 operation key 和 frozen payload，Channel 仍如实为 at-least-once。
 
 ## 7. Append-only 事件与幂等收据
 
@@ -631,7 +675,7 @@ Gate 创建 `rerun_checks` operation 的同一事务插入一行，防止崩溃�
 | `version` | INTEGER | NOT NULL，CAS |
 | `updated_at_ms` | INTEGER | NOT NULL |
 
-计费入口在同一事务执行 `consumed + amount <= limit` CAS。本表只承载日/小时固定桶（token、forge API、非 critical 注意力）；注意力不可借支。
+计费入口在同一事务执行 `consumed + amount <= limit` CAS。本表只承载日/小时固定桶（token、forge API、非 critical 注意力）；注意力不可借支。对非 critical attention，CAS 零行后必须在同一稳定 admission key 下重读 counter：重读仍可容纳时是竞争，有限次重试；只有 `consumed + amount > limit` 才写 `quota_batched` admission。达到重试上限、SQLite busy 以外的错误、事务错误或无法重读均整笔回滚，绝不写 quota-batched 作为存储故障的替代结局。
 
 **token 是该通用 CAS 的唯一例外**（语义见 [`brain.md` §6](brain.md)）：token 采用「发起物理 attempt 前阈值检查 `consumed >= limit` 即拒发 + attempt 完成后按实际 usage 全额 post-charge」，post-charge 允许 counter 单次越过 limit，不执行 `consumed + amount <= limit` 预扣。token 桶为 UTC 自然日，按 attempt **开始时**冻结的 bucket 收费；usage 总和为 0 时不写 budget entry，usage 缺失不收费。收费幂等由唯一 operation key 保证，重复 key 返回原 charge。
 
@@ -668,7 +712,9 @@ Report 的 `events_per_minute + burst` 使用持久化令牌桶，不用固定�
 | `operation_key` | TEXT | NOT NULL UNIQUE；防重复收费 |
 | `created_at_ms` | INTEGER | NOT NULL |
 
-Interrupt 升级重推复用原 charge，不新增 entry；Interrupt 关闭不退款。非 critical 日配额 entry 使用 `kind=attention, scope=severity, scope_id=<severity>`；Report 致扰子配额使用 `kind=report, scope=run, scope_id=<run_id>`。critical 不写日配额 counter，但每次首次发射仍写 `kind=attention, scope=severity, scope_id=critical` entry，并令 `bucket_start_ms=created_at_ms`。熔断在 `EmitInterrupt` 事务内按 `created_at_ms >= now-window` 对该 append-only 流做全局与 per-Run 计数，形成真实滑动窗口；不以固定桶近似。`budget_entries` 不反向保存 Interrupt FK；Interrupt 通过不可变 `charged_budget_entry_id` 指向 charge，避免循环外键。
+Interrupt 升级重推复用原 charge，不新增 entry；Interrupt 关闭不退款。非 critical 日配额 entry 使用 `kind=attention, scope=severity, scope_id=<severity>`；Report 致扰子配额使用 `kind=report, scope=run, scope_id=<run_id>`。critical 不写日配额 counter，但首次 critical 发射仍写 `kind=attention, scope=severity, scope_id=critical` entry，并令 `bucket_start_ms=created_at_ms`；high→critical 升级复用其原 entry。`budget_entries` 不反向保存 Interrupt FK；Interrupt 通过不可变 `charged_budget_entry_id` 指向实际 charge，避免循环外键。
+
+critical fuse 的权威计数是 `attention_admissions.kind=critical_admitted AND created_at_ms >= now-window`，分别按全局和 `run_id` 查询；`critical_fused` 是拒绝/episode 证据，绝不计入名额。`EmitInterrupt` 对初发 critical、`AdvanceInterrupt` 对升级首次 critical 各自在同一 CAS 事务中：检查两个窗口 → 至多插入一次 admission → 写/复用 charge、Interrupt/升级事件及所需 batch member。任何重放、旧 version 或已有 critical admission 都返回原事实，不重新占名额。
 
 ## 10. Brain、Gate、校准与 Ledger
 
@@ -931,8 +977,9 @@ Gate record 来自同一 snapshot/evaluation；Brain record 一条 logical recor
 | `AdvanceAttempt` | attempt/claim + events；不得旁路 Run transition |
 | `StartOrAdvanceProbe` | attempt probe + 受控终止观测事件 |
 | `ResolveAttemptRace(expectedRunVersion, expectedGeneration, factKey, command)` | claim:started、恢复补 started、迟到 result、Interrupt 指令共用的唯一 CAS 仲裁；resolution/身份/结果、隔离、Run transition、Interrupt close、回执 outbox 与事件同事务 |
-| `EmitInterrupt` | Run transition + Interrupt + attention budget/fuse + event + publish outbox |
-| `AdvanceInterrupt` | Supervisor 的 hold/escalate/auto_reject：Interrupt CAS + 可选 Run transition/outbox/event |
+| `EmitInterrupt` | Run transition + Interrupt + initial attention admission/budget/critical fuse + event + publish outbox |
+| `AdvanceInterrupt` | Supervisor 的 hold/escalate/auto_reject，及升级首次 critical admission/fuse：Interrupt CAS + 可选 Run transition/batch/outbox/event |
+| `PrepareAttentionBatch` | due batch 的成员 open-CAS、payload sealing、唯一 Channel operation 与事件；不做外部 IO |
 | `ApplyInterruptCommand` | 通用指令：Interrupt CAS + 可选 Task Spec/Ledger/calibration/certification + Run transition/outbox/event |
 | `ApplyRetryProbeResult` | ADR-013 全部结果字段的一笔 CAS 事务；内部必须调用与 `ResolveAttemptRace` 相同的仲裁原语，不得先关闭 Interrupt |
 | `RecordReport` | token bucket + report receipt + event；必要时原子发唯一异常 Interrupt |
@@ -964,7 +1011,7 @@ CAS 失败整笔回滚并返回 `RejectedStale`；非法状态组合在开事务
 
 ### 12.2 Interrupt 五件事
 
-同一事务：Run 转 `waiting_human`（或确认已处于合法人工态）→ 按 generation key 查重 → 首次时扣一次注意力预算并取得 entry id → 插入引用该 entry 的 Interrupt → 追加事件 → 从 Run 的已验证 Issue、已验证 Change 或冻结 `discussion_target_*` 创建 publish operation。generation key 已存在时直接返回既有 Interrupt，不得重复扣费或创建第二 operation。manual Run 的冻结 target 不存在时，该事务以 `interrupt_publish_target_missing` 回滚/拒绝，不得留下无发布目标的 Interrupt。
+同一事务：Run 转 `waiting_human`（或确认已处于合法人工态）→ 按 generation key 查重 → 首次按最终 severity 写 initial attention admission（非 critical 做 quota CAS/re-read/retry；初发 critical 做 fuse admission）并仅在实际 charge 时取得 entry id → 插入引用该 entry 或 NULL 的 Interrupt → 追加事件 → 从 Run 的已验证 Issue、已验证 Change 或冻结 `discussion_target_*` 创建 publish operation，并在需要时创建/加入 batch。generation key 已存在时直接返回既有 Interrupt，不得重复扣费、admission 或创建第二 operation。任一存储/事务错误回滚；manual Run 的冻结 target 不存在时同样以 `interrupt_publish_target_missing` 回滚/拒绝，不得留下无发布目标的 Interrupt。
 
 ### 12.3 Intake batch
 
@@ -1077,7 +1124,7 @@ COMMIT
 
 `brain_calls` 禁止 DELETE；UPDATE trigger 只允许一次 `running → valid | fallback` 终结（补全终结字段），身份、输入与 `call_seq` 列任何修改都 abort。`brain_call_counters` 与 `intake_items` 是可变投影，以 `version` CAS 并发控制，不加 append-only trigger。
 
-对可变投影另设列级 trigger：`outbox_operations.payload_schema_version/payload_json/payload_digest` 创建后不可改；`attempts.attempt_resolution` 只能从 NULL 与同事务 NULL resolution 时间写为一组非空值；隔离不得由 `frozen` 直接覆盖为另一原因，且解除必须同时写 `isolation_released_at_ms/isolation_release_event_id`；同 generation 的 claim permit 不可替换；Interrupt 的 `charged_budget_entry_id/generation_key` 与关闭字段一旦非空不可改。违反时 abort，而不是只靠存储接口纪律。
+对可变投影另设列级 trigger：`outbox_operations.payload_schema_version/payload_json/payload_digest` 创建后不可改；`attempts.attempt_resolution` 只能从 NULL 与同事务 NULL resolution 时间写为一组非空值；隔离不得由 `frozen` 直接覆盖为另一原因，且解除必须同时写 `isolation_released_at_ms/isolation_release_event_id`；同 generation 的 claim permit 不可替换；Interrupt 的 `charged_budget_entry_id`（包括 NULL）/`generation_key` 与关闭字段创建后不可改。违反时 abort，而不是只靠存储接口纪律。
 
 迁移连接可在迁移事务中替换 trigger；运行时存储接口无关闭 trigger 的能力。
 
@@ -1104,7 +1151,8 @@ COMMIT
 - `events(project_id, seq)`
 - `outbox_operations(state, next_attempt_at_ms)`
 - `outbox_operations(lease_expires_at_ms)`
-- `budget_entries(kind, created_at_ms, run_id)`（critical fuse 滑动窗口）
+- `attention_admissions(kind, created_at_ms, run_id, interrupt_id)`（critical fuse 滑动窗口与 admission 去重）
+- `attention_batches(state, due_at_ms)`（摘要 sealing 扫描）
 - `forge_cursors(next_poll_at_ms)`
 - `brain_calls(scope, subject_key, touchpoint, call_seq)`（唯一）
 - `brain_calls(run_id, attempt_no, touchpoint, call_seq)`（`run_id IS NOT NULL` 的查询索引）
@@ -1126,7 +1174,7 @@ COMMIT
 8. `attempt_resolution` 只接受两个 V0 枚举值，写入后不可逆；隔离与 Run 终态相互独立。
 9. 数据库文件与目录权限符合配置规格；CLI/wrapper 无直接写库路径。
 10. T1/T2/T7 call 可在无 attempt 或无 Run 时合法落库，作用域错误被 CHECK/FK 拒绝。
-11. Report burst=4 的令牌桶跨固定分钟边界仍不允许瞬时超发；critical fuse 按滑动窗口计数。
+11. Report burst=4 的令牌桶跨固定分钟边界仍不允许瞬时超发；critical fuse 按 admission evidence 滑动窗口计数，charge 不冒充 admission。
 12. §11 每张可变表均有完整、显式的写入族归属；outbox payload 与一次性 resolution 的非法修改被 trigger 拒绝。
 13. Gate JSONL schema v1 与 Brain JSONL schema v2 导出可由冻结数据重建并 round-trip；Brain record 单条内携有序 attempts 和排序 snapshot ID 数组，旧 Brain schema v1 继续可读或经显式迁移转换。
 14. `brain_calls` 只能一次性 `running → valid | fallback` 终结；身份/输入列修改与 DELETE 被 trigger 拒绝；`provider_attempt=0` 行 token/exit/raw 必空且 `outcome=fallback`。
@@ -1149,7 +1197,7 @@ COMMIT
 - [x] S1：T1 无 Run、T2 无 attempt、T7 聚合三种调用均有合法且唯一的 trace 身份。
 - [x] S2：§4–§10 每张可变表均在 §11 声明显式写入族；WBS V2 已同步扩展崩溃注入范围。
 - [x] S3：hooks 基线覆盖 git config、原始/effective hooksPath 与目录 digest，跨重启可复核。
-- [x] S4：Report 使用持久整数令牌桶；critical fuse 使用 append-only entry 的滑动窗口。
+- [x] S4：Report 使用持久整数令牌桶；critical fuse 使用 append-only admission evidence 的滑动窗口；摘要有 batch/member/operation 的持久身份。
 - [x] S5：schema version、FK、隔离释放、原因枚举、probe、manual Run、close reason、回放格式、索引和 payload trigger 均已处置。
 - [x] `attempt_resolution` 旧名未进入 spec，V0 枚举保持 `reject | retry_after_absence`。
 - [x] M3 §3.4–§3.5：恢复屏障、恢复/终止写端口、独立隔离投影、四入口唯一仲裁与关闭原因映射已落 §1/§4.2/§5.3/§6.1/§8.3/§11/§12/§13/§16.1。
