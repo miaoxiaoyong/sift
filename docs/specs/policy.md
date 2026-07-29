@@ -96,7 +96,7 @@ V0 内建、不可删除或降级的 hard rule 集为：
 
 ```text
 assemble(basePolicy, gateDefaults, certificationProjection, forgeCapabilities)
-  -> effectivePolicy, effectivePolicyHash, certificationVersion, qualificationReport
+  -> EffectivePolicyV1, effectivePolicyHash, certificationVersion, qualificationReport
 ```
 
 顺序固定：
@@ -104,7 +104,7 @@ assemble(basePolicy, gateDefaults, certificationProjection, forgeCapabilities)
 1. 对 base policy 做 v1 closed 校验和规范化；失败按 §3.1 隔离，不调用后续步骤。
 2. 用启动期冻结的全局 `gate_defaults` 填充省略的五个 scalar；项目显式值优先。将内建 hard rules 与项目 hard rules union。
 3. 对每个提权项应用资格谓词；不满足即从候选策略中关闭。该步骤幂等且不能被项目字段绕过。
-4. 生成下列 closed effective shape 的 canonical JSON，并计算 SHA-256 小写十六进制 `effective_policy_hash`：
+4. 生成下列 closed `EffectivePolicyV1` 的 canonical JSON，并计算 SHA-256 小写十六进制 `effective_policy_hash`：
 
 ```json
 {
@@ -118,7 +118,7 @@ assemble(basePolicy, gateDefaults, certificationProjection, forgeCapabilities)
 }
 ```
 
-所有 path 列表按 UTF-8 bytes 排序且去重；duration 解析后以整数毫秒输出，禁止保留输入拼写。对象 key 词典序、JSON 数字和 UTF-8 编码沿用 [`config.md` §4](config.md)。effective shape 不携 source revision、显式/继承标记、资格原因或 capability 证据；这些属于组装记录/`qualificationReport`，不能影响 Gate 判定。
+`EffectivePolicyV1` 是 Gate 消费的唯一 policy 类型：不得添加、删除或以别名替换上述字段。所有 path 列表按 UTF-8 bytes 排序且去重；duration 解析后以整数毫秒输出，禁止保留输入拼写。对象 key 词典序、JSON 数字和 UTF-8 编码沿用 [`config.md` §4](config.md)。该 shape 不携 source revision、显式/继承标记、资格原因或 capability 证据；这些属于组装记录/`qualificationReport`，不能影响 Gate 判定。
 
 `qualificationReport` 是组装和 doctor 的解释性产物，不是 Gate 的旁路输入；对 `auto_merge` 的状态枚举固定为 `not_requested | task_kind_uncertified | forge_cas_unavailable | effective`。多个失败同时存在时按前述枚举顺序选择第一个资格失败，并可另列不改变判定的诊断；不得包含认证样本明细或单条 Run 的放行建议。
 

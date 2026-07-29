@@ -12,7 +12,7 @@ summary: Gate 纯判定、快照、豁免和 Change 创建契约
 
 ## 评审状态
 
-字段级评审的 G1–G4 已由本文 §2.2、§2.3、§3.1 和 §3.2 关闭；G5/G6 仍依赖 #216/#217，故本文**保持 `draft`**。处置依据及余项见[评审报告](../reviews/2026-07-29-gate-review-pi-gpt-5.6-sol.md)。实现方不得在 G5/G6 完成前猜测 effective policy 的用户字段，或自行改变 calibration/Interrupt 身份接缝。
+字段级评审的 G1–G5 已由本文 §2.2、§2.3、§3.1、§3.2 和 active 的 [`policy.md` §3.3](policy.md) 关闭：Gate 只消费其 `EffectivePolicyV1`，不自定义 policy 字段。#217 尚未合入，G6（每类 verdict 的 calibration 二元/不可比较映射，以及 guardrail Interrupt 的不可变身份）仍未关闭，故本文**保持 `draft`**。处置依据及余项见[评审报告](../reviews/2026-07-29-gate-review-pi-gpt-5.6-sol.md)。实现方不得在 G6 完成前自行改变 calibration/Interrupt 身份接缝。
 
 ## 1. 边界与不变量
 
@@ -38,7 +38,7 @@ gate(changeFacts, effectivePolicy, riskScore) -> verdict
 |---|---|
 | Change | 已验证远端 Change ID/URL、state、base/head ref、`head_sha`、draft、mergeability、review/approval 状态、规范化变更路径、路径集合是否完整、文件数与增删行规模；未知值必须显式编码，不能用空数组冒充“已完整读取且无路径” |
 | Checks | 对该 `head_sha` 的归一结论、失败项、CI 证据引用、pending 起点/本次观测时刻/是否已超时、已消费的 flaky 重试次数，以及仅在 failure 时存在的 T5 分类与来源；`pending_timed_out` 不能在 Gate 内读时钟重算 |
-| Policy | 完整规范化有效策略、其 hash、hard/soft 规则、风险审查阈值、Checks pending timeout、flaky retry limit、适用的 remembered exceptions 及已被人明确批准的一次性豁免；`certification_version` |
+| Policy | [`policy.md` §3.3](policy.md) 的完整 `EffectivePolicyV1` canonical JSON、其 hash、已被人明确批准的一次性豁免；`certification_version`。软规则例外只来自 `EffectivePolicyV1.protected_paths.soft_exceptions`，不另设 remembered-exceptions 字段。 |
 | Risk | [`brain.md` §9](brain.md) 的完整 T3 风险分、风险点、rationale 及来源/提示词/schema，或确定性兜底对象；不得只保存分数而丢失来源 |
 | Identity | Run、项目、任务类别和 Change/策略快照身份，仅用于审计、后继动作和回放，不能让 Gate 读取可变 Run 历史 |
 
@@ -64,7 +64,7 @@ cache key       = (gate_input_hash, gate_version)
 | `change` | closed object：`state=open|closed|merged`、64 小写十六进制 `head_sha`、非空 `base_ref`/`head_ref`、boolean `is_draft`、`mergeability=mergeable|conflicting|unknown`、`review_state=approved|not_approved|unknown`、`paths_complete`、`changed_paths`、`files_changed>=0`、`additions>=0`、`deletions>=0`。路径必须为 repo-relative slash path，非空、不以 `/` 开头、不含 `.`/`..` segment、排序去重；`paths_complete=false` 时 `changed_paths` 必须为空，`true` 时空数组才表示确无变更路径。 |
 | `checks` | closed object：`conclusion=success|failure|pending|unknown`、排序去重 `failed_jobs`、非空 `external_url`、`flaky_retries_used>=0`；job 为 closed `{id,name,web_url,allow_failure}`，`id` 非空且排序 key 为 `(id,name)`。`pending` 时必有 `pending_started_at_ms>=0`、`observed_at_ms>=pending_started_at_ms`、`pending_timed_out`，其他结论三字段均为 null；`failure` 时必有 `triage`，否则为 null。 |
 | `checks.triage` | closed object：`classification=flaky|real_failure|infrastructure|unknown`、closed `source`；仅 failure 可出现。`source` 是 `kind=brain`（非空 logical call/prompt/schema version）或 `kind=fallback`（非空 version/reason）。 |
-| `effective_policy` | #216 将提供的 `EffectivePolicyV1` 的 canonical JSON；本阶段以 closed Gate 消费视图约束为 `policy_version`、`protected_rules`、`review_policy`、`auto_merge`、`pending_timeout_ms`、`flaky_retry_limit`、`risky_threshold`、`remembered_exceptions`。其用户可写字段、默认和范围仍由 G5 权威冻结；这不是允许 Gate 接受未知 policy 字段。 |
+| `effective_policy` | [`policy.md` §3.3](policy.md) 的 `EffectivePolicyV1` canonical JSON，且只接受该 closed shape：`schema_version`、`protected_paths.{hard,soft,soft_exceptions}`、`review_policy`、`risky_review_threshold`、`auto_merge`、`checks_pending_timeout_ms`、`flaky_retry_limit`。不得添加未知字段或将 `soft_exceptions` 另投影为 remembered-exceptions 字段。 |
 | `effective_policy_hash` / `certification_version` | 各为 64 小写十六进制，前者必须等于 `effective_policy` 的 canonical SHA-256。 |
 | `risk` | `brain.md` §9.2–§9.3 的 closed T3 object：整数 `risk_score`（0–100）、排序去重 `risk_points`、`rationale`、以及 brain/fallback source；不得省略来源。 |
 | `one_time_exemptions` | 排序去重数组；每项为 closed object `{run_id,head_sha,rule_id,matched_paths_digest}`，digest 为 64 小写十六进制。每项 run/head 必须等于 `identity.run_id`/`change.head_sha`。 |
@@ -101,7 +101,7 @@ cache key       = (gate_input_hash, gate_version)
 
 下列是逻辑顺序；为保持纯函数，T3/T5 和 Forge 读取由调用方先完成并冻结。前一阶段产生终局结果时不得继续执行后续阶段或绕过它。
 
-1. **`protected_paths`（G3）。** matcher 只接受 repo-relative、已规范化的 slash path，区分大小写，采用 `*`（单 segment）与 `**`（零或多个 segment）的 gitignore 风格 glob；pattern 不得含 `..`、绝对路径、negation、字符类或平台专有扩展。V0 默认 hard rules（`rule_id → pattern`）穷尽为：`sift-control → .sift/**`、`github-actions → .github/workflows/**`、`gitlab-ci → .gitlab-ci.yml`、`circleci → .circleci/**`、`buildkite → .buildkite/**`、`jenkins → Jenkinsfile`、`travis → .travis.yml`、`azure-pipelines → azure-pipelines.yml`、`bitbucket-pipelines → bitbucket-pipelines.yml`、`appveyor → appveyor.yml`、`teamcity → .teamcity/**`。有效策略自定义 rule 是 closed `{rule_id,pattern,level}`，`rule_id` 在策略内唯一，`level=hard|soft`；同一 pattern 的 hard/soft 或重复 ID 是 policy schema error。命中以 `(rule_id, matched_path)` 词典序排序；任一 hard 命中优先于全部 soft，多个 soft 则选择首个未获豁免 rule。路径不完整或 matcher/policy 无效返回 `input_unknown`，绝不据空数组放行。hard 命中立即返回 failed；soft 命中且没有本次有效豁免，返回 `guardrail_violation` HITL。
+1. **`protected_paths`（G3）。** matcher 和 pattern/path normalization 只按 [`policy.md` §2.1](policy.md) 执行；规则唯一来自 `EffectivePolicyV1.protected_paths`，其中 hard 已包含 [`policy.md` §3.2](policy.md) 的内建集合。Gate 不接受 `{rule_id,pattern,level}`、独立默认 CI 清单或其他 policy 投影。为 verdict、豁免和 Ledger 特征提供稳定身份时，Gate 从已规范化 pattern 确定性派生 `rule_id`：hard 为 `hard:<pattern>`，soft 为 `soft:<pattern>`；该 ID 不属于 `EffectivePolicyV1`，也不改变其 hash。命中按 `(rule_id, matched_path)` 词典序排序；任一 hard 命中优先于全部 soft，多个 soft 则选择首个未被同一路径集合的一次性豁免覆盖、且未被任一 `soft_exceptions` pattern 匹配的 rule。路径不完整或 matcher/policy 无效返回 `input_unknown`，绝不据空数组放行。hard 命中立即返回 failed；soft 命中且没有本次有效豁免，返回 `guardrail_violation` HITL。
 2. **Checks。** success 才进入下一阶段；pending 未超时返回等待结果，pending 已超时转 HITL。failure 使用冻结的 T5 分类：仅 `flaky` 且尚有有效重试额度可请求确定性重试；真实失败、基础设施失败、T5 不可用/超预算或任何未知分类均转 `failure_review` HITL。Gate 不自行重试或调用 T5。
 3. **review policy。** `always` 在冻结的有效审查未满足时转 `code_review` HITL；`risky-only` 只在 `riskScore.risk_score >= effectivePolicy.risky_review_threshold`（确定性高风险兜底固定为 100）、且有效审查尚未满足时转 HITL；`never` 不要求 review。需要审查时，审查状态或平台能力未知不得视为已经满足审查。
 4. **auto merge。** 只有有效策略允许、前述所有阶段全绿、Change 非 draft 且 mergeability 明确可合并时，才返回可创建 `merge_change` 的 verdict。该 operation 必须携带本 verdict 的 `head_sha` 作为 `expected_head_sha`。`auto_merge=false` 或 draft 可返回“门禁全绿但不自动合并”；`auto_merge=true` 时，`mergeability=conflicting` 必须转 `merge_conflict` HITL，`unknown` 必须转显式人工/等待分支，二者都不得冒充全绿结果。合并时远端 CAS 拒绝或 head 已变化，旧 operation 必须 stale/no-op，新 head 必须重新组装快照并过 Gate。
