@@ -198,6 +198,7 @@ func assertFullDefaultsExceptAgentProject(t *testing.T, cfg *Config) {
 		{"report.interrupts_per_run_daily_quota", cfg.Report.InterruptsPerRunDailyQuota, want.Report.InterruptsPerRunDailyQuota},
 		{"report.on_interrupt_quota_exceeded", cfg.Report.OnInterruptQuotaExceeded, want.Report.OnInterruptQuotaExceeded},
 		{"gate_defaults.review_policy", cfg.GateDefaults.ReviewPolicy, want.GateDefaults.ReviewPolicy},
+		{"gate_defaults.risky_review_threshold", cfg.GateDefaults.RiskyReviewThreshold, want.GateDefaults.RiskyReviewThreshold},
 		{"gate_defaults.auto_merge", cfg.GateDefaults.AutoMerge, want.GateDefaults.AutoMerge},
 		{"gate_defaults.checks_pending_timeout", cfg.GateDefaults.ChecksPendingTimeout, want.GateDefaults.ChecksPendingTimeout},
 		{"gate_defaults.flaky_retry_limit", cfg.GateDefaults.FlakyRetryLimit, want.GateDefaults.FlakyRetryLimit},

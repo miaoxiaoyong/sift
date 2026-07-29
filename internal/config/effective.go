@@ -176,6 +176,7 @@ type Report struct {
 // GateDefaults holds the resolved project-policy defaults (config.md §3.11).
 type GateDefaults struct {
 	ReviewPolicy         ReviewPolicy  `json:"review_policy"`
+	RiskyReviewThreshold int           `json:"risky_review_threshold"`
 	AutoMerge            bool          `json:"auto_merge"`
 	ChecksPendingTimeout time.Duration `json:"checks_pending_timeout"`
 	FlakyRetryLimit      int           `json:"flaky_retry_limit"`

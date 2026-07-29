@@ -322,6 +322,12 @@
             "string",
             "null"
           ]
+        },
+        "risky_review_threshold": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": [
