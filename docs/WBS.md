@@ -298,11 +298,15 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 3.5 attempt_resolution、隔离与唯一仲裁
 
-- [ ] 隔离是独立投影：即使 Run 已 `failed`，未证明执行体消失前 worktree 不回收、不复用
-- [ ] 实现一个仲裁函数，供 `claim:started`、恢复补 started、迟到 `result.json`、Interrupt 指令四个入口调用
-- [ ] resolution 未落定且合法启动事实先到：attempt → running、Run `waiting_human → running`、Interrupt 以 `superseded_by_fact` 关闭并接管监督；**不得继续终止正常执行体**
+- [x] 隔离是独立投影：即使 Run 已 `failed`，未证明执行体消失前 worktree 不回收、不复用
+- [x] 实现一个仲裁函数，供 `claim:started`、恢复补 started、迟到 `result.json`、Interrupt 指令四个入口调用
+- [x] resolution 未落定且合法启动事实先到：attempt → running、Run `waiting_human → running`、Interrupt 以 `superseded_by_fact` 关闭并接管监督；**不得继续终止正常执行体**
 - [ ] `attempt_resolution=reject | retry_after_absence` 先落定：迟到事实不推进旧 Run，登记身份、返回 `superseded_by_decision` 并受控终止旧执行体
-- [ ] 自动 escalate/hold 不写 resolution，事实优先窗口保持开放
+- [x] 自动 escalate/hold 不写 resolution，事实优先窗口保持开放
+
+> 证据（PR #125 / #124）：`internal/storage/attempt_race.go`——唯一 `ResolveAttemptRace` 是执行事实与 `attempt_resolution` 的单一线性化点，**显式不释放隔离**（doc comment + 行为：started 事实只证明执行体存在、不证明消失）。事实先到（resolution 为空）：`spawning→running`、Run `queued/waiting_human→running`、`waiting_human` 时以 `superseded_by_fact` 关闭 startup_stall Interrupt 并接管监督，不终止正常执行体；`reject` 决定先到：写 `attempt_resolution='reject'`、Run→`failed`、Interrupt 关闭为 `responded`，**隔离仍保持 frozen**；迟到事实在 resolution 已落后只登记身份（pid/started/executable）、返回 `superseded_by_decision`、不推进旧 Run；`retry_after_absence` 由 `internal/storage/termination.go` `RecordTerminationObservation`（Source=retry、absence 已确认）写入，且只有 `Absent=true` 才把 `isolation_state` 由 `frozen` 释放为 `none`。`isolation_state` 是 attempts 上独立于 Run 状态的投影（#106 迁移），全仓库无 worktree 回收/reap 生产路径（`worktree.Manager.Remove` 无调用方），故「未证明消失前不回收/不复用、即使 Run `failed`」的不变量成立。覆盖 `TestResolveAttemptRaceFactWinsWhileFrozen`、`TestResolveAttemptRaceDecisionAbsorbsLateFact`（断言 reject 后隔离 frozen、pid 已登记、close_reason=responded）。
+>
+> **接线状态（勿读作端到端完成）**：四个入口仅 `claim:started` 已接——`internal/controlplane/handoff.go` `claim.started` → `ConfirmStarted`（`internal/storage/handoff.go`）→ `ResolveAttemptRace`，故事实先到路径（第 3 项）生产可达。其余三入口均为**端口已有、调用未接**：恢复补 started（§3.4 恢复扫描未实现）、迟到 `result.json`（无生产消费者读真实 result.json 并仲裁；skeleton 链用 fake 证据，成功事实接 Gate/Create Change 留 M4）、Interrupt 指令（M5 §5.4 `/sift reject|retry|...` 未实现，`Reject=true` 分支仅测试覆盖）。因此第 4 项（reject/retry_after_absence 决定先到 + 受控终止旧执行体）的仲裁逻辑虽已实现并测试交错，但决定入口与「受控终止旧执行体」（依赖 §3.7 `Terminator.Terminate`，亦无生产调用方）均未接，该项与门禁对应项保持 `[ ]`，待 §3.4/§3.7/M5 §5.4 调用方接入后再勾。第 5 项是仲裁函数的不变量：除显式 `Reject` 与 absence 已确认的 retry 外不写 resolution，escalate/hold（M5 §5.3）即使接入也无法经本函数写 resolution，事实优先窗口保持开放。
 
 #### 3.6 Attention 泛型单一发射器核心
 
