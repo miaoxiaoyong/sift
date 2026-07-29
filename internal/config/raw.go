@@ -177,6 +177,7 @@ type RawReport struct {
 // RawGateDefaults holds the project-policy defaults (config.md §3.11).
 type RawGateDefaults struct {
 	ReviewPolicy         *ReviewPolicy `json:"review_policy,omitempty"`
+	RiskyReviewThreshold *int          `json:"risky_review_threshold,omitempty"`
 	AutoMerge            *bool         `json:"auto_merge,omitempty"`
 	ChecksPendingTimeout *string       `json:"checks_pending_timeout,omitempty"`
 	FlakyRetryLimit      *int          `json:"flaky_retry_limit,omitempty"`

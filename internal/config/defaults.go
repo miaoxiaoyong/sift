@@ -99,6 +99,7 @@ func DefaultConfig() *Config {
 		},
 		GateDefaults: GateDefaults{
 			ReviewPolicy:         ReviewPolicyAlways,
+			RiskyReviewThreshold: 1,
 			AutoMerge:            false,
 			ChecksPendingTimeout: 1 * time.Hour,
 			FlakyRetryLimit:      1,

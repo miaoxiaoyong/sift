@@ -168,6 +168,7 @@ func TestRangeValidation(t *testing.T) {
 		{"attention_bad_tz", "version: 1\nattention:\n  day_timezone: Not/A/Zone\n"},
 		{"attention_daily_summary_bad", "version: 1\nattention:\n  daily_summary_at: 25:00\n"},
 		{"gate_review_policy_bad", "version: 1\ngate_defaults:\n  review_policy: sometimes\n"},
+		{"gate_risky_review_threshold_bad", "version: 1\ngate_defaults:\n  risky_review_threshold: 101\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -186,7 +187,8 @@ func TestRangeAcceptanceBoundaries(t *testing.T) {
 		"version: 1\nforge:\n  warning_ratio: 0.0001\n",
 		"version: 1\ncertification:\n  leak_rate_max: 0.0\n",
 		"version: 1\nreport:\n  dedupe_window: 0s\n",
-		"version: 1\nmetrics:\n  code_review: 0\n",        // non-negative incl 0
+		"version: 1\nmetrics:\n  code_review: 0\n", // non-negative incl 0
+		"version: 1\ngate_defaults:\n  risky_review_threshold: 100\n",
 		"version: 1\nforge:\n  slow_poll_interval: 10m\n", // >= active interval ok
 	}
 	for _, yaml := range cases {

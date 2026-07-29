@@ -683,6 +683,9 @@ func normalizeGateDefaults(raw *RawGateDefaults, cfg *Config) error {
 	if raw.ReviewPolicy != nil {
 		cfg.GateDefaults.ReviewPolicy = *raw.ReviewPolicy
 	}
+	if err := overlayInt("gate_defaults.risky_review_threshold", raw.RiskyReviewThreshold, &cfg.GateDefaults.RiskyReviewThreshold, 0, 100); err != nil {
+		return err
+	}
 	if raw.AutoMerge != nil {
 		cfg.GateDefaults.AutoMerge = *raw.AutoMerge
 	}
