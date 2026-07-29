@@ -31,11 +31,13 @@ func TestEvaluateOrderingAndShadow(t *testing.T) {
 	if e != nil || v.Kind != "failed" || v.Code != "change_not_open" {
 		t.Fatalf("closed must win: %#v %v", v, e)
 	}
-	in = input(t)
-	in.Change.ChangedPaths = []string{".sift/policy.yaml"}
-	v, e = Evaluate(in)
-	if e != nil || v.Code != "hard_guardrail" || ShadowDecision(v) != "block" {
-		t.Fatalf("hard: %#v %v", v, e)
+	for _, changedPath := range []string{".sift/policy.yaml", ".github/workflows/ci.yml", ".gitlab-ci.yml"} {
+		in = input(t)
+		in.Change.ChangedPaths = []string{changedPath}
+		v, e = Evaluate(in)
+		if e != nil || v.Code != "hard_guardrail" || ShadowDecision(v) != "block" {
+			t.Fatalf("hard path %q: %#v %v", changedPath, v, e)
+		}
 	}
 	in = input(t)
 	v, e = Evaluate(in)

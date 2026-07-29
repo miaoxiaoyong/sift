@@ -6,10 +6,50 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miaoxiaoyong/sift/internal/brain"
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/gate"
 	"github.com/miaoxiaoyong/sift/internal/policy"
 )
+
+func TestReplayBrainJSONLReplaysValidAndFallbackT3(t *testing.T) {
+	result := `{"risk_score":7,"risk_points":["small diff"],"rationale":"bounded"}`
+	raw, err := json.Marshal(map[string]any{"result_text": result, "usage": map[string]int{"input_tokens": 1, "output_tokens": 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, err := brain.T3Contract().ValidateOutput([]byte(result))
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := map[string]any{
+		"record_type": "brain_call", "record_id": "t3-valid", "touchpoint": "T3",
+		"prompt_version": brain.T3Asset().PromptVersion, "output_schema_version": brain.T3Asset().OutputSchemaVersion,
+		"status": "valid", "selected_attempt_no": 1, "validated_output": json.RawMessage(validated),
+		"attempts": []map[string]any{{"provider_attempt": 1, "raw_output": string(raw)}},
+	}
+	fallback := map[string]any{
+		"record_type": "brain_call", "record_id": "t3-fallback", "touchpoint": "T3",
+		"prompt_version": brain.T3Asset().PromptVersion, "output_schema_version": brain.T3Asset().OutputSchemaVersion,
+		"status": "fallback", "selected_attempt_no": nil, "validated_output": nil,
+		"attempts": []any{},
+	}
+	validLine, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackLine, err := json.Marshal(fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := ReplayBrainJSONL(bytes.NewReader(append(append(validLine, '\n'), append(fallbackLine, '\n')...)), map[string]brain.TouchpointContract{"T3": brain.T3Contract()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Records != 2 || report.Validated != 1 || report.Fallbacks != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+}
 
 func TestReplayGateJSONLUsesFrozenInput(t *testing.T) {
 	cert := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
