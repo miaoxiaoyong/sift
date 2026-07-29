@@ -78,7 +78,8 @@ func TestLaunchWorkerWrapperCrashSuite(t *testing.T) {
 	go func() { _ = server.Serve(serveCtx) }()
 
 	wrapperPath := buildE2EWrapper(t)
-	backend := execWrapperBackend{path: wrapperPath, pgid: true}
+	backend := &execWrapperBackend{path: wrapperPath, pgid: true}
+	defer backend.cleanup()
 	worker := &Worker{
 		DB: db, BootID: boot, WorkerID: "e2e-worker", Root: root, Lease: time.Minute,
 		Backend: backend, Agents: []config.Agent{{ID: "agent", Executable: "/bin/sh", Args: []string{"-c", "echo started >> $SIFT_RUN_DIR/agent-started; kill -KILL $$"}, TaskTransport: config.TaskTransportStdin}},
@@ -103,6 +104,7 @@ func TestLaunchWorkerWrapperCrashSuite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer check.Close()
+	waitForDurableLaunch(t, check)
 	if err := check.QueryRow(`SELECT a.phase,o.state FROM attempts a JOIN outbox_operations o ON o.run_id=a.run_id WHERE a.run_id='run-1'`).Scan(&phase, &operationState); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +155,7 @@ func TestLaunchWorkerReclaimsPreparedBootstrapAfterCrashWindows(t *testing.T) {
 			}
 			completeLaunchRecovery(t, db, boot, now.UnixMilli(), "supervise")
 
-			worker := &Worker{DB: db, BootID: boot, WorkerID: "crashed-worker", Root: root, Lease: 10 * time.Millisecond, Now: func() time.Time { return now }, Backend: execWrapperBackend{path: wrapperPath, pgid: true}, Agents: launchTestAgents(), hooks: crash.hooks}
+			worker := &Worker{DB: db, BootID: boot, WorkerID: "crashed-worker", Root: root, Lease: 10 * time.Millisecond, Now: func() time.Time { return now }, Backend: &execWrapperBackend{path: wrapperPath, pgid: true}, Agents: launchTestAgents(), hooks: crash.hooks}
 			if err := worker.RunOnce(ctx); !errors.Is(err, errInjectedCrash) {
 				t.Fatalf("crashed worker = %v, want injected crash", err)
 			}
@@ -172,7 +174,8 @@ func TestLaunchWorkerReclaimsPreparedBootstrapAfterCrashWindows(t *testing.T) {
 			defer func() { cancel(); _ = server.Close() }()
 			go func() { _ = server.Serve(serveCtx) }()
 
-			backend := &countingBackend{backend: execWrapperBackend{path: wrapperPath, pgid: true}}
+			backend := &countingBackend{backend: &execWrapperBackend{path: wrapperPath, pgid: true}}
+			defer backend.cleanup()
 			worker = &Worker{DB: db, BootID: restartedBoot, WorkerID: "reclaimed-worker", Root: root, Lease: time.Minute, Now: func() time.Time { return restartedAt.Add(time.Millisecond) }, Backend: backend, Agents: launchTestAgents()}
 			if err := worker.RunOnce(ctx); err != nil {
 				t.Fatalf("reclaimed worker: %v", err)
@@ -218,6 +221,19 @@ func launchTestAgents() []config.Agent {
 	return []config.Agent{{ID: "agent", Executable: "/bin/sh", Args: []string{"-c", "echo started >> $SIFT_RUN_DIR/agent-started"}, TaskTransport: config.TaskTransportStdin}}
 }
 
+func waitForDurableLaunch(t *testing.T, db *sql.DB) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var phase, state string
+		if err := db.QueryRow(`SELECT a.phase,o.state FROM attempts a JOIN outbox_operations o ON o.run_id=a.run_id WHERE a.run_id='run-1'`).Scan(&phase, &state); err == nil && phase == "running" && state == string(storage.OperationSucceeded) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("launch did not reach durable running state")
+}
+
 func waitForLines(t *testing.T, path string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -231,7 +247,7 @@ func waitForLines(t *testing.T, path string, want int) {
 }
 
 type countingBackend struct {
-	backend execWrapperBackend
+	backend *execWrapperBackend
 	spawns  int
 }
 
@@ -240,12 +256,15 @@ func (b *countingBackend) Spawn(ctx context.Context, bootstrap string) (*os.Proc
 	return b.backend.Spawn(ctx, bootstrap)
 }
 
+func (b *countingBackend) cleanup() { b.backend.cleanup() }
+
 type execWrapperBackend struct {
-	path string
-	pgid bool
+	path    string
+	pgid    bool
+	process *os.Process
 }
 
-func (b execWrapperBackend) Spawn(ctx context.Context, bootstrap string) (*os.Process, error) {
+func (b *execWrapperBackend) Spawn(ctx context.Context, bootstrap string) (*os.Process, error) {
 	cmd := osexec.CommandContext(ctx, b.path, bootstrap)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -255,7 +274,16 @@ func (b execWrapperBackend) Spawn(ctx context.Context, bootstrap string) (*os.Pr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start wrapper: %w", err)
 	}
+	b.process = cmd.Process
 	return cmd.Process, nil
+}
+
+func (b *execWrapperBackend) cleanup() {
+	if b.process == nil {
+		return
+	}
+	_ = b.process.Kill()
+	_, _ = b.process.Wait()
 }
 
 func buildE2EWrapper(t *testing.T) string {
