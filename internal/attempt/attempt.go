@@ -43,12 +43,19 @@ type Started struct {
 // contract step 8). Exactly one of ExitCode/Signal is set on a finished
 // attempt; FinalHeadSHA is what links the attempt to the Change the reconciler
 // later observes as merged.
+type Identity struct {
+	PID         int    `json:"pid"`
+	StartedAtMS int64  `json:"started_at_ms"`
+	Executable  string `json:"executable"`
+}
+
 type Result struct {
 	ExitCode     *int
 	Signal       string
 	FinalHeadSHA string
 	Digest       string // result.json content digest
 	FinishedAt   time.Time
+	Agent        Identity
 }
 
 // ErrNotFinished is returned by Result before the fake agent has produced
