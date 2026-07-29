@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/miaoxiaoyong/sift/internal/hooks"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -22,15 +24,25 @@ type doctorCheck struct {
 }
 
 func doctor(ctx context.Context, offline bool, home config.Home) map[string]any {
-	ctx, cancel := context.WithTimeout(ctx, deadline)
+	// Dependency probes are independent checks; a slow or unavailable command
+	// must not consume the entire budget for the later SQLite and projection checks.
+	ctx, cancel := context.WithTimeout(ctx, 15*deadline)
 	defer cancel()
 	checks := []doctorCheck{runtimeCheck(), permissionCheck(home.Path, "home", 0o700, true)}
+	var cfg *config.Config
 	if snapshot, err := config.Load(home, time.Now()); err != nil {
 		checks = append(checks, errorCheck("config", err))
 	} else {
-		checks = append(checks, executableChecks(ctx, snapshot.Config)...)
+		cfg = snapshot.Config
+		checks = append(checks, executableChecks(ctx, cfg)...)
+		checks = append(checks, processGroupChecks(cfg)...)
 	}
-	checks = append(checks, sqliteCheck(ctx, filepath.Join(home.Path, "sift.db")))
+	dbPath := filepath.Join(home.Path, "sift.db")
+	checks = append(checks, sqliteCheck(ctx, dbPath))
+	if cfg != nil {
+		checks = append(checks, hookChecks(ctx, dbPath, cfg)...)
+	}
+	checks = append(checks, attemptChecks(ctx, dbPath)...)
 	checks = append(checks, homePermissions(home.Path, offline)...)
 	checks = append(checks, unsafeLocalCheck())
 
@@ -84,6 +96,68 @@ func executableChecks(ctx context.Context, cfg *config.Config) []doctorCheck {
 	return checks
 }
 
+func processGroupChecks(cfg *config.Config) []doctorCheck {
+	checks := make([]doctorCheck, 0, len(cfg.Agents))
+	for _, agent := range cfg.Agents {
+		checks = append(checks, doctorCheck{ID: "process-group:" + agent.ID, Level: "warning", Message: "process-group qualification is not verified", Details: map[string]any{"agent_id": agent.ID, "status": "process-group-unverified"}})
+	}
+	return checks
+}
+
+func hookChecks(ctx context.Context, dbPath string, cfg *config.Config) []doctorCheck {
+	baselines, _, err := storage.ReadDoctorState(ctx, dbPath)
+	if err != nil {
+		return []doctorCheck{{ID: "hooks:storage", Level: "warning", Message: err.Error(), Details: map[string]any{}}}
+	}
+	byProject := make(map[string]string, len(baselines))
+	for _, b := range baselines {
+		byProject[b.ProjectID] = b.Digest
+	}
+	checks := make([]doctorCheck, 0, len(cfg.Projects))
+	for _, project := range cfg.Projects {
+		if !project.Enabled {
+			continue
+		}
+		snapshot, err := hooks.Capture(ctx, project.Repo)
+		if err != nil {
+			checks = append(checks, doctorCheck{ID: "hooks:" + project.ID, Level: "warning", Message: err.Error(), Details: map[string]any{"project_id": project.ID}})
+			continue
+		}
+		details := map[string]any{"project_id": project.ID, "git_config_digest": snapshot.GitConfigDigest, "effective_hooks_path": snapshot.EffectiveHooksPath, "hooks_directory_digest": snapshot.DirectoryDigest, "digest": snapshot.Digest}
+		if snapshot.CoreHooksPathValue != nil {
+			details["core_hooks_path"] = *snapshot.CoreHooksPathValue
+		}
+		baseline, ok := byProject[project.ID]
+		if !ok {
+			checks = append(checks, doctorCheck{ID: "hooks:" + project.ID, Level: "warning", Message: "hooks baseline is absent", Details: details})
+			continue
+		}
+		details["baseline_digest"] = baseline
+		if baseline != snapshot.Digest {
+			checks = append(checks, doctorCheck{ID: "hooks:" + project.ID, Level: "warning", Message: "hooks state drifted from baseline", Details: details})
+		} else {
+			checks = append(checks, doctorCheck{ID: "hooks:" + project.ID, Level: "ok", Message: "hooks match baseline", Details: details})
+		}
+	}
+	return checks
+}
+
+func attemptChecks(ctx context.Context, dbPath string) []doctorCheck {
+	_, attempts, err := storage.ReadDoctorState(ctx, dbPath)
+	if err != nil {
+		return []doctorCheck{{ID: "attempts:storage", Level: "warning", Message: err.Error(), Details: map[string]any{}}}
+	}
+	checks := make([]doctorCheck, 0, len(attempts))
+	for _, a := range attempts {
+		level, message := "warning", "attempt remains active or isolated"
+		if a.IsolationState == "frozen" {
+			message = "attempt is isolated; worktree is intentionally retained"
+		}
+		checks = append(checks, doctorCheck{ID: fmt.Sprintf("attempt:%s/%d", a.RunID, a.AttemptNo), Level: level, Message: message, Details: map[string]any{"run_id": a.RunID, "attempt_no": a.AttemptNo, "phase": a.Phase, "isolation_state": a.IsolationState, "worktree_path": a.WorktreePath, "agent_id": a.AgentID}})
+	}
+	return checks
+}
+
 func configUsesTmux(cfg *config.Config) bool {
 	if cfg.Runtime.Backend == config.BackendTmux {
 		return true
@@ -105,6 +179,13 @@ func commandCheck(ctx context.Context, id, name string, args []string) doctorChe
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, path, args...)
 	output, err := cmd.CombinedOutput()
+	// macOS can transiently kill a shell-backed fixture when the full package
+	// suite is CPU constrained. Retry that observation once; real command
+	// failures still remain errors.
+	if exit, ok := err.(*exec.ExitError); ok && exit.ProcessState.Sys() == syscall.SIGKILL && ctx.Err() == nil {
+		cmd = exec.CommandContext(commandCtx, path, args...)
+		output, err = cmd.CombinedOutput()
+	}
 	if err != nil {
 		if text := strings.TrimSpace(string(output)); text != "" {
 			return errorCheck(id, fmt.Errorf("%s: %w", text, err))

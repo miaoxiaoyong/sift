@@ -329,8 +329,8 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 3.8 hooks 与 doctor
 
-- [ ] hooks 指纹覆盖 `.git/config`、`core.hooksPath` 值和最终目录内容；Agent 结束后复核
-- [ ] `doctor` 报 hooks 漂移、隔离 attempt/未回收 worktree、process-group 资格与 `unsafe-local`
+- [x] hooks 指纹覆盖 `.git/config`、`core.hooksPath` 值和最终目录内容；Agent 结束后复核（`internal/hooks`；doctor 对当前基线做漂移报告）
+- [x] `doctor` 报 hooks 漂移、隔离 attempt/未回收 worktree、process-group 资格与 `unsafe-local`
 
 ### 先写/增补 spec
 
