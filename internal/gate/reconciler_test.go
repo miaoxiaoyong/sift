@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -107,6 +108,114 @@ func TestReconcilerPhaseEvidence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReconcilerPolicyReadErrorMatrixIsolatesOnlyBadProject(t *testing.T) {
+	ctx := context.Background()
+	now := time.UnixMilli(1_700_000_000_000)
+	for _, tc := range []struct {
+		name         string
+		repo         func(t *testing.T) (string, string)
+		wantIsolated bool
+	}{
+		{"policy_missing_is_valid_defaults", func(t *testing.T) (string, string) { return initPolicyRepo(t), "main" }, false},
+		{"invalid_policy", func(t *testing.T) (string, string) { return policyRepo(t, "version: 2\n"), "main" }, true},
+		{"unknown_base", func(t *testing.T) (string, string) { return initPolicyRepo(t), "does-not-exist" }, true},
+		{"unreadable_repository", func(t *testing.T) (string, string) { return filepath.Join(t.TempDir(), "missing-repo"), "main" }, true},
+		{"existing_policy_git_show_failure", func(t *testing.T) (string, string) {
+			repo := policyRepo(t, "version: 1\n")
+			out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD:.sift/policy.yaml").Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			hash := strings.TrimSpace(string(out))
+			if err := os.Remove(filepath.Join(repo, ".git", "objects", hash[:2], hash[2:])); err != nil {
+				t.Fatal(err)
+			}
+			return repo, "main"
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(t.TempDir(), "sift.db"), BinaryVersion: "test", Now: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			for _, project := range []string{"bad", "good"} {
+				if err := db.SeedProjectForTest(ctx, "cfg-"+project, project, now.UnixMilli()); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.SeedGateCandidateForTest(ctx, "run-"+project, project, "cfg-"+project, "42", now.UnixMilli()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			badRepo, badBase := tc.repo(t)
+			checkBase, err := sql.Open("sqlite", db.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := checkBase.Exec(`UPDATE attempts SET base_ref=? WHERE run_id='run-bad'`, badBase); err != nil {
+				checkBase.Close()
+				t.Fatal(err)
+			}
+			checkBase.Close()
+			newReconciler := func(project, repo, base string) *gate.Reconciler {
+				return &gate.Reconciler{DB: db, Forge: &phaseForge{path: "cmd/a.go", checks: "success"}, Brain: brain.NewShell(db, config.Brain{Executable: "fake", DailyTokenLimit: 100, MaxInputBytes: 1 << 20, MaxRawOutputBytes: 1 << 20}, &brain.FakeProvider{Responses: []brain.FakeResponse{{ResultText: `{"risk_score":1,"risk_points":["small"],"rationale":"bounded"}`}}}, func() time.Time { return now }), ProjectID: project, Project: forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo-" + project}, Repo: repo, Defaults: config.GateDefaults{ReviewPolicy: config.ReviewPolicyNever, RiskyReviewThreshold: 100, ChecksPendingTimeout: time.Hour, FlakyRetryLimit: 1}, Now: func() time.Time { return now }}
+			}
+			if err := newReconciler("bad", badRepo, badBase).ReconcileOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := newReconciler("good", initPolicyRepo(t), "main").ReconcileOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			isolated, err := db.ProjectIsolated(ctx, "bad")
+			if err != nil || isolated != tc.wantIsolated {
+				t.Fatalf("bad isolation=%v, want %v: %v", isolated, tc.wantIsolated, err)
+			}
+			check, err := sql.Open("sqlite", db.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer check.Close()
+			var badGates, badMerges, goodGates int
+			if err := check.QueryRow(`SELECT COUNT(*) FROM gate_evaluations WHERE run_id='run-bad'`).Scan(&badGates); err != nil {
+				t.Fatal(err)
+			}
+			if err := check.QueryRow(`SELECT COUNT(*) FROM outbox_operations WHERE run_id='run-bad' AND kind='merge_change'`).Scan(&badMerges); err != nil {
+				t.Fatal(err)
+			}
+			if err := check.QueryRow(`SELECT COUNT(*) FROM gate_evaluations WHERE run_id='run-good'`).Scan(&goodGates); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantIsolated && (badGates != 0 || badMerges != 0) {
+				t.Fatalf("isolated project wrote gates=%d merges=%d", badGates, badMerges)
+			}
+			if !tc.wantIsolated && badGates != 1 {
+				t.Fatalf("missing policy must use defaults, gates=%d", badGates)
+			}
+			if goodGates != 1 {
+				t.Fatalf("healthy project was not reconciled, gates=%d", goodGates)
+			}
+		})
+	}
+}
+
+func policyRepo(t *testing.T, content string) string {
+	t.Helper()
+	repo := initPolicyRepo(t)
+	if err := os.Mkdir(filepath.Join(repo, ".sift"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".sift", "policy.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "add", ".sift/policy.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repo, "commit", "-m", "policy").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	return repo
 }
 
 func TestReconcilerIsolatesBadPolicyProjectWithoutStoppingHealthyProject(t *testing.T) {
