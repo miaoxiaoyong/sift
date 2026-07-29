@@ -466,7 +466,6 @@ func TestLaunchWorkerProcessHelper(t *testing.T) {
 	if os.Getenv("SIFT_LAUNCH_POST_SPAWN") == "1" {
 		backend.ready = os.Getenv("SIFT_LAUNCH_READY")
 		backend.spawnLog = os.Getenv("SIFT_LAUNCH_SPAWN_LOG")
-		backend.block = true
 		agents = []config.Agent{{ID: "agent", Executable: os.Getenv("SIFT_LAUNCH_AGENT"), Args: []string{"-c", os.Getenv("SIFT_LAUNCH_AGENT_SCRIPT")}, TaskTransport: config.TaskTransportStdin}}
 	}
 	worker := &Worker{DB: db, BootID: os.Getenv("SIFT_LAUNCH_BOOT"), WorkerID: "killed-worker", Root: os.Getenv("SIFT_LAUNCH_ROOT"), Lease: 10 * time.Millisecond, Now: func() time.Time { return time.UnixMilli(nowMS) }, Backend: backend, Agents: agents, hooks: hooks}
@@ -581,7 +580,6 @@ type execWrapperBackend struct {
 	process  *os.Process
 	ready    string
 	spawnLog string
-	block    bool
 }
 
 func (b *execWrapperBackend) Spawn(ctx context.Context, bootstrap string) (*os.Process, error) {
@@ -605,9 +603,6 @@ func (b *execWrapperBackend) Spawn(ctx context.Context, bootstrap string) (*os.P
 			return nil, err
 		}
 	}
-	if b.block {
-		select {}
-	}
 	return cmd.Process, nil
 }
 
@@ -624,7 +619,7 @@ func buildE2EWrapper(t *testing.T) string {
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
 	path := filepath.Join(t.TempDir(), "sift-agent-wrapper")
-	cmd := osexec.Command("go", "build", "-o", path, "./cmd/sift-agent-wrapper")
+	cmd := osexec.Command("go", "build", "-tags", "sift_test", "-o", path, "./cmd/sift-agent-wrapper")
 	cmd.Dir = root
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build wrapper: %v\n%s", err, output)
