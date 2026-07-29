@@ -47,6 +47,17 @@ func (c *TerminationCoordinator) Recover(ctx context.Context) error {
 		} else if disposition == storage.AttemptRaceSupersededByFact || disposition == storage.AttemptRaceDuplicate {
 			continue
 		}
+		// A matching owner is still the single owner. Recovery must resume its
+		// handoff/supervision rather than kill it merely because siftd restarted.
+		// Running attempts additionally require a fresh heartbeat; a stale one
+		// enters the same controlled-termination path as supervisor timeout.
+		live, err := c.ownerIsLive(ctx, attempt)
+		if err != nil {
+			return err
+		}
+		if live && (attempt.Phase == "starting" || attempt.Phase == "spawning" || (attempt.Phase == "running" && !c.heartbeatStale(attempt))) {
+			continue
+		}
 		if err := c.terminate(ctx, attempt, storage.TerminationRecovery, attempt.RunVersion); err != nil {
 			return err
 		}
@@ -89,6 +100,29 @@ func (c *TerminationCoordinator) Operator(ctx context.Context, runID string, exp
 		source = storage.TerminationRetry
 	}
 	return c.terminate(ctx, attempt, source, expectedVersion)
+}
+
+func (c *TerminationCoordinator) heartbeatStale(attempt storage.RecoveryAttempt) bool {
+	if c.Runtime.HeartbeatStaleAfter <= 0 {
+		return false
+	}
+	now := time.Now
+	if c.Now != nil {
+		now = c.Now
+	}
+	return attempt.HeartbeatAtMS == 0 || attempt.HeartbeatAtMS < now().Add(-c.Runtime.HeartbeatStaleAfter).UnixMilli()
+}
+
+func (c *TerminationCoordinator) ownerIsLive(ctx context.Context, attempt storage.RecoveryAttempt) (bool, error) {
+	if c.Terminator.Inspector == nil || attempt.WrapperPID <= 0 || attempt.WrapperStartedAtMS <= 0 || attempt.WrapperExecutable == "" || attempt.WrapperPGID <= 0 || attempt.ControlNonceHash == "" {
+		return false, nil
+	}
+	want := runtimepkg.ProcessIdentity{PID: attempt.WrapperPID, StartedAtMS: attempt.WrapperStartedAtMS, Executable: attempt.WrapperExecutable, PGID: attempt.WrapperPGID, ControlNonceHash: attempt.ControlNonceHash, ControlPath: c.controlPath(attempt)}
+	got, err := c.Terminator.Inspector.Observe(ctx, want)
+	if err != nil || !got.Exists {
+		return false, err
+	}
+	return got.PID == want.PID && got.StartedAtMS == want.StartedAtMS && got.Executable == want.Executable && got.PGID == want.PGID && got.ControlNonceHash == want.ControlNonceHash, nil
 }
 
 func (c *TerminationCoordinator) controlPath(attempt storage.RecoveryAttempt) string {

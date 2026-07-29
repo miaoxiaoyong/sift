@@ -76,7 +76,7 @@ func (s *Server) handoffRequest(req Request) Response {
 		}
 		err := s.db.AcquireLaunchClaim(contextBackground(), storage.AcquireLaunchClaim{RunID: p.RunID, AttemptNo: p.AttemptNo, Generation: p.Generation, DispatchID: p.DispatchID, BootstrapNonce: req.Auth.Nonce, InstanceID: p.WrapperInstanceID, Session: p.SessionCandidate, Wrapper: toWrapper(p.WrapperIdentity), NowMS: now})
 		if err != nil {
-			return handoffFailure(req.RequestID, err)
+			return s.handoffFailure(req.RequestID, p.RunID, p.AttemptNo, req.Method, err)
 		}
 		return success(req.RequestID, map[string]any{"disposition": "acquired"})
 	case "claim.permit_spawn":
@@ -89,7 +89,7 @@ func (s *Server) handoffRequest(req Request) Response {
 		}
 		err := s.db.PermitSpawn(contextBackground(), storage.PermitSpawn{RunID: p.RunID, AttemptNo: p.AttemptNo, Generation: p.Generation, InstanceID: p.WrapperInstanceID, Session: req.Auth.Session, Permit: p.PermitCandidate, ControlDigest: p.ControlDigest, ControlNonceHash: p.ControlNonceHash, Wrapper: toWrapper(p.WrapperIdentity), NowMS: now})
 		if err != nil {
-			return handoffFailure(req.RequestID, err)
+			return s.handoffFailure(req.RequestID, p.RunID, p.AttemptNo, req.Method, err)
 		}
 		return success(req.RequestID, map[string]any{"disposition": "permitted"})
 	case "claim.started":
@@ -106,7 +106,7 @@ func (s *Server) handoffRequest(req Request) Response {
 		}
 		disposition, err := s.db.ConfirmStarted(contextBackground(), storage.StartedClaim{RunID: p.RunID, AttemptNo: p.AttemptNo, Generation: p.Generation, InstanceID: p.WrapperInstanceID, Session: req.Auth.Session, Permit: req.Auth.Permit, ControlDigest: p.ControlDigest, ResultDigest: result, Agent: storage.AgentIdentity{PID: p.AgentIdentity.PID, StartedAtMS: p.AgentIdentity.StartedAtMS, Executable: p.AgentIdentity.Executable}, NowMS: now})
 		if err != nil {
-			return handoffFailure(req.RequestID, err)
+			return s.handoffFailure(req.RequestID, p.RunID, p.AttemptNo, req.Method, err)
 		}
 		return success(req.RequestID, map[string]any{"disposition": disposition})
 	}
@@ -116,7 +116,16 @@ func toWrapper(p wrapperIdentityParams) storage.WrapperIdentity {
 	return storage.WrapperIdentity{PID: p.PID, StartedAtMS: p.StartedAtMS, Executable: p.Executable, PGID: p.PGID}
 }
 func contextBackground() context.Context { return context.Background() }
-func handoffFailure(id string, err error) Response {
+func (s *Server) handoffFailure(id, runID string, attemptNo int, method string, err error) Response {
+	if s.db != nil {
+		disposition := "conflict"
+		if errors.Is(err, storage.ErrHandoffStale) {
+			disposition = "stale"
+		} else if errors.Is(err, storage.ErrHandoffUnauthorized) {
+			disposition = "unauthorized"
+		}
+		_ = s.db.RecordHandoffSecurityEvent(contextBackground(), runID, attemptNo, method, disposition, time.Now().UnixMilli())
+	}
 	switch {
 	case errors.Is(err, storage.ErrHandoffUnauthorized):
 		return failure(id, "unauthorized", "credential rejected", false)

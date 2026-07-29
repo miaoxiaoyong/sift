@@ -62,6 +62,20 @@ func TestTerminationKillAfterAbsenceFailsWithoutNewAttempt(t *testing.T) {
 	assertCount(t, db, "attempts", 1)
 }
 
+func TestRecordHandoffSecurityEventDoesNotPersistCredentials(t *testing.T) {
+	db, ctx := seedTerminationAttempt(t)
+	if err := db.RecordHandoffSecurityEvent(ctx, "run", 1, "claim.acquire", "stale", testNow); err != nil {
+		t.Fatal(err)
+	}
+	var typ, payload string
+	if err := db.db.QueryRow(`SELECT type,payload_json FROM events WHERE type='security.handoff_rejected'`).Scan(&typ, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if typ != "security.handoff_rejected" || payload != `{"disposition":"stale","method":"claim.acquire"}` {
+		t.Fatalf("security event = %q %s", typ, payload)
+	}
+}
+
 func TestTerminationRetryAfterAbsenceCreatesNewAttempt(t *testing.T) {
 	db, ctx := seedTerminationAttempt(t)
 	run, err := db.RecordTerminationObservation(ctx, RecordTerminationObservationCmd{RunID: "run", AttemptNo: 1, ExpectedRunVersion: 1, ExpectedGeneration: 1, Source: TerminationRetry, Absent: true, Evidence: "group gone", NowMS: testNow})

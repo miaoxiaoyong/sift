@@ -22,6 +22,7 @@ type RecoveryAttempt struct {
 	WrapperExecutable  string
 	WrapperPGID        int
 	ControlNonceHash   string
+	HeartbeatAtMS      int64
 	IsolationState     string
 }
 
@@ -31,7 +32,7 @@ type RecoveryAttempt struct {
 func (d *DB) RecoveryAttempts(ctx context.Context) ([]RecoveryAttempt, error) {
 	rows, err := d.db.QueryContext(ctx, `SELECT a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id,
 		COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
-		COALESCE(a.control_nonce_hash,''),a.isolation_state
+		COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state
 		FROM attempts a JOIN runs r ON r.id=a.run_id
 		WHERE a.phase NOT IN ('finished','orphaned') ORDER BY a.run_id,a.attempt_no`)
 	if err != nil {
@@ -41,7 +42,7 @@ func (d *DB) RecoveryAttempts(ctx context.Context) ([]RecoveryAttempt, error) {
 	var attempts []RecoveryAttempt
 	for rows.Next() {
 		var a RecoveryAttempt
-		if err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.IsolationState); err != nil {
+		if err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState); err != nil {
 			return nil, err
 		}
 		attempts = append(attempts, a)
@@ -58,7 +59,7 @@ func (d *DB) RecoveryAttempts(ctx context.Context) ([]RecoveryAttempt, error) {
 func (d *DB) StaleHeartbeatAttempts(ctx context.Context, cutoffMS int64) ([]RecoveryAttempt, error) {
 	rows, err := d.db.QueryContext(ctx, `SELECT a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id,
 		COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
-		COALESCE(a.control_nonce_hash,''),a.isolation_state
+		COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state
 		FROM attempts a JOIN runs r ON r.id=a.run_id
 		WHERE a.phase='running' AND (a.heartbeat_at_ms IS NULL OR a.heartbeat_at_ms < ?) ORDER BY a.run_id,a.attempt_no`, cutoffMS)
 	if err != nil {
@@ -68,7 +69,7 @@ func (d *DB) StaleHeartbeatAttempts(ctx context.Context, cutoffMS int64) ([]Reco
 	var attempts []RecoveryAttempt
 	for rows.Next() {
 		var a RecoveryAttempt
-		if err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.IsolationState); err != nil {
+		if err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState); err != nil {
 			return nil, err
 		}
 		attempts = append(attempts, a)
@@ -80,9 +81,9 @@ func (d *DB) RecoveryAttemptForRun(ctx context.Context, runID string) (RecoveryA
 	var a RecoveryAttempt
 	err := d.db.QueryRowContext(ctx, `SELECT a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id,
 		COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
-		COALESCE(a.control_nonce_hash,''),a.isolation_state
+		COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state
 		FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.run_id=? AND a.phase NOT IN ('finished','orphaned') ORDER BY a.attempt_no DESC LIMIT 1`, runID).
-		Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.IsolationState)
+		Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState)
 	if err == sql.ErrNoRows {
 		return RecoveryAttempt{}, ErrRejectedStale
 	}
