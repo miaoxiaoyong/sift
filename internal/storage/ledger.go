@@ -34,10 +34,10 @@ type RecordHumanDecisionCmd struct {
 
 type HumanDecisionResult struct{ LedgerEntryID, CalibrationID, CertificationVersion string }
 
-// AppendExternalMergeFact atomically records a Forge merge fact and, only when
-// exactly one prior binary Gate calibration exists for this Run/head, binds it.
-// No temporal or "latest evaluation" heuristic is permitted.
-func (d *DB) AppendExternalMergeFact(ctx context.Context, cmd EventCmd, headSHA string) (string, error) {
+// AppendExternalMergeFact atomically records a Forge merge fact and its already
+// resolved immutable calibration binding. Callers must supply that exact identity;
+// this port never derives it from a Run, head, time, or candidate set.
+func (d *DB) AppendExternalMergeFact(ctx context.Context, cmd EventCmd, headSHA, gateEvaluationID, calibrationID string) (string, error) {
 	if cmd.Type != "forge_change_merged" || cmd.RunID == "" || cmd.ProjectID == "" || headSHA == "" || !validSource(cmd.Source) || !json.Valid(cmd.PayloadJSON) || cmd.OccurredAtMS <= 0 || cmd.RecordedAtMS < cmd.OccurredAtMS {
 		return "", errors.New("storage: invalid external merge fact")
 	}
@@ -60,24 +60,18 @@ func (d *DB) AppendExternalMergeFact(ctx context.Context, cmd EventCmd, headSHA 
 	if _, err = tx.ExecContext(ctx, `INSERT INTO events (id,run_id,project_id,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES (?,?,?,? ,?,1,?,?,?,?)`, id, cmd.RunID, cmd.ProjectID, cmd.Type, cmd.Source, string(cmd.PayloadJSON), nullable(cmd.IdempotencyKey), cmd.OccurredAtMS, cmd.RecordedAtMS); err != nil {
 		return "", err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT c.id FROM calibration_entries c JOIN gate_evaluations e ON e.id=c.gate_evaluation_id JOIN gate_input_snapshots s ON s.id=e.snapshot_id WHERE c.run_id=? AND s.head_sha=? AND c.predicted_decision IN ('allow','block') ORDER BY c.id`, cmd.RunID, headSHA)
-	if err != nil {
-		return "", err
+	if (gateEvaluationID == "") != (calibrationID == "") {
+		return "", errors.New("storage: external merge binding requires evaluation and calibration identity")
 	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var calibrationID string
-		if err := rows.Scan(&calibrationID); err != nil {
+	if calibrationID != "" {
+		var valid bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM calibration_entries WHERE id=? AND gate_evaluation_id=? AND run_id=? AND predicted_decision IN ('allow','block'))`, calibrationID, gateEvaluationID, cmd.RunID).Scan(&valid); err != nil {
 			return "", err
 		}
-		ids = append(ids, calibrationID)
-	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-	if len(ids) == 1 {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO external_decision_bindings (forge_fact_event_id,calibration_id,created_at_ms) VALUES (?,?,?)`, id, ids[0], cmd.RecordedAtMS); err != nil {
+		if !valid {
+			return "", errors.New("storage: external merge binding is not an exact binary Gate calibration for this run")
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO external_decision_bindings (forge_fact_event_id,calibration_id,created_at_ms) VALUES (?,?,?)`, id, calibrationID, cmd.RecordedAtMS); err != nil {
 			return "", err
 		}
 	}

@@ -103,4 +103,20 @@ func TestMergeWorkerUsesGateHeadCASAndStalesOldOperation(t *testing.T) {
 	if c.State != forge.ChangeMerged {
 		t.Fatalf("new Gate operation did not merge: %+v", c)
 	}
+	check, err := sql.Open("sqlite", db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	var evidence string
+	if err := check.QueryRow(`SELECT remote_evidence_json FROM outbox_operations WHERE operation_key=?`, storage.MergeChangeOperationKey("r1", "head-b")).Scan(&evidence); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(evidence), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["state"] != "merged" || got["head_sha"] != "head-b" || got["merge_sha"] == "" {
+		t.Fatalf("merge evidence = %#v, want merged expected head and merge SHA", got)
+	}
 }
