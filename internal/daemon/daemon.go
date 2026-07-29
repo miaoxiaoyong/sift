@@ -15,9 +15,11 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/forge"
 	"github.com/miaoxiaoyong/sift/internal/forgebudget"
 	"github.com/miaoxiaoyong/sift/internal/forgeworker"
+	"github.com/miaoxiaoyong/sift/internal/gate"
 	"github.com/miaoxiaoyong/sift/internal/intake"
 	"github.com/miaoxiaoyong/sift/internal/launchworker"
 	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/miaoxiaoyong/sift/internal/worktree"
 )
 
 type Daemon struct {
@@ -28,6 +30,7 @@ type Daemon struct {
 	Comments    []*forgeworker.CommentWorker
 	Changes     []*forgeworker.ChangeWorker
 	Merges      []*forgeworker.MergeWorker
+	Successes   []*gate.SuccessReconciler
 	Replies     []*intake.ReplyConsumer
 	Launch      *launchworker.Worker
 	Now         func() time.Time
@@ -90,6 +93,13 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 		d.Comments = append(d.Comments, &forgeworker.CommentWorker{DB: db, Client: adapter, ProjectID: p.ID, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:comment:" + p.ID})
 		d.Changes = append(d.Changes, &forgeworker.ChangeWorker{DB: db, Client: adapter, ProjectID: p.ID, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:change:" + p.ID})
 		d.Merges = append(d.Merges, &forgeworker.MergeWorker{DB: db, Client: adapter, ProjectID: p.ID, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:merge:" + p.ID})
+		if p.Repo != "" {
+			worktrees, err := worktree.NewManager(p.Repo, p.Repo+"/.sift-worktrees")
+			if err != nil {
+				return nil, fmt.Errorf("project %s: gate success worktree manager: %w", p.ID, err)
+			}
+			d.Successes = append(d.Successes, &gate.SuccessReconciler{DB: db, ProjectID: p.ID, Worktrees: worktrees, Now: now})
+		}
 		d.Replies = append(d.Replies, &intake.ReplyConsumer{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now})
 	}
 	return d, nil
@@ -130,6 +140,11 @@ func (d *Daemon) Tick(ctx context.Context) error {
 	for i, w := range d.Comments {
 		if err := w.RunOnce(ctx); err != nil {
 			return fmt.Errorf("comment[%d]: %w", i, err)
+		}
+	}
+	for i, r := range d.Successes {
+		if err := r.ReconcileOnce(ctx); err != nil {
+			return fmt.Errorf("gate-success[%d]: %w", i, err)
 		}
 	}
 	for i, w := range d.Changes {
