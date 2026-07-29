@@ -85,12 +85,12 @@ const (
 )
 
 type Change struct {
-	ID, URL, HeadSHA string
-	State            ChangeState
-	Mergeability     Mergeability
-	ReviewState      ReviewState
-	IsDraft          bool
-	MergedAt         time.Time
+	ID, URL, HeadSHA, MergeSHA string
+	State                      ChangeState
+	Mergeability               Mergeability
+	ReviewState                ReviewState
+	IsDraft                    bool
+	MergedAt                   time.Time
 }
 type Comment struct {
 	ID, Author, Body string

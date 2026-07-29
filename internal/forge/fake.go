@@ -75,6 +75,7 @@ func (f *Fake) InjectMerged(p ProjectRef, id string, at time.Time) (Change, erro
 		return Change{}, e
 	}
 	c.State = ChangeMerged
+	c.MergeSHA = "merge-" + c.HeadSHA
 	c.MergedAt = at
 	f.changes[projectKey(p)][id] = c
 	return c, nil
@@ -244,6 +245,7 @@ func (f *Fake) MergeChange(_ context.Context, p ProjectRef, id, expected, method
 		return Change{}, &ClassifiedError{Class: ErrSemanticConflict, Summary: "stale head"}
 	}
 	c.State = ChangeMerged
+	c.MergeSHA = "merge-" + c.HeadSHA
 	c.MergedAt = time.Now()
 	f.changes[projectKey(p)][id] = c
 	return c, nil

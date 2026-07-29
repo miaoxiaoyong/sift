@@ -465,6 +465,7 @@ type rawChange struct {
 		HeadSHA string `json:"head_sha"`
 	} `json:"diff_refs"`
 	MergedAt       *time.Time `json:"merged_at"`
+	MergeCommitSHA string     `json:"merge_commit_sha"`
 	Mergeable      *bool      `json:"mergeable"`
 	MergeableState string     `json:"mergeable_state"`
 	MergeStatus    string     `json:"merge_status"`
@@ -531,7 +532,7 @@ func (a *Adapter) change(x rawChange) (Change, error) {
 	if a.Kind == KindGitLab {
 		draft = strings.HasPrefix(strings.ToLower(strings.TrimSpace(x.Title)), "draft:") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(x.Title)), "wip:")
 	}
-	c := Change{ID: id, URL: url, HeadSHA: sha, State: state, Mergeability: merge, ReviewState: ReviewUnknown, IsDraft: draft}
+	c := Change{ID: id, URL: url, HeadSHA: sha, MergeSHA: x.MergeCommitSHA, State: state, Mergeability: merge, ReviewState: ReviewUnknown, IsDraft: draft}
 	if x.MergedAt != nil {
 		c.MergedAt = *x.MergedAt
 	}

@@ -42,20 +42,21 @@ func (d *DB) SeedLaunchRunForTest(ctx context.Context, runID, projectID, cfgID s
 	if err := d.SeedForgeRunForTest(ctx, runID, projectID, cfgID, "issue-1", nowMS); err != nil {
 		return err
 	}
+	taskID := "task-" + runID
 	if _, err := d.db.ExecContext(ctx, `INSERT INTO task_spec_snapshots
 		(id, run_id, version, schema_version, canonical_json, content_digest, created_at_ms)
-		VALUES ('task-1', ?, 1, 1, '{"title":"crash-suite"}', 'task-digest', ?)
-	`, runID, nowMS); err != nil {
+		VALUES (?, ?, 1, 1, '{"title":"crash-suite"}', 'task-digest', ?)
+	`, taskID, runID, nowMS); err != nil {
 		return fmt.Errorf("storage: seed launch task: %w", err)
 	}
-	if _, err := d.db.ExecContext(ctx, `UPDATE runs SET kind='bug', agent_id='agent', current_task_spec_id='task-1', version=2, updated_at_ms=? WHERE id=?`, nowMS, runID); err != nil {
+	if _, err := d.db.ExecContext(ctx, `UPDATE runs SET kind='bug', agent_id='agent', current_task_spec_id=?, version=2, updated_at_ms=? WHERE id=?`, taskID, nowMS, runID); err != nil {
 		return fmt.Errorf("storage: seed launch assignment: %w", err)
 	}
 	key := LaunchOperationKey(runID, 1, 1)
 	if _, err := d.db.ExecContext(ctx, `INSERT INTO attempts
 		(run_id, attempt_no, phase, generation, backend, agent_id, task_spec_snapshot_id,
 		 worktree_path, branch_name, base_ref, base_sha, isolation_state, created_at_ms, updated_at_ms)
-		VALUES (?, 1, 'pending', 1, 'process', 'agent', 'task-1', ?, 'main', 'main', 'base', 'none', ?, ?)`, runID, worktree, nowMS, nowMS); err != nil {
+		VALUES (?, 1, 'pending', 1, 'process', 'agent', ?, ?, 'main', 'main', 'base', 'none', ?, ?)`, runID, taskID, worktree, nowMS, nowMS); err != nil {
 		return fmt.Errorf("storage: seed launch attempt: %w", err)
 	}
 	if _, err := d.db.ExecContext(ctx, `INSERT INTO attempt_claims

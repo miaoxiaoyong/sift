@@ -36,6 +36,31 @@ func mergeState(t *testing.T, db *storage.DB, head string) storage.OperationStat
 	return state
 }
 
+func TestMergeWorkerStalesOldOperationWhenNewHeadIsAlreadyMerged(t *testing.T) {
+	ctx := context.Background()
+	db := openWorkerDB(t)
+	if err := db.SeedProjectForTest(ctx, "cfg1", "p1", cwNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedForgeRunForTest(ctx, "r1", "p1", "cfg1", "i1", cwNow); err != nil {
+		t.Fatal(err)
+	}
+	f := forge.NewFake()
+	ref := forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo-p1"}
+	f.AddChange(ref, "c1", "head-b")
+	if _, err := f.InjectMerged(ref, "c1", time.UnixMilli(cwNow)); err != nil {
+		t.Fatal(err)
+	}
+	enqueueMerge(t, db, "head-a")
+	w := &MergeWorker{DB: db, Client: f, ProjectID: "p1", WorkerID: "w", Lease: cwLease, Now: func() time.Time { return time.UnixMilli(cwNow) }}
+	if err := w.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := mergeState(t, db, "head-a"); got != storage.OperationStale {
+		t.Fatalf("old operation state=%s, want stale", got)
+	}
+}
+
 func TestMergeWorkerUsesGateHeadCASAndStalesOldOperation(t *testing.T) {
 	ctx := context.Background()
 	db := openWorkerDB(t)

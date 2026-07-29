@@ -3,6 +3,7 @@ package gate_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -105,6 +106,56 @@ func TestReconcilerPhaseEvidence(t *testing.T) {
 				t.Fatal("Brain replay did not receive production trace")
 			}
 		})
+	}
+}
+
+func TestReconcilerIsolatesBadPolicyProjectWithoutStoppingHealthyProject(t *testing.T) {
+	ctx := context.Background()
+	now := time.UnixMilli(1_700_000_000_000)
+	db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(t.TempDir(), "sift.db"), BinaryVersion: "test", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, project := range []string{"bad", "good"} {
+		if err := db.SeedProjectForTest(ctx, "cfg-"+project, project, now.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SeedGateCandidateForTest(ctx, "run-"+project, project, "cfg-"+project, "42", now.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	goodRepo := initPolicyRepo(t)
+	newReconciler := func(project, repo string) *gate.Reconciler {
+		return &gate.Reconciler{DB: db, Forge: &phaseForge{path: "cmd/a.go", checks: "success"}, Brain: brain.NewShell(db, config.Brain{Executable: "fake", DailyTokenLimit: 100, MaxInputBytes: 1 << 20, MaxRawOutputBytes: 1 << 20}, &brain.FakeProvider{Responses: []brain.FakeResponse{{ResultText: `{"risk_score":1,"risk_points":["small"],"rationale":"bounded"}`}}}, func() time.Time { return now }), ProjectID: project, Project: forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo-" + project}, Repo: repo, Defaults: config.GateDefaults{ReviewPolicy: config.ReviewPolicyNever, RiskyReviewThreshold: 100, ChecksPendingTimeout: time.Hour, FlakyRetryLimit: 1}, Now: func() time.Time { return now }}
+	}
+	if err := newReconciler("bad", filepath.Join(t.TempDir(), "missing-repo")).ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	isolated, err := db.ProjectIsolated(ctx, "bad")
+	if err != nil || !isolated {
+		t.Fatalf("bad project isolation = %v, %v", isolated, err)
+	}
+	if err := newReconciler("good", goodRepo).ReconcileOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var gates, merges int
+	check, err := sql.Open("sqlite", db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	if err := check.QueryRow(`SELECT COUNT(*) FROM gate_evaluations WHERE run_id='run-bad'`).Scan(&gates); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM outbox_operations WHERE run_id='run-bad' AND kind='merge_change'`).Scan(&merges); err != nil {
+		t.Fatal(err)
+	}
+	if gates != 0 || merges != 0 {
+		t.Fatalf("bad project wrote gates=%d merges=%d", gates, merges)
+	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM gate_evaluations WHERE run_id='run-good'`).Scan(&gates); err != nil || gates != 1 {
+		t.Fatalf("healthy project gate evaluations=%d, %v", gates, err)
 	}
 }
 

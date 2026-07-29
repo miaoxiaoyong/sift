@@ -46,6 +46,13 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
 	}
 	for _, c := range candidates {
 		if err := r.reconcile(ctx, c, now()); err != nil {
+			var policyErr *policyReadError
+			if errors.As(err, &policyErr) {
+				if isolateErr := r.DB.SetProjectHealth(ctx, r.ProjectID, "policy_invalid", now().UnixMilli()); isolateErr != nil {
+					return isolateErr
+				}
+				return nil
+			}
 			return err
 		}
 	}
@@ -205,27 +212,36 @@ func sourceGate(s brain.BrainSource) Source {
 }
 func boolp(v bool) *bool { return &v }
 
+type policyReadError struct{ err error }
+
+func (e *policyReadError) Error() string { return e.err.Error() }
+func (e *policyReadError) Unwrap() error { return e.err }
+
 func readBasePolicy(ctx context.Context, repo, base string) (policy.BasePolicy, error) {
 	sha, err := exec.CommandContext(ctx, "git", "-C", repo, "rev-parse", "--verify", base+"^{commit}").Output()
 	if err != nil {
-		return policy.BasePolicy{}, fmt.Errorf("read base policy %q: resolve base: %w", base, err)
+		return policy.BasePolicy{}, &policyReadError{fmt.Errorf("read base policy %q: resolve base: %w", base, err)}
 	}
 	object := strings.TrimSpace(string(sha))
 	out, err := exec.CommandContext(ctx, "git", "-C", repo, "show", object+":.sift/policy.yaml").Output()
 	if err == nil {
-		return policy.Parse(out)
+		base, parseErr := policy.Parse(out)
+		if parseErr != nil {
+			return policy.BasePolicy{}, &policyReadError{fmt.Errorf("read base policy %q: parse: %w", object, parseErr)}
+		}
+		return base, nil
 	}
 	// A missing policy is normal, but only after the base commit has been
 	// resolved. ls-tree itself must succeed; its empty result is the only
 	// missing-file case, so repository/read failures cannot fail open.
 	listed, listErr := exec.CommandContext(ctx, "git", "-C", repo, "ls-tree", "--name-only", object, "--", ".sift/policy.yaml").Output()
 	if listErr != nil {
-		return policy.BasePolicy{}, fmt.Errorf("read base policy %q: inspect policy path: %w", object, listErr)
+		return policy.BasePolicy{}, &policyReadError{fmt.Errorf("read base policy %q: inspect policy path: %w", object, listErr)}
 	}
 	if strings.TrimSpace(string(listed)) == "" {
 		return policy.Missing(), nil
 	}
-	return policy.BasePolicy{}, fmt.Errorf("read base policy %q: git show: %w", object, err)
+	return policy.BasePolicy{}, &policyReadError{fmt.Errorf("read base policy %q: git show: %w", object, err)}
 }
 func changedPaths(diff string) []string {
 	seen := map[string]bool{}

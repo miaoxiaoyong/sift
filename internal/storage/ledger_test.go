@@ -50,6 +50,39 @@ func TestRecordHumanDecisionSettlesBoundCalibrationAndProjectsCertification(t *t
 	assertCount(t, db, "ledger_entries", 2) // gate sample + human decision
 }
 
+func TestExternalMergeFactBindsExactGateAndSettlesIdempotently(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	if err := db.SeedProjectForTest(ctx, "cfg", "project", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedForgeRunForTest(ctx, "run", "project", "cfg", "42", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.ExecContext(ctx, `UPDATE runs SET kind='bug' WHERE id='run'`); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := db.RecordGateEvaluation(ctx, gateRecord(testNow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"change_id":"42","head_sha":"` + strings.Repeat("b", 40) + `","state":"merged"}`)
+	fact, err := db.AppendExternalMergeFact(ctx, EventCmd{RunID: "run", ProjectID: "project", Type: "forge_change_merged", Source: SourceForge, PayloadJSON: payload, IdempotencyKey: "fact", OccurredAtMS: testNow + 1, RecordedAtMS: testNow + 1}, strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := config.DefaultConfig().Certification
+	cert.TotalSamplesMin, cert.NegativeSamplesMin = 1, 1
+	out, err := db.RecordHumanDecision(ctx, RecordHumanDecisionCmd{Action: DecisionManualMerge, ForgeFactEventID: fact, NowMS: testNow + 2, Certification: cert})
+	if err != nil || out.CalibrationID != recorded.CalibrationID || out.CertificationVersion == "" {
+		t.Fatalf("settlement = %#v, %v", out, err)
+	}
+	again, err := db.RecordHumanDecision(ctx, RecordHumanDecisionCmd{Action: DecisionManualMerge, ForgeFactEventID: fact, NowMS: testNow + 3, Certification: cert})
+	if err != nil || again.LedgerEntryID != out.LedgerEntryID {
+		t.Fatalf("replay = %#v, %v", again, err)
+	}
+}
+
 func TestRecordHumanDecisionRejectsUnboundAndInconclusiveSettlement(t *testing.T) {
 	db, _ := openTestDB(t)
 	ctx := context.Background()

@@ -56,7 +56,7 @@ func (w *MergeWorker) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return w.classified(ctx, *c, err, now)
 	}
-	if current.State == forge.ChangeMerged {
+	if current.State == forge.ChangeMerged && current.HeadSHA == p.ExpectedHeadSHA && current.MergeSHA != "" {
 		return w.finish(ctx, *c, storage.OperationSucceeded, "", "", mergeEvidence(current), now)
 	}
 	if current.State != forge.ChangeOpen || current.HeadSHA != p.ExpectedHeadSHA {
@@ -75,7 +75,7 @@ func (w *MergeWorker) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return w.classified(ctx, *c, err, now)
 	}
-	if terminal.State != forge.ChangeMerged || terminal.HeadSHA != p.ExpectedHeadSHA {
+	if terminal.State != forge.ChangeMerged || terminal.HeadSHA != p.ExpectedHeadSHA || terminal.MergeSHA == "" {
 		return w.finish(ctx, *c, storage.OperationConflict, storage.ErrorSemanticConflict, "merge terminal state does not match Gate authorization", mergeEvidence(terminal), now)
 	}
 	return w.finish(ctx, *c, storage.OperationSucceeded, "", "", mergeEvidence(terminal), now)
@@ -97,6 +97,6 @@ func (w *MergeWorker) classified(ctx context.Context, c storage.ClaimedOperation
 }
 
 func mergeEvidence(c forge.Change) json.RawMessage {
-	b, _ := json.Marshal(map[string]string{"change_id": c.ID, "head_sha": c.HeadSHA, "state": string(c.State)})
+	b, _ := json.Marshal(map[string]string{"change_id": c.ID, "head_sha": c.HeadSHA, "merge_sha": c.MergeSHA, "state": string(c.State)})
 	return b
 }
