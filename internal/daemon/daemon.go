@@ -27,6 +27,7 @@ type Daemon struct {
 	Reconcilers []*intake.Reconciler
 	Comments    []*forgeworker.CommentWorker
 	Changes     []*forgeworker.ChangeWorker
+	Merges      []*forgeworker.MergeWorker
 	Replies     []*intake.ReplyConsumer
 	Launch      *launchworker.Worker
 	Now         func() time.Time
@@ -85,9 +86,10 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 		poller := &intake.Poller{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now, Idle: cfg.Scheduler.IntakeIdleInterval, Active: cfg.Scheduler.IntakeActiveInterval, Slow: cfg.Forge.SlowPollInterval, HourlyLimit: int64(cfg.Forge.HourlyAPILimit), WarningRatio: cfg.Forge.WarningRatio, OnIssue: evaluator.EvaluateIssue}
 		d.Pollers = append(d.Pollers, poller)
 		d.Evaluators = append(d.Evaluators, evaluator)
-		d.Reconcilers = append(d.Reconcilers, &intake.Reconciler{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now})
+		d.Reconcilers = append(d.Reconcilers, &intake.Reconciler{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now, Certification: cfg.Certification})
 		d.Comments = append(d.Comments, &forgeworker.CommentWorker{DB: db, Client: adapter, ProjectID: p.ID, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:comment:" + p.ID})
 		d.Changes = append(d.Changes, &forgeworker.ChangeWorker{DB: db, Client: adapter, ProjectID: p.ID, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:change:" + p.ID})
+		d.Merges = append(d.Merges, &forgeworker.MergeWorker{DB: db, Client: adapter, ProjectID: p.ID, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:merge:" + p.ID})
 		d.Replies = append(d.Replies, &intake.ReplyConsumer{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now})
 	}
 	return d, nil
@@ -133,6 +135,11 @@ func (d *Daemon) Tick(ctx context.Context) error {
 	for i, w := range d.Changes {
 		if err := w.RunOnce(ctx); err != nil {
 			return fmt.Errorf("change[%d]: %w", i, err)
+		}
+	}
+	for i, w := range d.Merges {
+		if err := w.RunOnce(ctx); err != nil {
+			return fmt.Errorf("merge[%d]: %w", i, err)
 		}
 	}
 	if d.Launch != nil {

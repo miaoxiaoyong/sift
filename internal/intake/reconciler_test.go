@@ -2,6 +2,7 @@ package intake
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -64,6 +65,21 @@ func TestReconcilerOnceExternalMergeCompletesWaitingHuman(t *testing.T) {
 	}
 	if run.Status != storage.RunDone || !run.GateBypassed || run.ChangeID != change.ID {
 		t.Fatalf("run after external merge = %+v, want done with gate_bypassed", run)
+	}
+	check, err := sql.Open("sqlite", db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	var facts, decisions int
+	if err := check.QueryRow(`SELECT COUNT(*) FROM events WHERE type='forge_change_merged' AND run_id='run-merge'`).Scan(&facts); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM ledger_entries WHERE run_id='run-merge' AND entry_kind='human_decision'`).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if facts != 1 || decisions != 1 {
+		t.Fatalf("external merge audit facts=%d human decisions=%d, want 1 each", facts, decisions)
 	}
 }
 

@@ -129,8 +129,8 @@ func TestAssembleWiresIntakeT1ReconcilerCommentsAndBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(workers.Pollers) != 2 || len(workers.Evaluators) != 2 || len(workers.Reconcilers) != 2 || len(workers.Comments) != 2 {
-		t.Fatalf("assembly counts: pollers=%d evaluators=%d reconcilers=%d comments=%d", len(workers.Pollers), len(workers.Evaluators), len(workers.Reconcilers), len(workers.Comments))
+	if len(workers.Pollers) != 2 || len(workers.Evaluators) != 2 || len(workers.Reconcilers) != 2 || len(workers.Comments) != 2 || len(workers.Merges) != 2 {
+		t.Fatalf("assembly counts: pollers=%d evaluators=%d reconcilers=%d comments=%d merges=%d", len(workers.Pollers), len(workers.Evaluators), len(workers.Reconcilers), len(workers.Comments), len(workers.Merges))
 	}
 	for i, p := range workers.Pollers {
 		if p.OnIssue == nil {
@@ -158,6 +158,10 @@ func TestAssembleWiresIntakeT1ReconcilerCommentsAndBudget(t *testing.T) {
 		commentClient, ok := workers.Comments[i].Client.(*forge.Adapter)
 		if !ok || commentClient != client {
 			t.Fatalf("comment worker %d is not scoped to its poller's adapter", i)
+		}
+		mergeClient, ok := workers.Merges[i].Client.(*forge.Adapter)
+		if !ok || mergeClient != client {
+			t.Fatalf("merge worker %d is not scoped to its poller's adapter", i)
 		}
 
 		// Production adapters must reject a Forge call without the stable key;

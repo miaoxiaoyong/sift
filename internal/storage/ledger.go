@@ -38,7 +38,18 @@ func (d *DB) BindExternalDecision(ctx context.Context, forgeFactEventID, calibra
 	if forgeFactEventID == "" || calibrationID == "" || nowMS <= 0 {
 		return errors.New("storage: invalid external decision binding")
 	}
-	_, err := d.db.ExecContext(ctx, `INSERT INTO external_decision_bindings (forge_fact_event_id,calibration_id,created_at_ms) VALUES (?,?,?)`, forgeFactEventID, calibrationID, nowMS)
+	var existing string
+	err := d.db.QueryRowContext(ctx, `SELECT calibration_id FROM external_decision_bindings WHERE forge_fact_event_id=?`, forgeFactEventID).Scan(&existing)
+	if err == nil {
+		if existing == calibrationID {
+			return nil
+		}
+		return errors.New("storage: external decision binding conflict")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = d.db.ExecContext(ctx, `INSERT INTO external_decision_bindings (forge_fact_event_id,calibration_id,created_at_ms) VALUES (?,?,?)`, forgeFactEventID, calibrationID, nowMS)
 	return err
 }
 

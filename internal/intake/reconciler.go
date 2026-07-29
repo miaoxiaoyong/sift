@@ -2,9 +2,11 @@ package intake
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
+	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/forge"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
@@ -14,11 +16,12 @@ import (
 // observation and has no actor gate, while removing the trigger label is an
 // operator command and does require the project's allowlist.
 type Reconciler struct {
-	DB       *storage.DB
-	Forge    forge.Client
-	Projects []Project
-	Now      func() time.Time
-	Isolated func(Project, error)
+	DB            *storage.DB
+	Forge         forge.Client
+	Projects      []Project
+	Now           func() time.Time
+	Certification config.Certification
+	Isolated      func(Project, error)
 }
 
 // ReconcileOnce performs one independent reconciliation pass per project.
@@ -82,6 +85,9 @@ func (r *Reconciler) reconcileProject(ctx context.Context, project Project, now 
 			}
 			switch change.State {
 			case forge.ChangeMerged:
+				if err := r.recordExternalMerge(ctx, candidate, change, now); err != nil {
+					return err
+				}
 				if _, err := r.DB.TransitionRun(ctx, candidate.RunID, candidate.Version, storage.DomainCommand{
 					To: storage.RunDone, Source: storage.SourceForge, ChangeID: change.ID,
 					ChangeURL: change.URL, ChangeHeadSHA: change.HeadSHA, GateBypassed: true,
@@ -110,6 +116,30 @@ func (r *Reconciler) reconcileProject(ctx context.Context, project Project, now 
 			}
 		}
 	}
+	return nil
+}
+
+// recordExternalMerge preserves the observed Forge fact and settles only an
+// unambiguous, prior Gate calibration for exactly this Run/head. An unbound
+// fact remains auditable but is never guessed into a calibration sample.
+func (r *Reconciler) recordExternalMerge(ctx context.Context, c storage.ReverseSyncCandidate, change forge.Change, now time.Time) error {
+	payload, err := json.Marshal(map[string]string{"change_id": change.ID, "head_sha": change.HeadSHA, "state": string(change.State)})
+	if err != nil {
+		return err
+	}
+	factID, err := r.DB.AppendEvent(ctx, storage.EventCmd{RunID: c.RunID, ProjectID: c.ProjectID, Type: "forge_change_merged", Source: storage.SourceForge, PayloadJSON: payload, IdempotencyKey: "forge-change-merged:" + c.RunID + ":" + change.ID + ":" + change.HeadSHA, OccurredAtMS: now.UnixMilli(), RecordedAtMS: now.UnixMilli()})
+	if err != nil {
+		return err
+	}
+	bound, err := r.DB.BindExternalDecisionForHead(ctx, factID, c.RunID, change.HeadSHA, now.UnixMilli())
+	if err != nil {
+		return err
+	}
+	_, err = r.DB.RecordHumanDecision(ctx, storage.RecordHumanDecisionCmd{Action: storage.DecisionManualMerge, ForgeFactEventID: factID, NowMS: now.UnixMilli(), Certification: r.Certification})
+	if err != nil {
+		return err
+	}
+	_ = bound // binding controls settlement inside RecordHumanDecision; both paths retain the fact.
 	return nil
 }
 

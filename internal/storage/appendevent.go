@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,6 +52,16 @@ func (d *DB) AppendEvent(ctx context.Context, cmd EventCmd) (string, error) {
 	if !json.Valid(cmd.PayloadJSON) {
 		return "", errors.New("storage: append event payload must be valid JSON")
 	}
+	if cmd.IdempotencyKey != "" {
+		var existing string
+		err := d.db.QueryRowContext(ctx, `SELECT id FROM events WHERE idempotency_key=?`, cmd.IdempotencyKey).Scan(&existing)
+		if err == nil {
+			return existing, nil
+		}
+		if err != sql.ErrNoRows {
+			return "", fmt.Errorf("storage: read idempotent event: %w", err)
+		}
+	}
 	id := newID()
 	_, err := d.db.ExecContext(ctx, `INSERT INTO events
 		(id, run_id, attempt_no, project_id, type, source, actor, payload_schema_version, payload_json, idempotency_key, occurred_at_ms, recorded_at_ms)
@@ -60,6 +71,11 @@ func (d *DB) AppendEvent(ctx context.Context, cmd EventCmd) (string, error) {
 		nullable(cmd.Actor), string(cmd.PayloadJSON), nullable(cmd.IdempotencyKey), cmd.OccurredAtMS, cmd.RecordedAtMS)
 	if err != nil {
 		return "", fmt.Errorf("storage: append event: %w", err)
+	}
+	if cmd.IdempotencyKey != "" {
+		if err := d.db.QueryRowContext(ctx, `SELECT id FROM events WHERE idempotency_key=?`, cmd.IdempotencyKey).Scan(&id); err != nil {
+			return "", fmt.Errorf("storage: read inserted event: %w", err)
+		}
 	}
 	return id, nil
 }
