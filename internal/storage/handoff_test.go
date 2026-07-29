@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -41,8 +42,21 @@ func TestHandoffPermitReplayAndStartedEvidence(t *testing.T) {
 	if err := db.db.QueryRowContext(ctx, `SELECT control_nonce_hash FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&storedNonceHash); err != nil || storedNonceHash != secret('f') {
 		t.Fatalf("stored control nonce hash = %q, %v", storedNonceHash, err)
 	}
-	if err := db.PermitSpawn(ctx, permit); err != nil {
-		t.Fatalf("same permit replay: %v", err)
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- db.PermitSpawn(ctx, permit)
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("same permit replay: %v", err)
+		}
 	}
 	permit.Permit = secret('f')
 	if err := db.PermitSpawn(ctx, permit); !errors.Is(err, ErrHandoffConflict) {

@@ -111,6 +111,7 @@ func TestLaunchWorkerWrapperCrashSuite(t *testing.T) {
 	if phase != "running" || operationState != string(storage.OperationSucceeded) {
 		t.Fatalf("durable crash handoff = phase %q, operation %q", phase, operationState)
 	}
+	assertSingleLaunchOwner(t, check)
 	// A replayed worker tick must not find a claim or create a second wrapper.
 	if err := worker.RunOnce(ctx); err != nil {
 		t.Fatalf("replayed launch worker: %v", err)
@@ -188,6 +189,12 @@ func TestLaunchWorkerReclaimsPreparedBootstrapAfterCrashWindows(t *testing.T) {
 			if lines := countFileLines(marker); lines != 1 {
 				t.Fatalf("agents started = %d, want 1", lines)
 			}
+			check, err := sql.Open("sqlite", db.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer check.Close()
+			assertSingleLaunchOwner(t, check)
 		})
 	}
 }
@@ -219,6 +226,24 @@ func injectedCrash() error { return errInjectedCrash }
 
 func launchTestAgents() []config.Agent {
 	return []config.Agent{{ID: "agent", Executable: "/bin/sh", Args: []string{"-c", "echo started >> $SIFT_RUN_DIR/agent-started"}, TaskTransport: config.TaskTransportStdin}}
+}
+
+func assertSingleLaunchOwner(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var owners int
+	if err := db.QueryRow(`SELECT count(*) FROM attempts WHERE run_id='run-1' AND wrapper_instance_id IS NOT NULL`).Scan(&owners); err != nil {
+		t.Fatal(err)
+	}
+	if owners != 1 {
+		t.Fatalf("persisted launch owners = %d, want 1", owners)
+	}
+	var dispatches int
+	if err := db.QueryRow(`SELECT count(*) FROM attempt_claims WHERE run_id='run-1' AND dispatch_id IS NOT NULL`).Scan(&dispatches); err != nil {
+		t.Fatal(err)
+	}
+	if dispatches != 1 {
+		t.Fatalf("persisted dispatches = %d, want 1", dispatches)
+	}
 }
 
 func waitForDurableLaunch(t *testing.T, db *sql.DB) {
