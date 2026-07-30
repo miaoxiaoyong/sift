@@ -19,7 +19,7 @@ func seedReportQuotaRun(t *testing.T, quota int) (*DB, context.Context) {
 	if err := db.SeedForgeRunForTest(ctx, "run", "project", "cfg", "42", testNow); err != nil {
 		t.Fatal(err)
 	}
-	mustExec(t, db, `INSERT INTO config_snapshots(id,config_hash,schema_version,canonical_json,source_present,loaded_at_ms,binary_version) VALUES ('cfg-report','report-hash',1,'{"attention":{"critical_fuse":{"per_run_limit":2,"total_limit":5,"window":900000},"daily_quota":{"high":5,"low":3,"normal":5},"day_timezone":"UTC","daily_summary_at":"09:00","max_escalations":0},"report":{"burst":8,"events_per_minute":60,"interrupts_per_run_daily_quota":`+fmt.Sprint(quota)+`}}',1,?, 'test')`, testNow)
+	mustExec(t, db, `INSERT INTO config_snapshots(id,config_hash,schema_version,canonical_json,source_present,loaded_at_ms,binary_version) VALUES ('cfg-report','report-hash',1,'{"attention":{"critical_fuse":{"per_run_limit":2,"total_limit":5,"window":900000},"daily_quota":{"high":5,"low":3,"normal":5},"day_timezone":"UTC","daily_summary_at":"09:00","max_escalations":0},"report":{"burst":8,"dedupe_window":0,"events_per_minute":60,"interrupts_per_run_daily_quota":`+fmt.Sprint(quota)+`,"max_payload_bytes":65536,"not_ready_initial_delay":100000000,"not_ready_max_delay":1000000000,"not_ready_total_timeout":10000000000},"runtime":{"retry_multiplier":2}}',1,?, 'test')`, testNow)
 	mustExec(t, db, `UPDATE runs SET config_snapshot_id='cfg-report',status='running' WHERE id='run'`)
 	insertTaskSpec(t, db, "task", "run", 1)
 	insertAttempt(t, db, "run", 1, "task")

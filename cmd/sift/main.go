@@ -2,11 +2,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
@@ -35,6 +37,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if command == "doctor" && len(args) == 3 && args[2] == "--offline" {
 		result := controlplane.OfflineDoctor(home)
 		return emitDoctor(stdout, stderr, result)
+	}
+	if command == "report" {
+		return runReport(args[2:], home, stdout, stderr)
 	}
 	method, params, err := request(command, args[2:])
 	if err != nil {
@@ -135,5 +140,103 @@ func printJSON(w io.Writer, v any) error {
 }
 func report(w io.Writer, err error) { fmt.Fprintln(w, "sift:", err) }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sift ps|logs|worktree|doctor [--offline]|kill|retry")
+	fmt.Fprintln(w, "usage: sift ps|logs|worktree|doctor [--offline]|kill|retry|report <kind> --key KEY --payload JSON")
+}
+
+var reportKinds = map[string]bool{"progress": true, "goal": true, "blocker": true, "completed": true}
+
+// runReport implements `sift report`. It reads only SIFT_RUN_DIR/control.json,
+// connects only to run.sock, and retries exclusively on the closed not_ready
+// policy captured from the first response; every other error fails closed with
+// no offline fallback (report.md §1, §2, §4; control-plane.md §8).
+func runReport(args []string, home config.Home, stdout, stderr io.Writer) int {
+	if len(args) < 1 || !reportKinds[args[0]] {
+		report(stderr, fmt.Errorf("usage: sift report <progress|goal|blocker|completed> --key KEY --payload JSON"))
+		return 2
+	}
+	kind := args[0]
+	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	key := fs.String("key", "", "32-char lowercase-hex report key")
+	payload := fs.String("payload", "", "closed JSON payload object")
+	if err := fs.Parse(args[1:]); err != nil {
+		report(stderr, err)
+		return 2
+	}
+	if *key == "" || *payload == "" {
+		report(stderr, fmt.Errorf("usage: sift report <progress|goal|blocker|completed> --key KEY --payload JSON"))
+		return 2
+	}
+	var p map[string]any
+	if err := json.Unmarshal([]byte(*payload), &p); err != nil || p == nil {
+		report(stderr, fmt.Errorf("payload must be a JSON object"))
+		return 2
+	}
+	control, err := controlplane.ReadControlFile(os.Getenv("SIFT_RUN_DIR"))
+	if err != nil {
+		report(stderr, err)
+		return 1
+	}
+	params := map[string]any{"run_id": control.RunID, "attempt_no": control.AttemptNo, "generation": control.Generation, "report_key": *key, "kind": kind, "payload": p}
+	auth := controlplane.Auth{Kind: "run_token", Token: control.RunToken}
+	var delays []int
+	var policyBytes []byte
+	for attempt := 0; ; attempt++ {
+		resp, err := controlplane.RunReportRequest(home, auth, params)
+		if err != nil {
+			report(stderr, fmt.Errorf("daemon unavailable: %w", err))
+			return 1
+		}
+		if resp.OK {
+			if err := printJSON(stdout, resp); err != nil {
+				report(stderr, err)
+				return 1
+			}
+			return 0
+		}
+		if resp.Error.Code != "not_ready" {
+			if err := printJSON(stdout, resp); err != nil {
+				report(stderr, err)
+			}
+			return 1
+		}
+		raw, ok := resp.Error.Details["retry_policy"]
+		if !ok {
+			report(stderr, fmt.Errorf("not_ready response omitted retry_policy"))
+			return 1
+		}
+		rawBytes, mErr := json.Marshal(raw)
+		if mErr != nil {
+			report(stderr, fmt.Errorf("not_ready retry_policy is malformed"))
+			return 1
+		}
+		if attempt == 0 {
+			delays, err = decodeReportDelays(rawBytes)
+			if err != nil {
+				report(stderr, err)
+				return 1
+			}
+			policyBytes = rawBytes
+		} else if !bytes.Equal(rawBytes, policyBytes) {
+			report(stderr, fmt.Errorf("not_ready retry_policy drifted during retry"))
+			return 1
+		}
+		if attempt >= len(delays) {
+			report(stderr, fmt.Errorf("report timed out waiting for attempt to become running"))
+			return 1
+		}
+		time.Sleep(time.Duration(delays[attempt]) * time.Millisecond)
+	}
+}
+
+// decodeReportDelays validates the closed retry_policy and computes its delay
+// sequence. The CLI never guesses a default, rounds a value, or reads
+// config.yaml (report.md §4, control-plane.md §8).
+func decodeReportDelays(raw []byte) ([]int, error) {
+	var policy controlplane.RetryPolicy
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&policy); err != nil {
+		return nil, fmt.Errorf("not_ready retry_policy is not closed")
+	}
+	return policy.BackoffDelays()
 }

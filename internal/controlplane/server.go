@@ -331,13 +331,7 @@ func (s *Server) runRequest(req Request) Response {
 		}
 		result, err := s.db.RecordReport(context.Background(), storage.ReportSubmitCmd{Token: req.Auth.Token, RunID: p.RunID, AttemptNo: p.AttemptNo, Generation: p.Generation, ReportKey: p.ReportKey, Kind: p.Kind, Payload: p.Payload, NowMS: time.Now().UnixMilli()})
 		if err != nil {
-			if strings.Contains(err.Error(), "unauthorized") {
-				return failure(req.RequestID, "unauthorized", "credential rejected", false)
-			}
-			if strings.Contains(err.Error(), "rate limit") {
-				return failure(req.RequestID, "conflict", "report rate limit exceeded", false)
-			}
-			return failure(req.RequestID, "conflict", "report was not accepted", false)
+			return reportFailure(req.RequestID, err)
 		}
 		return success(req.RequestID, result)
 	case "claim.acquire", "claim.permit_spawn", "claim.started":
@@ -357,6 +351,37 @@ func onlyKeys(m map[string]any, keys ...string) bool {
 		}
 	}
 	return true
+}
+
+// reportFailure maps the storage layer's typed report errors to the closed RPC
+// error-code set (control-plane.md §3.4, report.md §4/§6.2). only not_ready is
+// retryable; every auth/stale/conflict outcome is permanent and must never
+// echo the run token or control-file contents.
+func reportFailure(id string, err error) Response {
+	var notReady *storage.ReportNotReadyError
+	if errors.As(err, &notReady) {
+		return failureWithDetails(id, "not_ready", "attempt is not running yet", true, map[string]any{"retry_policy": notReady.RetryPolicy})
+	}
+	switch {
+	case errors.Is(err, storage.ErrReportUnauthorized):
+		return failure(id, "unauthorized", "credential rejected", false)
+	case errors.Is(err, storage.ErrReportStale):
+		return failure(id, "stale", "generation or attempt changed", false)
+	case errors.Is(err, storage.ErrReportQuotaExhausted):
+		return failureWithDetails(id, "conflict", "report interrupt quota exhausted", false, map[string]any{"code": "report_interrupt_quota_exhausted"})
+	case errors.Is(err, storage.ErrReportRateLimited):
+		return failure(id, "conflict", "report rate limit exceeded", false)
+	case errors.Is(err, storage.ErrReportConflict):
+		return failure(id, "conflict", "report was not accepted", false)
+	case errors.Is(err, storage.ErrReportPayloadTooLarge), errors.Is(err, storage.ErrReportInvalid):
+		return failure(id, "invalid_request", "report params are invalid", false)
+	default:
+		return failure(id, "internal", "report submission failed", true)
+	}
+}
+
+func failureWithDetails(id, code, message string, retryable bool, details map[string]any) Response {
+	return Response{ProtocolMajor: ProtocolMajor, ProtocolMinor: ProtocolMinor, ServerVersion: Version, RequestID: id, Error: &Error{Code: code, Message: message, Retryable: retryable, Details: details}, OK: false}
 }
 func readFrame(r io.Reader) ([]byte, error) {
 	var h [4]byte

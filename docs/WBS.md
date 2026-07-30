@@ -493,6 +493,8 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 5.5 Report
 
+> Report bootstrap #745：`sift report` 只经 `run.sock`、只读 `SIFT_RUN_DIR/control.json`、以 closed retry_policy 重试 `not_ready`；`RecordReport` 拆出 `checkReportBinding`/`assertReportBindingTx`/`lookupReportDuplicateTx`，spawning 返回携带从 Run snapshot 导出 `RetryPolicy` 的 `ReportNotReadyError`（不消费 token），跨 Run token→`unauthorized`、错 generation→`stale`、其余非 running phase→永久 `conflict`；补齐两层去重（idempotency key + `dedupe_window` 语义窗口）、`max_payload_bytes` 与全 Cc 控制码点拒绝。存储错误以 typed sentinel 经控制面 `reportFailure` 映射为 closed code。复核 PASS / PASS WITH NOTES 后再勾选下列项；本片不闭合 Report 配额异常发射的崩溃重放端到端段（storage 既有覆盖），也不闭合 critical 熬断与 Channel `ops.ps`/`ops.doctor`。
+
 - [ ] `sift report` 只连 `run.sock`，从 `SIFT_RUN_DIR/control.json` 读 run token
 - [ ] running 接受；spawning 返回有界可重试 `not_ready`；跨 Run/过期 attempt 永久拒绝
 - [ ] 进度/goal/blocker/完成声明只写事件，不直接转状态

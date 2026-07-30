@@ -61,3 +61,6 @@ reasonix*
 opencode.json
 .mimocode/
 .reasonix/
+
+# local build artifacts
+/sift

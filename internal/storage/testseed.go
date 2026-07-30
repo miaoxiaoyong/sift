@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -9,6 +10,13 @@ import (
 // (§11): they exist so tests in other packages (brain shell, control plane)
 // can satisfy foreign keys without raw SQL access. Production code must not
 // call them.
+
+// ExecForTest runs an arbitrary statement against the underlying handle. It is
+// the escape hatch for cross-package tests that need bespoke fixture rows not
+// covered by a named Seed helper; it is never a production write port.
+func (d *DB) ExecForTest(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return d.db.ExecContext(ctx, query, args...)
+}
 
 // SeedProjectForTest inserts a config snapshot and project with minimal
 // valid rows.
