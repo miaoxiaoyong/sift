@@ -730,6 +730,10 @@ func validLink(v string) bool {
 	if strings.HasPrefix(v, "/") || strings.HasPrefix(v, "https://") {
 		return true
 	}
+	const changePrefix = "sift://change/"
+	if strings.HasPrefix(v, changePrefix) && len(v) > len(changePrefix) {
+		return true
+	}
 	const prefix = "sift://event/"
 	if !strings.HasPrefix(v, prefix) {
 		return false

@@ -662,7 +662,7 @@ func (d *DB) emitGateReEvalHITLSuccessorTx(ctx context.Context, tx *sql.Tx, row 
 		return Interrupt{}, errors.New("storage: gate re-eval interrupt emission not configured")
 	}
 	eventRef := "sift://event/event:" + eventKey
-	changeRef := "https://sift.invalid/change/" + row.op.ChangeID
+	changeRef := "sift://change/" + row.op.ChangeID
 	attemptNo := row.op.AttemptNo
 	cmd := EmitInterruptCmd{
 		RunID:               row.op.RunID,
@@ -816,7 +816,33 @@ func (d *DB) emitGateReEvalHITLSuccessorTx(ctx context.Context, tx *sql.Tx, row 
 	if err := validateGateReEvalInterruptV1(seam, cmd); err != nil {
 		return Interrupt{}, err
 	}
+	if in, err := gateReEvalReplayOrRejectInterruptTx(ctx, tx, seam); err != nil {
+		return Interrupt{}, err
+	} else if in.ID != "" {
+		return in, nil
+	}
 	return d.emitInterruptInExistingTx(ctx, tx, cmd, false)
+}
+
+// gateReEvalReplayOrRejectInterruptTx enforces closed GateReEvaluationInterruptV1
+// replay: an existing generation key is idempotent only when reason and binding
+// bytes match exactly; otherwise the transaction must roll back.
+func gateReEvalReplayOrRejectInterruptTx(ctx context.Context, tx *sql.Tx, seam GateReEvaluationInterruptV1) (Interrupt, error) {
+	existing, found, err := interruptByKeyTx(ctx, tx, seam.GenerationKey)
+	if err != nil {
+		return Interrupt{}, err
+	}
+	if !found {
+		return Interrupt{}, nil
+	}
+	var storedBinding, storedReason string
+	if err := tx.QueryRowContext(ctx, `SELECT b.binding_json, i.reason FROM interrupt_command_effect_bindings b JOIN interrupts i ON i.id=b.interrupt_id WHERE i.id=?`, existing.ID).Scan(&storedBinding, &storedReason); err != nil {
+		return Interrupt{}, fmt.Errorf("%w: generation key collision without binding: %v", ErrGateReEvaluationContract, err)
+	}
+	if storedReason != string(seam.Reason) || storedBinding != string(seam.BindingJSON) {
+		return Interrupt{}, fmt.Errorf("%w: generation key collision with divergent seam", ErrGateReEvaluationContract)
+	}
+	return existing, nil
 }
 
 func validateGateReEvalFailure(class string, evidence json.RawMessage) error {

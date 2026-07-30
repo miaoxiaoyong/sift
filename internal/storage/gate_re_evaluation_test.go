@@ -856,13 +856,14 @@ func TestCodeReviewPolicyDigestProvenance(t *testing.T) {
 	if err := db.SetRunChangeHeadForTest(ctx, cmdRun, "change-01", head); err != nil {
 		t.Fatal(err)
 	}
-	changeRef := "https://sift.invalid/change/change-01"
+	changeRef := "sift://change/change-01"
+	eventRef := "sift://event/event:test:verdict:hitl:code_review"
 	cmd := EmitInterruptCmd{
 		RunID: cmdRun, ExpectedRunVersion: 1, Reason: InterruptCodeReview,
 		Generation: InterruptGeneration{ChangeID: "change-01", HeadSHA: head, PolicySnapshotID: policyDigest},
 		Facts: map[string]string{
 			"change_ref": changeRef, "head_sha": head, "review_requirement": reviewPolicy,
-			"recommended_action": "approve", "diff_ref": "https://sift.invalid/change/change-01/diff",
+			"recommended_action": "approve", "diff_ref": eventRef,
 		},
 		GatePhase: GateNone, GuardrailLevel: GuardrailNone, AttentionDailyQuota: interruptQuota(),
 		DayTimezone: "UTC", Source: SourceSystem, NowMS: testNow,
@@ -890,6 +891,50 @@ func TestCodeReviewPolicyDigestProvenance(t *testing.T) {
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestGateReEvalInterruptSeamReplayOrReject verifies generation-key replay is
+// idempotent only for byte-identical seam bindings.
+func TestGateReEvalInterruptSeamReplayOrReject(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	head := "0123456789012345678901234567890123456789"
+	inputJSON, inputHash := gateReEvalHITLInputJSON(t, head, "mergeable")
+	verdictJSON := mustCanon(t, map[string]any{"schema_version": 1, "kind": "hitl", "code": "code_review", "head_sha": head, "review_policy": "always"})
+	claim, _ := seedClaimedGateReEval(t, db, ctx, InterruptGuardrailViolation, inputJSON, inputHash, "", "")
+	result := canonicalResult(t, "succeeded", map[string]any{
+		"gate_input_json": inputJSON, "gate_input_hash": inputHash, "gate_version": "gate/v1",
+		"verdict_json": verdictJSON, "verdict_digest": SHA256Hex([]byte(verdictJSON)),
+	})
+	if err := db.CompleteGateReEvaluation(ctx, claim, result, testNow+20); err != nil {
+		t.Fatalf("first Complete: %v", err)
+	}
+	var genKey, bindingJSON string
+	if err := db.db.QueryRow(`SELECT generation_key FROM interrupts WHERE run_id=? AND reason='code_review' ORDER BY created_at_ms DESC LIMIT 1`, cmdRun).Scan(&genKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.db.QueryRow(`
+SELECT b.binding_json FROM interrupt_command_effect_bindings b
+JOIN interrupts i ON i.id=b.interrupt_id WHERE i.generation_key=?`, genKey).Scan(&bindingJSON); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	seam := GateReEvaluationInterruptV1{
+		RunID: cmdRun, AttemptNo: 1, Generation: 1, Reason: InterruptCodeReview,
+		BindingJSON: []byte(bindingJSON), GenerationKey: genKey,
+	}
+	in, err := gateReEvalReplayOrRejectInterruptTx(ctx, tx, seam)
+	if err != nil || in.ID == "" {
+		t.Fatalf("idempotent replay = %v in=%v", err, in)
+	}
+	seam.BindingJSON = []byte(`{"arm":"code_review","change_id":"forged","head_sha":"` + head + `","review_policy_snapshot_digest":"` + strings.Repeat("f", 64) + `"}`)
+	if _, err := gateReEvalReplayOrRejectInterruptTx(ctx, tx, seam); !errors.Is(err, ErrGateReEvaluationContract) {
+		t.Fatalf("collision err = %v, want ErrGateReEvaluationContract", err)
 	}
 }
 
