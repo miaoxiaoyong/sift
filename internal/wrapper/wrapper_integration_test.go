@@ -69,7 +69,12 @@ func TestProductionWrapperCrashWindows(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			server := newWrapperServer(t, root, c.reject)
+			var server *wrapperServer
+			if c.reject == "claim.started" {
+				server = newWrapperServerWaitFor(t, root, c.reject, filepath.Join(runDir, "spawn-count"))
+			} else {
+				server = newWrapperServer(t, root, c.reject)
+			}
 			defer server.Close()
 			cmd := osexec.Command(wrapperPath, bootstrap)
 			out, err := cmd.CombinedOutput()
