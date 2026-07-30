@@ -399,3 +399,49 @@ func TestEmitInterruptRejectsBeforeAnyWrite(t *testing.T) {
 	assertCount(t, db, "budget_entries", 0)
 	assertCount(t, db, "outbox_operations", 0)
 }
+
+func TestValidEventKey(t *testing.T) {
+	cases := []struct {
+		k    string
+		want bool
+	}{
+		{"", false},
+		{"gate:abc:failed", true},
+		{"run_01:checks:1", true},
+		{"event:", true},
+		{"UPPER", false},
+		{"has space", false},
+		{"has/slash", false},
+		{"a", true},
+		{":", true},
+		{"_", true},
+	}
+	for _, tc := range cases {
+		if got := validEventKey(tc.k); got != tc.want {
+			t.Fatalf("validEventKey(%q)=%v want %v", tc.k, got, tc.want)
+		}
+	}
+}
+
+func TestValidLink(t *testing.T) {
+	cases := []struct {
+		v    string
+		want bool
+	}{
+		{"/path", true},
+		{"https://example.com/x", true},
+		{"sift://event/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true},
+		{"sift://event/event:gate:op:failed", true},
+		{"sift://event/event:", false},
+		{"sift://event/event:BAD", false},
+		{"sift://event/event:has space", false},
+		{"sift://event/short", false},
+		{"sift://other/x", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := validLink(tc.v); got != tc.want {
+			t.Fatalf("validLink(%q)=%v want %v", tc.v, got, tc.want)
+		}
+	}
+}
