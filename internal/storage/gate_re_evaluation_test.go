@@ -104,6 +104,24 @@ func seedClaimedGateReEval(t *testing.T, db *DB, ctx context.Context, reason Int
 		VerdictJSON: json.RawMessage(verdictJSON), VerdictDigest: verdictDigest, ShadowDecision: "block",
 		FeaturesJSON: []byte(`{"schema_version":1}`), NowMS: testNow,
 	}
+	// Content-addressed snapshots are immutable: if the frozen re-eval input is
+	// already conflicting, seed must persist conflict_digest so Complete's
+	// merge_conflict successor can satisfy binding provenance.
+	if strings.Contains(inputJSON, `"mergeability":"conflicting"`) {
+		record.ConflictDigest = MergeConflictDigest("change-01", head)
+	}
+	if strings.Contains(inputJSON, `"mergeability":"conflicting"`) {
+		record.ConflictDigest = MergeConflictDigest("change-01", head)
+	}
+	if strings.Contains(verdictJSON, `"code":"code_review"`) {
+		var vf struct {
+			ReviewPolicy string `json:"review_policy"`
+		}
+		_ = json.Unmarshal([]byte(verdictJSON), &vf)
+		if d, err := gateReEvalCodeReviewPolicyDigest(inputHash, vf.ReviewPolicy); err == nil {
+			record.ReviewPolicySnapshotDigest = d
+		}
+	}
 	attempt := 1
 	cmd := EmitInterruptCmd{
 		RunID: cmdRun, ExpectedRunVersion: 1, AttemptNo: &attempt, Reason: reason,
@@ -692,6 +710,186 @@ func TestCompleteGateReEvaluationHITLChecksTimeout(t *testing.T) {
 	var genKey string
 	if err := db.db.QueryRow(`SELECT generation_key FROM interrupts WHERE run_id=? AND reason='failure_review' AND generation_key=?`, cmdRun, wantKey).Scan(&genKey); err != nil {
 		t.Fatalf("checks_timeout failure_review: %v (want key %s)", err, wantKey)
+	}
+}
+
+func gateReEvalHITLInputJSON(t *testing.T, head, mergeability string) (string, string) {
+	t.Helper()
+	inputJSON := mustCanon(t, map[string]any{
+		"schema_version":        1,
+		"effective_policy_hash": strings.Repeat("c", 64),
+		"certification_version": strings.Repeat("d", 64),
+		"change":                map[string]any{"head_sha": head, "mergeability": mergeability},
+		"identity":              map[string]any{"change_id": "change-01", "run_id": cmdRun, "project_id": "project", "task_kind": "bug"},
+		"risk":                  map[string]any{"source": map[string]any{"version": "T3/fallback/v1"}},
+	})
+	return inputJSON, SHA256Hex([]byte(inputJSON))
+}
+
+// TestCompleteGateReEvaluationHITLAllArms verifies all seven HITL verdict arms
+// complete with the expected terminal event type and a successor Interrupt.
+func TestCompleteGateReEvaluationHITLAllArms(t *testing.T) {
+	head := "0123456789012345678901234567890123456789"
+	cases := []struct {
+		code, eventSuffix, wantReason string
+		verdictExtra                  map[string]any
+		mergeability                  string
+	}{
+		{"checks_timeout", "hitl:checks_timeout", "failure_review", map[string]any{"external_url": "https://forge.example/checks/1"}, "mergeable"},
+		{"failure_review", "hitl:failure_review", "failure_review", map[string]any{"external_url": "https://forge.example/checks/2", "classification": "failure"}, "mergeable"},
+		{"guardrail_violation", "hitl:guardrail_violation", "guardrail_violation", map[string]any{"rule_id": "rule-all-arms", "matched_paths_digest": strings.Repeat("a", 64)}, "mergeable"},
+		{"code_review", "hitl:code_review", "code_review", map[string]any{"review_policy": "always"}, "mergeable"},
+		{"merge_conflict", "hitl:merge_conflict", "merge_conflict", map[string]any{"mergeability": "conflicting"}, "conflicting"},
+		{"mergeability_unknown", "hitl:mergeability_unknown", "failure_review", map[string]any{"mergeability": "unknown"}, "unknown"},
+		{"input_unknown", "hitl:input_unknown", "failure_review", map[string]any{"field": "checks.conclusion"}, "mergeable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			db, _ := openTestDB(t)
+			ctx := context.Background()
+			inputJSON, inputHash := gateReEvalHITLInputJSON(t, head, tc.mergeability)
+			payload := map[string]any{"schema_version": 1, "kind": "hitl", "code": tc.code, "head_sha": head}
+			for k, v := range tc.verdictExtra {
+				payload[k] = v
+			}
+			verdictJSON := mustCanon(t, payload)
+			verdictDigest := SHA256Hex([]byte(verdictJSON))
+			claim, _ := seedClaimedGateReEval(t, db, ctx, InterruptGuardrailViolation, inputJSON, inputHash, "", "")
+			result := canonicalResult(t, "succeeded", map[string]any{
+				"gate_input_json": inputJSON, "gate_input_hash": inputHash, "gate_version": "gate/v1",
+				"verdict_json": verdictJSON, "verdict_digest": verdictDigest,
+			})
+			if err := db.CompleteGateReEvaluation(ctx, claim, result, testNow+20); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			evKey := claim.Key + ":verdict:" + tc.eventSuffix
+			var evType string
+			if err := db.db.QueryRow(`SELECT type FROM events WHERE idempotency_key=?`, evKey).Scan(&evType); err != nil {
+				t.Fatalf("event %s: %v", evKey, err)
+			}
+			wantEvent := "gate.reevaluation." + strings.ReplaceAll(tc.eventSuffix, ":", ".")
+			if evType != wantEvent {
+				t.Fatalf("event type = %s, want %s", evType, wantEvent)
+			}
+			var n int
+			if err := db.db.QueryRow(`SELECT COUNT(*) FROM interrupts WHERE run_id=? AND reason=?`, cmdRun, tc.wantReason).Scan(&n); err != nil || n < 1 {
+				t.Fatalf("successor interrupts reason=%s count=%d", tc.wantReason, n)
+			}
+		})
+	}
+}
+
+// TestCompleteGateReEvaluationHITLCodeReviewPolicyDigest verifies the closed
+// review_policy_snapshot_digest vector from storage.md section 8.1.
+func TestCompleteGateReEvaluationHITLCodeReviewPolicyDigest(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	head := "0123456789012345678901234567890123456789"
+	reviewPolicy := "always"
+	inputJSON, inputHash := gateReEvalHITLInputJSON(t, head, "mergeable")
+	verdictJSON := mustCanon(t, map[string]any{
+		"schema_version": 1, "kind": "hitl", "code": "code_review", "head_sha": head, "review_policy": reviewPolicy,
+	})
+	verdictDigest := SHA256Hex([]byte(verdictJSON))
+	claim, _ := seedClaimedGateReEval(t, db, ctx, InterruptGuardrailViolation, inputJSON, inputHash, "", "")
+
+	policyDigestBytes, err := canonicalJSON(map[string]string{"gate_input_hash": inputHash, "review_policy": reviewPolicy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPolicyDigest := SHA256Hex(policyDigestBytes)
+
+	result := canonicalResult(t, "succeeded", map[string]any{
+		"gate_input_json": inputJSON, "gate_input_hash": inputHash, "gate_version": "gate/v1",
+		"verdict_json": verdictJSON, "verdict_digest": verdictDigest,
+	})
+	if err := db.CompleteGateReEvaluation(ctx, claim, result, testNow+20); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	var evalDigest, bindingDigest string
+	if err := db.db.QueryRow(`
+SELECT e.review_policy_snapshot_digest, b.binding_json FROM gate_evaluations e
+JOIN calibration_entries c ON c.gate_evaluation_id=e.id
+JOIN interrupts i ON i.calibration_id=c.id
+JOIN interrupt_command_effect_bindings b ON b.interrupt_id=i.id
+WHERE i.run_id=? AND i.reason='code_review' AND json_extract(b.binding_json,'$.review_policy_snapshot_digest')=e.review_policy_snapshot_digest
+ORDER BY i.created_at_ms DESC LIMIT 1`, cmdRun).Scan(&evalDigest, &bindingDigest); err != nil {
+		t.Fatalf("code_review digest row: %v", err)
+	}
+	if evalDigest != wantPolicyDigest {
+		t.Fatalf("evaluation digest = %s, want %s", evalDigest, wantPolicyDigest)
+	}
+	wantBinding := `{"arm":"code_review","change_id":"change-01","head_sha":"` + head + `","review_policy_snapshot_digest":"` + wantPolicyDigest + `"}`
+	if bindingDigest != wantBinding {
+		t.Fatalf("binding = %s, want %s", bindingDigest, wantBinding)
+	}
+}
+
+// TestCodeReviewPolicyDigestProvenance verifies migration 0055 accepts gate re-eval
+// code_review bindings keyed by evaluation.review_policy_snapshot_digest.
+func TestCodeReviewPolicyDigestProvenance(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	head := "0123456789012345678901234567890123456789"
+	reviewPolicy := "always"
+	inputJSON, inputHash := gateReEvalHITLInputJSON(t, head, "mergeable")
+	policyDigestBytes, err := canonicalJSON(map[string]string{"gate_input_hash": inputHash, "review_policy": reviewPolicy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyDigest := SHA256Hex(policyDigestBytes)
+	verdictJSON := mustCanon(t, map[string]any{"schema_version": 1, "kind": "hitl", "code": "code_review", "head_sha": head, "review_policy": reviewPolicy})
+	record := GateEvaluationRecord{
+		RunID: cmdRun, GateInputHash: inputHash, GateVersion: "gate/v1", SnapshotSchemaVersion: 1,
+		SnapshotJSON: json.RawMessage(inputJSON), HeadSHA: head, EffectivePolicyHash: strings.Repeat("c", 64),
+		CertificationVersion: strings.Repeat("d", 64), RiskSourceVersion: "T3/fallback/v1",
+		VerdictJSON: json.RawMessage(verdictJSON), VerdictDigest: SHA256Hex([]byte(verdictJSON)),
+		ReviewPolicySnapshotDigest: policyDigest, ShadowDecision: "inconclusive",
+		FeaturesJSON: []byte(`{"schema_version":1}`), NowMS: testNow,
+	}
+	if err := db.SeedProjectForTest(ctx, "cfg", "project", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedForgeRunForTest(ctx, cmdRun, "project", "cfg", "42", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetRunChangeHeadForTest(ctx, cmdRun, "change-01", head); err != nil {
+		t.Fatal(err)
+	}
+	changeRef := "https://sift.invalid/change/change-01"
+	cmd := EmitInterruptCmd{
+		RunID: cmdRun, ExpectedRunVersion: 1, Reason: InterruptCodeReview,
+		Generation: InterruptGeneration{ChangeID: "change-01", HeadSHA: head, PolicySnapshotID: policyDigest},
+		Facts: map[string]string{
+			"change_ref": changeRef, "head_sha": head, "review_requirement": reviewPolicy,
+			"recommended_action": "approve", "diff_ref": "https://sift.invalid/change/change-01/diff",
+		},
+		GatePhase: GateNone, GuardrailLevel: GuardrailNone, AttentionDailyQuota: interruptQuota(),
+		DayTimezone: "UTC", Source: SourceSystem, NowMS: testNow,
+		Channels: []InterruptChannel{{ID: "text", Capabilities: []string{"text"}}},
+	}
+	recorded, err := db.RecordGateEvaluation(ctx, record)
+	if err != nil {
+		t.Fatalf("RecordGateEvaluation: %v", err)
+	}
+	var stored sql.NullString
+	if err := db.db.QueryRow(`SELECT review_policy_snapshot_digest FROM gate_evaluations WHERE id=?`, recorded.EvaluationID).Scan(&stored); err != nil {
+		t.Fatalf("read digest: %v", err)
+	}
+	if !stored.Valid || stored.String != policyDigest {
+		t.Fatalf("stored digest = %v, want %s", stored, policyDigest)
+	}
+	cmd.CalibrationID = recorded.CalibrationID
+	tx, err := db.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := db.emitInterruptInExistingTx(ctx, tx, cmd, false); err != nil {
+		t.Fatalf("emitInterruptInExistingTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }
 

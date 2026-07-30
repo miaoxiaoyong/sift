@@ -361,7 +361,8 @@ func gateReEvalRecord(op GateReEvaluationPayload, p gateReEvalSucceededPayload, 
 		EffectivePolicyHash  string `json:"effective_policy_hash"`
 		CertificationVersion string `json:"certification_version"`
 		Change               struct {
-			HeadSHA string `json:"head_sha"`
+			HeadSHA      string `json:"head_sha"`
+			Mergeability string `json:"mergeability"`
 		} `json:"change"`
 		Identity gateInputIdentityJSON `json:"identity"`
 		Risk struct {
@@ -425,8 +426,72 @@ func gateReEvalRecord(op GateReEvaluationPayload, p gateReEvalSucceededPayload, 
 	}
 	if v.Kind == "hitl" && v.Code == "merge_conflict" {
 		rec.ConflictDigest = MergeConflictDigest(proj.Identity.ChangeID, proj.Change.HeadSHA)
+	} else if proj.Change.Mergeability == "conflicting" {
+		rec.ConflictDigest = MergeConflictDigest(proj.Identity.ChangeID, proj.Change.HeadSHA)
+	}
+	if v.Kind == "hitl" && v.Code == "code_review" {
+		var vf gateReEvalVerdictFields
+		if err := json.Unmarshal([]byte(p.VerdictJSON), &vf); err != nil {
+			return GateEvaluationRecord{}, fmt.Errorf("%w: code_review verdict decode: %v", ErrGateReEvaluationContract, err)
+		}
+		digest, err := gateReEvalCodeReviewPolicyDigest(p.GateInputHash, vf.ReviewPolicy)
+		if err != nil {
+			return GateEvaluationRecord{}, err
+		}
+		rec.ReviewPolicySnapshotDigest = digest
 	}
 	return rec, nil
+}
+
+func gateReEvalCodeReviewPolicyDigest(gateInputHash, reviewPolicy string) (string, error) {
+	if gateInputHash == "" || reviewPolicy == "" {
+		return "", fmt.Errorf("%w: code_review policy digest inputs incomplete", ErrGateReEvaluationContract)
+	}
+	b, err := canonicalJSON(map[string]string{"gate_input_hash": gateInputHash, "review_policy": reviewPolicy})
+	if err != nil {
+		return "", err
+	}
+	return sha256Hex(b), nil
+}
+
+// GateReEvaluationInterruptV1 is the closed successor input to EmitInterrupt
+// (storage.md section 8.1). Fields are frozen from the terminal Complete
+// transaction; the emitter must not derive alternate binding or generation keys.
+type GateReEvaluationInterruptV1 struct {
+	RunID              string
+	AttemptNo          int
+	Generation         int
+	Reason             InterruptReason
+	Facts              map[string]string
+	BindingJSON        []byte
+	BindingDigest      string
+	GenerationKey      string
+	SourceInterruptID  string
+	CreatedFromEventID string
+}
+
+func validateGateReEvalInterruptV1(seam GateReEvaluationInterruptV1, cmd EmitInterruptCmd) error {
+	if seam.RunID != cmd.RunID || seam.SourceInterruptID == "" || seam.CreatedFromEventID == "" {
+		return fmt.Errorf("%w: incomplete gate re-eval interrupt seam", ErrGateReEvaluationContract)
+	}
+	bindingJSON, bindingReason := interruptEffectBinding(cmd)
+	if bindingReason != string(cmd.Reason) {
+		return fmt.Errorf("%w: binding reason mismatch", ErrGateReEvaluationContract)
+	}
+	if !bytes.Equal(bindingJSON, seam.BindingJSON) {
+		return fmt.Errorf("%w: binding_json drift", ErrGateReEvaluationContract)
+	}
+	if sha256Hex(bindingJSON) != seam.BindingDigest {
+		return fmt.Errorf("%w: binding_digest mismatch", ErrGateReEvaluationContract)
+	}
+	key, err := interruptGenerationKeyFor(cmd)
+	if err != nil {
+		return err
+	}
+	if key != seam.GenerationKey {
+		return fmt.Errorf("%w: generation_key drift", ErrGateReEvaluationContract)
+	}
+	return nil
 }
 
 func gateShadowDecision(kind, code string) string {
@@ -587,7 +652,7 @@ func gateReEvalFailureReviewCalibrationTx(ctx context.Context, tx *sql.Tx, row g
 	return id, nil
 }
 
-// emitGateReEvalHITLSuccessorTx emits the ?8.1 HITL verdict Interrupt successor
+// emitGateReEvalHITLSuccessorTx emits the section 8.1 HITL verdict Interrupt successor
 // inside the same CompleteGateReEvaluation transaction as the terminal event and
 // Run CAS. The caller must have already recorded the gate evaluation so
 // recorded.CalibrationID satisfies binding provenance triggers.
@@ -597,6 +662,7 @@ func (d *DB) emitGateReEvalHITLSuccessorTx(ctx context.Context, tx *sql.Tx, row 
 		return Interrupt{}, errors.New("storage: gate re-eval interrupt emission not configured")
 	}
 	eventRef := "sift://event/event:" + eventKey
+	changeRef := "https://sift.invalid/change/" + row.op.ChangeID
 	attemptNo := row.op.AttemptNo
 	cmd := EmitInterruptCmd{
 		RunID:               row.op.RunID,
@@ -693,27 +759,25 @@ func (d *DB) emitGateReEvalHITLSuccessorTx(ctx context.Context, tx *sql.Tx, row 
 		if vf.ReviewPolicy == "" {
 			return Interrupt{}, fmt.Errorf("%w: code_review missing review_policy", ErrGateReEvaluationContract)
 		}
-		var proj struct {
-			EffectivePolicyHash string `json:"effective_policy_hash"`
-		}
-		if err := json.Unmarshal([]byte(p.GateInputJSON), &proj); err != nil || proj.EffectivePolicyHash == "" {
-			return Interrupt{}, fmt.Errorf("%w: gate input missing effective_policy_hash", ErrGateReEvaluationContract)
+		policyDigest, err := gateReEvalCodeReviewPolicyDigest(p.GateInputHash, vf.ReviewPolicy)
+		if err != nil {
+			return Interrupt{}, err
 		}
 		cmd.Reason = InterruptCodeReview
-		cmd.Generation.PolicySnapshotID = proj.EffectivePolicyHash
+		cmd.Generation.PolicySnapshotID = policyDigest
 		cmd.Facts = map[string]string{
-			"change_ref":           "sift://change/" + row.op.ChangeID,
-			"head_sha":             row.op.HeadSHA,
-			"review_requirement":   vf.ReviewPolicy,
-			"recommended_action":   "approve",
-			"diff_ref":             eventRef,
+			"change_ref":         changeRef,
+			"head_sha":           row.op.HeadSHA,
+			"review_requirement": vf.ReviewPolicy,
+			"recommended_action": "approve",
+			"diff_ref":           eventRef,
 		}
 	case "hitl/merge_conflict":
 		cmd.Reason = InterruptMergeConflict
 		cmd.GatePhase = GateMerge
 		cmd.Generation.ConflictDigest = MergeConflictDigest(row.op.ChangeID, row.op.HeadSHA)
 		cmd.Facts = map[string]string{
-			"change_ref":              "sift://change/" + row.op.ChangeID,
+			"change_ref":            changeRef,
 			"head_sha":                row.op.HeadSHA,
 			"conflict_summary":        "mergeability=conflicting",
 			"recommended_action":      "retry",
@@ -728,6 +792,29 @@ func (d *DB) emitGateReEvalHITLSuccessorTx(ctx context.Context, tx *sql.Tx, row 
 			return Interrupt{}, err
 		}
 		cmd.Generation.FailureDigest = sha256Hex(factsJSON)
+	}
+	bindingJSON, bindingReason := interruptEffectBinding(cmd)
+	if bindingReason != string(cmd.Reason) {
+		return Interrupt{}, fmt.Errorf("%w: binding reason mismatch for %s", ErrGateReEvaluationContract, cmd.Reason)
+	}
+	genKey, err := interruptGenerationKeyFor(cmd)
+	if err != nil {
+		return Interrupt{}, err
+	}
+	seam := GateReEvaluationInterruptV1{
+		RunID:              cmd.RunID,
+		AttemptNo:          row.op.AttemptNo,
+		Generation:         row.op.Generation,
+		Reason:             cmd.Reason,
+		Facts:              cmd.Facts,
+		BindingJSON:        bindingJSON,
+		BindingDigest:      sha256Hex(bindingJSON),
+		GenerationKey:      genKey,
+		SourceInterruptID:  row.op.SourceInterruptID,
+		CreatedFromEventID: "event:" + eventKey,
+	}
+	if err := validateGateReEvalInterruptV1(seam, cmd); err != nil {
+		return Interrupt{}, err
 	}
 	return d.emitInterruptInExistingTx(ctx, tx, cmd, false)
 }

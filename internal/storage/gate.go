@@ -26,6 +26,7 @@ type GateEvaluationRecord struct {
 	RiskSourceVersion                 string
 	VerdictDigest, ShadowDecision     string
 	ConflictDigest                    string
+	ReviewPolicySnapshotDigest        string
 	FeaturesJSON                      json.RawMessage
 	BrainInputLinks                   []GateBrainInputLink
 	CacheHit                          bool
@@ -152,7 +153,7 @@ func recordGateEvaluationTxWithIDs(ctx context.Context, tx *sql.Tx, r GateEvalua
 	if _, err := tx.ExecContext(ctx, `INSERT INTO gate_cache (gate_input_hash,gate_version,snapshot_id,verdict_json,verdict_digest,created_at_ms) VALUES (?,?,?,?,?,?) ON CONFLICT(gate_input_hash,gate_version) DO NOTHING`, r.GateInputHash, r.GateVersion, out.SnapshotID, string(r.VerdictJSON), r.VerdictDigest, r.NowMS); err != nil {
 		return out, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO gate_evaluations (id,run_id,snapshot_id,gate_version,verdict_json,verdict_digest,cache_hit,created_at_ms) VALUES (?,?,?,?,?,?,?,?)`, out.EvaluationID, r.RunID, out.SnapshotID, r.GateVersion, string(r.VerdictJSON), r.VerdictDigest, gateBoolInt(r.CacheHit), r.NowMS); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO gate_evaluations (id,run_id,snapshot_id,gate_version,verdict_json,verdict_digest,cache_hit,created_at_ms,review_policy_snapshot_digest) VALUES (?,?,?,?,?,?,?,?,?)`, out.EvaluationID, r.RunID, out.SnapshotID, r.GateVersion, string(r.VerdictJSON), r.VerdictDigest, gateBoolInt(r.CacheHit), r.NowMS, nullable(r.ReviewPolicySnapshotDigest)); err != nil {
 		return out, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO calibration_entries (id,run_id,gate_evaluation_id,predicted_decision,features_json,gate_sample_entry_id,predicted_at_ms) VALUES (?,?,?,?,?,?,?)`, out.CalibrationID, r.RunID, out.EvaluationID, r.ShadowDecision, string(r.FeaturesJSON), out.GateSampleEntryID, r.NowMS); err != nil {
