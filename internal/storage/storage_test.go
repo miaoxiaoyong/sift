@@ -91,8 +91,8 @@ func TestMigrationRecordedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if version != 55 {
-		t.Fatalf("SchemaVersion = %d, want 55", version)
+	if version != 56 {
+		t.Fatalf("SchemaVersion = %d, want 56", version)
 	}
 
 	embedded, err := loadEmbeddedMigrations()
