@@ -453,9 +453,9 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - [x] T4/T6/T7 调用壳与验收矩阵已由 [rereview-6 PASS](reviews/2026-07-29-m5-brain-t4-t6-t7-impl-406-rereview-6-pi-gpt-5.6-sol.md) 核销；这不表示生产接线或 M5 已实现
 - [x] T4 生成 headline/brief/options；失败兜底为裸链接 + 原始状态（生产接纳已由 [#706 PASS WITH NOTES](reviews/2026-07-30-m5-t4-emit-interrupt-706-rereview-pi-deepseek-v4-pro.md) 核销：T4 canonical trace 与 fallback renderer 逐字节持久化、`invalid_output` 兜底写原始 trace envelope；注记仅涉 Report 配额路径覆盖完整性，不表示 T6/T7 接线或 M5 已实现）
 - [x] T6 只建议时机/通道，失败按 severity 确定性阈值；任何结果仍经过发射器配额（生产接线已由 [#721 PASS](reviews/2026-07-30-m5-t6-emit-interrupt-721-rereview-pi-deepseek-v4-pro.md) 核销：事务外 `Shell.Call(T6)` 镜像 T4、一档降级且 high/critical 强制 immediate、三层确定性兜底写 Brain trace，任何结果仍进唯一发射器配额；不表示 T7 接线、调度、critical 熔断或 M5 已实现）
-- [ ] T7 只生成 policy 提案或 context 草稿，二者都不自动生效
-- [ ] 测试 T7/历史数据不能放松单条 Gate、不能抑制单条 HITL
-- [ ] 三触点在生产路径复用统一调用壳并写 trace
+- [x] T7 只生成 policy 提案或 context 草稿，二者都不自动生效（I5 T7/A7 防火墙已由 [#733 PASS](reviews/2026-07-30-m5-t7-a7-firewall-rereview-733-pi-deepseek-v4-pro.md) 核销：`SaveProposalDraft` 是唯一写口、仅 INSERT 且 status 恒为 `pending_human_approval`，`BEFORE UPDATE/DELETE` 触发器强制 append-only；无 outbox/budget/Gate/Interrupt/状态转移副作用，policy 与 context 两种 `proposal_kind` 均覆盖，fallback 一律不创建草稿；T7 生产调用器未接线）
+- [x] 测试 T7/历史数据不能放松单条 Gate、不能抑制单条 HITL（I5 T7/A7 防火墙已由 [#733 PASS](reviews/2026-07-30-m5-t7-a7-firewall-rereview-733-pi-deepseek-v4-pro.md) 核销：`internal/gate/` 非测试代码零引用 `proposal_drafts`/T7，`Evaluate` 是冻结输入纯函数；`TestA7GateVerdictAndDigestInvariantUnderT7Proposal` 证明草稿在场时 verdict 与 digest 逐字节不变，`TestA7HITLNotSuppressedByT7Proposal` 证明单条 HITL 仍以原 severity 发出、未产生额外 Interrupt/outbox）
+- [ ] 三触点在生产路径复用统一调用壳并写 trace（T4/T6 生产接线已由 #706/#721 核销；T7 生产调用器「周期聚合 → T7 → 持久化草稿」未接线，超出 I5 范围，留后续波次——见 [#733 备考](reviews/2026-07-30-m5-t7-a7-firewall-rereview-733-pi-deepseek-v4-pro.md)）
 
 #### 5.2 Interrupt 全功能与 Channel
 
@@ -522,7 +522,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 ### M5 门禁
 
 - [ ] V2 retry 成功原子事务段、V4 人工态交错段通过
-- [ ] T4/T6 各自兜底、T7 两类只读提案及 A7 防火墙测试通过
+- [ ] T4/T6 各自兜底、T7 两类只读提案及 A7 防火墙测试通过（T7 两类只读提案与 A7 防火墙的测试证据已由 [#733 PASS](reviews/2026-07-30-m5-t7-a7-firewall-rereview-733-pi-deepseek-v4-pro.md) 闭合；本项仍随 M5 整体门禁未过保持未勾）
 - [ ] V8、V10a Command/Report 段、V13 通过
 - [ ] `startup_stall` approve/auto_reject 均被拒；retry 两段式与迟到事实仲裁通过
 - [ ] 九项指标可查询，V11 指标段闭合：`gate_bypassed` 不进入误放行率分母且进入门禁绕过率
