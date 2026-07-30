@@ -141,25 +141,10 @@ func (d *DB) applyCommandEventTx(ctx context.Context, tx *sql.Tx, cmd ApplyComma
 	}
 
 	// 5. Deterministic effect (only for applied / retry_pending outcomes).
-	var nextNonce, finalForEventID, initialEventID string
-	skipPersist := false
-	if outcome == command.OutcomeApplied && row != nil && row.Reason == string(InterruptStartupStall) && compiled.Action == command.ActionRetry {
-		// startup_stall retry is the two-phase request: it creates its own
-		// initial retry event + pending outcome + probe here (the event must
-		// exist before the probe FK), so persistCommandEventTx is skipped.
-		outcome = command.OutcomeRetryPending
-		nextNonce, initialEventID, err = d.startupStallRetryRequestTx(ctx, tx, env, compiled, row, cmd.NowMS)
-		if err != nil {
-			return ApplyCommandEventResult{}, err
-		}
-		skipPersist = true
-	} else if outcome == command.OutcomeApplied {
-		nextNonce, finalForEventID, err = d.applyCommandEffectTx(ctx, tx, env, compiled, row, cmd.NowMS)
-		if err != nil {
-			return ApplyCommandEventResult{}, err
-		}
-	}
-
+	// action/runID are resolved before persistence so the command event can be
+	// written before the effect: Gate re-evaluation operations and command_effects
+	// facts reference the close event, and command_effects.event_id is a FK to
+	// events, so the event row must exist inside the same transaction.
 	action := compiled.Action
 	if env.Source == command.SourceApprovalLabel {
 		action = command.ActionApprove
@@ -172,14 +157,38 @@ func (d *DB) applyCommandEventTx(ctx context.Context, tx *sql.Tx, cmd ApplyComma
 		runID = row.RunID
 	}
 
-	// 6. Command event + outcome relation + receipt + ack operation.
-	eventID := initialEventID
-	if !skipPersist {
-		eventID, err = persistCommandEventTx(ctx, tx, env, outcome, action, runID, compiled.InterruptID, nextNonce, finalForEventID, cmd.NowMS)
+	var nextNonce, eventID string
+	if outcome == command.OutcomeApplied && row != nil && row.Reason == string(InterruptStartupStall) && compiled.Action == command.ActionRetry {
+		// startup_stall retry is the two-phase request: it persists its own
+		// initial retry event + pending outcome + probe (the event must exist
+		// before the probe FK), so the common persist path is skipped.
+		outcome = command.OutcomeRetryPending
+		nextNonce, eventID, err = d.startupStallRetryRequestTx(ctx, tx, env, compiled, row, cmd.NowMS)
+		if err != nil {
+			return ApplyCommandEventResult{}, err
+		}
+	} else if outcome == command.OutcomeApplied {
+		// hold is the only applied action that rotates the nonce; pre-compute it
+		// so the event's next_nonce and the Interrupt CAS share one value.
+		if compiled.Action == command.ActionHold {
+			nextNonce = newToken()
+		}
+		eventID, err = persistCommandEventTx(ctx, tx, env, outcome, action, runID, compiled.InterruptID, nextNonce, "", cmd.NowMS, "")
+		if err != nil {
+			return ApplyCommandEventResult{}, err
+		}
+		if err = d.applyCommandEffectTx(ctx, tx, env, compiled, row, cmd.NowMS, eventID, nextNonce); err != nil {
+			return ApplyCommandEventResult{}, err
+		}
+	} else {
+		// Rejected candidates persist one final command event + outcome.
+		eventID, err = persistCommandEventTx(ctx, tx, env, outcome, action, runID, compiled.InterruptID, "", "", cmd.NowMS, "")
 		if err != nil {
 			return ApplyCommandEventResult{}, err
 		}
 	}
+
+	// 6. Outcome relation + receipt + ack operation.
 	ackKey := ""
 	if outcome != command.OutcomeRetryPending {
 		ackKey = command.AckOperationKey(env.EventKey)
@@ -279,78 +288,72 @@ func interruptView(row *commandInterruptRow) *command.InterruptView {
 }
 
 // applyCommandEffectTx applies the deterministic reason×action effect for an
-// applied (non-startup-retry) command. Returns nextNonce (hold only) and the
-// final-for-event id (empty for non-retry).
-func (d *DB) applyCommandEffectTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, nowMS int64) (string, string, error) {
+// applied (non-startup-retry) command. The command event is already persisted
+// (eventID) so Gate re-evaluation operations and command_effects facts can
+// reference the close event; nextNonce is the pre-computed hold nonce (empty
+// for every other action). The Interrupt close is the terminal CAS for all
+// applied actions.
+func (d *DB) applyCommandEffectTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, nowMS int64, eventID, nextNonce string) error {
 	if row == nil {
-		return "", "", ErrRejectedStale
+		return ErrRejectedStale
 	}
 	switch c.Action {
 	case command.ActionReject:
 		return d.commandRejectTx(ctx, tx, env, c, row, nowMS)
 	case command.ActionHold:
-		return d.commandHoldTx(ctx, tx, env, c, nowMS)
+		return d.commandHoldTx(ctx, tx, env, c, nowMS, nextNonce)
 	case command.ActionAsk:
 		return d.commandAskTx(ctx, tx, env, c, nowMS)
 	case command.ActionApprove:
-		return d.commandApproveTx(ctx, tx, env, c, row, nowMS)
+		return d.commandApproveTx(ctx, tx, env, c, row, nowMS, eventID)
 	case command.ActionRetry:
-		// Non-startup retry (failure_review/agent_blocked/merge_conflict)
-		// requires Gate re-evaluation / attempt terminalization + new
-		// attempt/claim/launch, which is out of this bootstrap slice.
-		return "", "", ErrCommandEffectNotWired
+		return d.commandRetryTx(ctx, tx, env, c, row, nowMS, eventID)
 	}
-	return "", "", ErrCommandEffectNotWired
+	return ErrCommandEffectNotWired
 }
 
-func (d *DB) commandRejectTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, nowMS int64) (string, string, error) {
+func (d *DB) commandRejectTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, nowMS int64) error {
 	// reject: close/responded; Run -> failed(human_reject). The bound attempt is
 	// marked attempt_resolution=reject (write-once); for startup_stall the
 	// isolation is retained until the execution body is proven absent, which is
 	// owned by the probe/race path.
 	if err := d.transition(ctx, tx, row.RunID, row.RunVersion, DomainCommand{To: RunFailed, Source: SourceOperator, Actor: actorName(env), FailureReason: "human_reject", OccurredAtMS: nowMS}); err != nil {
-		return "", "", err
+		return err
 	}
 	if row.AttemptNo > 0 {
 		if _, err := tx.ExecContext(ctx, `UPDATE attempts SET attempt_resolution='reject',resolution_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND attempt_resolution IS NULL`, nowMS, nowMS, row.RunID, row.AttemptNo); err != nil {
-			return "", "", err
+			return err
 		}
 	}
 	if _, err := recordHumanDecisionTx(ctx, tx, RecordHumanDecisionCmd{
 		Action: DecisionReject, CommandEventID: env.EventKey, InterruptID: c.InterruptID,
 		SemanticMaterial: c.RejectReason, NowMS: nowMS,
 	}); err != nil {
-		return "", "", err
+		return err
 	}
-	if err := closeInterruptTx(ctx, tx, c.InterruptID, c.ExpectedInterruptVersion, c.Nonce, "responded", nowMS); err != nil {
-		return "", "", err
-	}
-	return "", "", nil
+	return closeInterruptTx(ctx, tx, c.InterruptID, c.ExpectedInterruptVersion, c.Nonce, "responded", nowMS)
 }
 
-func (d *DB) commandHoldTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, nowMS int64) (string, string, error) {
-	nextNonce := newToken()
+func (d *DB) commandHoldTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, nowMS int64, nextNonce string) error {
 	expires := nowMS + c.HoldDurationMS
 	res, err := tx.ExecContext(ctx, `UPDATE interrupts SET nonce=?,version=version+1,dispatch_state='held',held_reason='manual',delivery='held',expires_at_ms=?,next_dispatch_at_ms=NULL,nonce_issued_at_ms=?,updated_at_ms=? WHERE id=? AND status='open' AND version=? AND nonce=?`,
 		nextNonce, expires, nowMS, nowMS, c.InterruptID, c.ExpectedInterruptVersion, c.Nonce)
 	if err != nil {
-		return "", "", err
+		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return "", "", ErrRejectedStale
+		return ErrRejectedStale
 	}
 	if err := excludeStaleBatchMembersTx(ctx, tx, c.InterruptID, nowMS); err != nil {
-		return "", "", err
+		return err
 	}
-	if _, err := recordHumanDecisionTx(ctx, tx, RecordHumanDecisionCmd{
+	_, err = recordHumanDecisionTx(ctx, tx, RecordHumanDecisionCmd{
 		Action: DecisionHold, CommandEventID: env.EventKey, InterruptID: c.InterruptID, NowMS: nowMS,
-	}); err != nil {
-		return "", "", err
-	}
-	return nextNonce, "", nil
+	})
+	return err
 }
 
-func (d *DB) commandAskTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, nowMS int64) (string, string, error) {
+func (d *DB) commandAskTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, nowMS int64) error {
 	// ask: same-tx task-layer clarification + Ledger semantic material. The Run
 	// stays waiting_human; the clarification is recorded, not auto-promoted to
 	// project/global Context.
@@ -358,36 +361,289 @@ func (d *DB) commandAskTx(ctx context.Context, tx *sql.Tx, env command.CommandEv
 		Action: DecisionAsk, CommandEventID: env.EventKey, InterruptID: c.InterruptID,
 		SemanticMaterial: c.AskText, NowMS: nowMS,
 	}); err != nil {
-		return "", "", err
+		return err
 	}
-	if err := closeInterruptTx(ctx, tx, c.InterruptID, c.ExpectedInterruptVersion, c.Nonce, "responded", nowMS); err != nil {
-		return "", "", err
-	}
-	return "", "", nil
+	return closeInterruptTx(ctx, tx, c.InterruptID, c.ExpectedInterruptVersion, c.Nonce, "responded", nowMS)
 }
 
-func (d *DB) commandApproveTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, nowMS int64) (string, string, error) {
+func (d *DB) commandApproveTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, nowMS int64, eventID string) error {
 	switch InterruptReason(row.Reason) {
 	case InterruptDesignApproval:
 		// approve: close/responded; waiting_human -> queued. The next pending
 		// attempt/claim/launch is enqueued by the launch path on the queued Run.
 		if err := d.transition(ctx, tx, row.RunID, row.RunVersion, DomainCommand{To: RunQueued, Source: SourceOperator, Actor: actorName(env), OccurredAtMS: nowMS}); err != nil {
-			return "", "", err
+			return err
 		}
+	case InterruptGuardrailViolation:
+		// guardrail approve: consume the one-time exemption from the immutable
+		// binding (command_effects row), close/responded, enqueue exactly one
+		// Gate re-evaluation of that binding. Run stays waiting_human behind the
+		// pending re-evaluation (storage.md §8.1).
+		binding, err := loadInterruptEffectBindingTx(ctx, tx, c.InterruptID)
+		if err != nil {
+			return err
+		}
+		return d.commandGateReEvalTx(ctx, tx, env, c, row, nowMS, eventID, gateReEvalEffect{
+			commandEffectKind: "one_time_exemption", decision: DecisionApprove,
+		}, binding)
+	case InterruptCodeReview:
+		// code_review approve: insert one immutable human-review approval for
+		// that binding, close/responded, enqueue exactly one Gate re-evaluation.
+		binding, err := loadInterruptEffectBindingTx(ctx, tx, c.InterruptID)
+		if err != nil {
+			return err
+		}
+		return d.commandGateReEvalTx(ctx, tx, env, c, row, nowMS, eventID, gateReEvalEffect{
+			commandEffectKind: "human_review_approval", decision: DecisionApprove,
+		}, binding)
 	default:
-		// guardrail/code_review approve require a Gate re-evaluation operation
-		// and an immutable effect fact; out of this bootstrap slice.
-		return "", "", ErrCommandEffectNotWired
+		// design_approval is the only approve-binding Run transition; every
+		// other reason's approve remains honestly unwired until its successor
+		// contract lands.
+		return ErrCommandEffectNotWired
 	}
 	if _, err := recordHumanDecisionTx(ctx, tx, RecordHumanDecisionCmd{
 		Action: DecisionApprove, CommandEventID: env.EventKey, InterruptID: c.InterruptID, NowMS: nowMS,
 	}); err != nil {
-		return "", "", err
+		return err
+	}
+	return closeInterruptTx(ctx, tx, c.InterruptID, c.ExpectedInterruptVersion, c.Nonce, "responded", nowMS)
+}
+
+// gateReEvalEffect describes the optional immutable command_effects fact and
+// the HumanDecision action for a Gate re-evaluation command. guardrail and
+// code_review approve insert an effect fact; failure_review gate_recheck and
+// merge_conflict retry do not.
+type gateReEvalEffect struct {
+	commandEffectKind string // "" | "one_time_exemption" | "human_review_approval"
+	decision          HumanDecisionAction
+}
+
+// commandRetryTx wires the non-startup retry effects (command.md §4). It never
+// guesses a Change or attempt outside the immutable binding: the binding arm
+// selects between a Gate re-evaluation successor (failure_review gate_recheck,
+// merge_conflict) and an attempt-terminalization + next-attempt successor
+// (failure_review new_attempt, agent_blocked).
+func (d *DB) commandRetryTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, nowMS int64, eventID string) error {
+	binding, err := loadInterruptEffectBindingTx(ctx, tx, c.InterruptID)
+	if err != nil {
+		return err
+	}
+	switch InterruptReason(row.Reason) {
+	case InterruptFailureReview:
+		if binding.Arm != "failure_review_attempt" {
+			// report_quota_failure_review exposes only reject|hold; a retry never
+			// reaches this port. Keep it honest rather than guessing a successor.
+			return ErrCommandEffectNotWired
+		}
+		if binding.RetryKind == string(FailureReviewGateRecheck) {
+			return d.commandGateReEvalTx(ctx, tx, env, c, row, nowMS, eventID, gateReEvalEffect{decision: DecisionRetry}, binding)
+		}
+		return d.commandNewAttemptRetryTx(ctx, tx, env, c, row, binding, nowMS)
+	case InterruptAgentBlocked:
+		// agent_blocked retry terminalizes the bound blocked attempt and creates
+		// the next attempt/claim/launch without a Task Spec change (the ask
+		// contract's snapshot stays out of scope).
+		return d.commandNewAttemptRetryTx(ctx, tx, env, c, row, binding, nowMS)
+	case InterruptMergeConflict:
+		return d.commandGateReEvalTx(ctx, tx, env, c, row, nowMS, eventID, gateReEvalEffect{decision: DecisionRetry}, binding)
+	}
+	return ErrCommandEffectNotWired
+}
+
+// commandGateReEvalTx is the shared core for guardrail/code_review approve and
+// failure_review gate_recheck / merge_conflict retry. It optionally inserts one
+// immutable command_effects fact from the frozen binding, records the human
+// decision, closes the Interrupt responded and enqueues exactly one Gate
+// re-evaluation of the frozen head. The Run stays waiting_human behind the
+// pending re-evaluation (storage.md §8.1).
+func (d *DB) commandGateReEvalTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, nowMS int64, eventID string, eff gateReEvalEffect, binding commandEffectBinding) error {
+	if eff.commandEffectKind != "" {
+		if err := insertCommandEffectTx(ctx, tx, c.InterruptID, eventID, row.RunID, eff.commandEffectKind, binding, nowMS); err != nil {
+			return err
+		}
+	}
+	if _, err := recordHumanDecisionTx(ctx, tx, RecordHumanDecisionCmd{
+		Action: eff.decision, CommandEventID: env.EventKey, InterruptID: c.InterruptID, NowMS: nowMS,
+	}); err != nil {
+		return err
 	}
 	if err := closeInterruptTx(ctx, tx, c.InterruptID, c.ExpectedInterruptVersion, c.Nonce, "responded", nowMS); err != nil {
-		return "", "", err
+		return err
 	}
-	return "", "", nil
+	snap, err := loadInterruptGateSnapshotTx(ctx, tx, c.InterruptID)
+	if err != nil {
+		return err
+	}
+	return enqueueGateReEvaluationTx(ctx, tx, c.InterruptID, eventID, row, snap, binding, nowMS)
+}
+
+// commandNewAttemptRetryTx terminalizes the bound attempt and spawns the next
+// pending attempt/claim/launch, then closes the Interrupt responded and queues
+// the Run. It mirrors the retry-after-absence spawn without the absence proof:
+// the human retry decision is recorded by the Ledger, not by attempt_resolution
+// (storage.md §1.10 leaves that enum to reject|retry_after_absence).
+func (d *DB) commandNewAttemptRetryTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, binding commandEffectBinding, nowMS int64) error {
+	if binding.RunID == "" || binding.AttemptNo < 1 || binding.Generation < 1 {
+		return ErrCommandEffectNotWired
+	}
+	if _, err := recordHumanDecisionTx(ctx, tx, RecordHumanDecisionCmd{
+		Action: DecisionRetry, CommandEventID: env.EventKey, InterruptID: c.InterruptID, NowMS: nowMS,
+	}); err != nil {
+		return err
+	}
+	if err := closeInterruptTx(ctx, tx, c.InterruptID, c.ExpectedInterruptVersion, c.Nonce, "responded", nowMS); err != nil {
+		return err
+	}
+	if _, err := d.spawnNextAttemptTx(ctx, tx, row.RunID, binding.AttemptNo, binding.Generation, nowMS); err != nil {
+		return err
+	}
+	return d.transition(ctx, tx, row.RunID, row.RunVersion, DomainCommand{To: RunQueued, Source: SourceOperator, Actor: actorName(env), OccurredAtMS: nowMS})
+}
+
+// spawnNextAttemptTx moves the bound attempt out of the live set (so the
+// single-live-phase index admits its successor) and creates the next pending
+// attempt, its claim and its launch operation from the bound attempt's frozen
+// assignment. It is the shared terminalize+spawn helper for human retry; the
+// caller owns the Run transition and the human-decision Ledger entry.
+func (d *DB) spawnNextAttemptTx(ctx context.Context, tx *sql.Tx, runID string, boundAttemptNo, boundGeneration int, nowMS int64) (int, error) {
+	if boundAttemptNo < 1 || boundGeneration < 1 {
+		return 0, ErrRejectedStale
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE attempts SET phase='orphaned',updated_at_ms=? WHERE run_id=? AND attempt_no=? AND phase IN ('pending','starting','spawning','running')`, nowMS, runID, boundAttemptNo); err != nil {
+		return 0, err
+	}
+	newNo := boundAttemptNo + 1
+	if _, err := tx.ExecContext(ctx, `INSERT INTO attempts (run_id,attempt_no,phase,generation,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,isolation_state,created_at_ms,updated_at_ms) SELECT run_id,?,'pending',1,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,'none',?,? FROM attempts WHERE run_id=? AND attempt_no=?`, newNo, nowMS, nowMS, runID, boundAttemptNo); err != nil {
+		return 0, err
+	}
+	key := LaunchOperationKey(runID, newNo, 1)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_claims (run_id,attempt_no,generation,launch_operation_key,created_at_ms,updated_at_ms) VALUES (?,?,1,?,?,?)`, runID, newNo, key, nowMS, nowMS); err != nil {
+		return 0, err
+	}
+	if err := insertOperation(ctx, tx, Operation{Key: key, Kind: OperationLaunchAgent, Payload: []byte(`{"schema_version":1}`), RunID: runID, AttemptNo: intPtr(newNo)}, runID, "", nowMS); err != nil {
+		return 0, err
+	}
+	return newNo, nil
+}
+
+// commandEffectBinding is the parsed immutable effect binding for the current
+// Interrupt (storage.md §6.4). Only the fields consumed by Command effects are
+// projected; the frozen binding_json/digest are retained for the Gate
+// re-evaluation payload.
+type commandEffectBinding struct {
+	Arm                        string `json:"arm"`
+	RunID                      string `json:"run_id"`
+	AttemptNo                  int    `json:"attempt_no"`
+	Generation                 int    `json:"generation"`
+	ChangeID                   string `json:"change_id"`
+	HeadSHA                    string `json:"head_sha"`
+	RuleID                     string `json:"rule_id"`
+	MatchedPathsDigest         string `json:"matched_paths_digest"`
+	ReviewPolicySnapshotDigest string `json:"review_policy_snapshot_digest"`
+	ConflictDigest             string `json:"conflict_digest"`
+	RetryKind                  string `json:"retry_kind"`
+	JSON                       []byte
+	Digest                     string
+}
+
+// loadInterruptEffectBindingTx reads the immutable one-to-one effect binding
+// frozen at emission. Command never reconstructs an arm from the current Run,
+// Change, attempt or Forge state.
+func loadInterruptEffectBindingTx(ctx context.Context, tx *sql.Tx, interruptID string) (commandEffectBinding, error) {
+	var b commandEffectBinding
+	var bindingJSON string
+	err := tx.QueryRowContext(ctx, `SELECT binding_json,binding_digest FROM interrupt_command_effect_bindings WHERE interrupt_id=?`, interruptID).Scan(&bindingJSON, &b.Digest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return commandEffectBinding{}, ErrCommandEffectNotWired
+	}
+	if err != nil {
+		return commandEffectBinding{}, err
+	}
+	b.JSON = []byte(bindingJSON)
+	if err := json.Unmarshal(b.JSON, &b); err != nil {
+		return commandEffectBinding{}, fmt.Errorf("storage: corrupt command effect binding: %w", err)
+	}
+	return b, nil
+}
+
+// interruptGateSnapshot is the frozen previous Gate evaluation identity sourced
+// through the Interrupt's calibration. The Gate re-evaluation operation payload
+// carries this frozen source identity (storage.md §8.1); Complete alone
+// allocates the re-observed successor snapshot.
+type interruptGateSnapshot struct {
+	SnapshotID, InputHash, GateVersion string
+	ChangeID, HeadSHA                  string
+}
+
+// loadInterruptGateSnapshotTx resolves the frozen Gate input/evaluation for the
+// Interrupt's calibration. It is the sole source of the re-evaluation's
+// gate_input_snapshot_id/gate_input_hash/gate_version and exact head.
+func loadInterruptGateSnapshotTx(ctx context.Context, tx *sql.Tx, interruptID string) (interruptGateSnapshot, error) {
+	var s interruptGateSnapshot
+	err := tx.QueryRowContext(ctx, `SELECT s.id,s.gate_input_hash,e.gate_version,json_extract(s.canonical_json,'$.identity.change_id'),s.head_sha
+		FROM interrupts i
+		JOIN calibration_entries c ON c.id=i.calibration_id
+		JOIN gate_evaluations e ON e.id=c.gate_evaluation_id
+		JOIN gate_input_snapshots s ON s.id=e.snapshot_id
+		WHERE i.id=?`, interruptID).Scan(&s.SnapshotID, &s.InputHash, &s.GateVersion, &s.ChangeID, &s.HeadSHA)
+	if errors.Is(err, sql.ErrNoRows) {
+		return interruptGateSnapshot{}, ErrCommandEffectNotWired
+	}
+	if err != nil {
+		return interruptGateSnapshot{}, err
+	}
+	return s, nil
+}
+
+// enqueueGateReEvaluationTx inserts exactly one pending gate_re_evaluation
+// outbox operation (storage.md §8.1) built only from the frozen source
+// Interrupt, its Gate snapshot and the immutable effect binding. The operation
+// key is keyed by the source Interrupt and the exact head, so it can never be
+// reconstructed from the current Change.
+func enqueueGateReEvaluationTx(ctx context.Context, tx *sql.Tx, sourceInterruptID, sourceCommandEventID string, row *commandInterruptRow, snap interruptGateSnapshot, binding commandEffectBinding, nowMS int64) error {
+	opKey := GateReEvaluationOperationKey(sourceInterruptID, snap.HeadSHA)
+	payload, err := canonicalJSON(map[string]any{
+		"source_interrupt_id":     sourceInterruptID,
+		"source_command_event_id": sourceCommandEventID,
+		"source_run_version":      row.RunVersion,
+		"run_id":                  row.RunID,
+		"attempt_no":              row.AttemptNo,
+		"generation":              row.Generation,
+		"change_id":               snap.ChangeID,
+		"head_sha":                snap.HeadSHA,
+		"gate_input_snapshot_id":  snap.SnapshotID,
+		"gate_input_hash":         snap.InputHash,
+		"gate_version":            snap.GateVersion,
+		"effect_binding_digest":   binding.Digest,
+		"operation_key":           opKey,
+	})
+	if err != nil {
+		return err
+	}
+	return insertOperation(ctx, tx, Operation{
+		Key: opKey, Kind: OperationGateReEvaluation, Payload: payload,
+		RunID: row.RunID, AttemptNo: intPtr(row.AttemptNo), InterruptID: sourceInterruptID,
+	}, row.RunID, sourceCommandEventID, nowMS)
+}
+
+// insertCommandEffectTx inserts the immutable one-time exemption or
+// human-review approval fact consumed by the next Gate snapshot (storage.md
+// §6.4). The binding identity guarantees the run/head/rule/path or
+// change/head/policy digest; Command never derives these from mutable state.
+func insertCommandEffectTx(ctx context.Context, tx *sql.Tx, interruptID, eventID, runID, kind string, binding commandEffectBinding, nowMS int64) error {
+	var changeID, headSHA, ruleID, matchedPathsDigest, reviewPolicySnapshotDigest string
+	switch kind {
+	case "one_time_exemption":
+		headSHA, ruleID, matchedPathsDigest = binding.HeadSHA, binding.RuleID, binding.MatchedPathsDigest
+	case "human_review_approval":
+		changeID, headSHA, reviewPolicySnapshotDigest = binding.ChangeID, binding.HeadSHA, binding.ReviewPolicySnapshotDigest
+	default:
+		return fmt.Errorf("storage: invalid command effect kind %q", kind)
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO command_effects (id,interrupt_id,event_id,effect_kind,run_id,change_id,head_sha,rule_id,matched_paths_digest,review_policy_snapshot_digest,created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		newID(), interruptID, eventID, kind, runID, nullable(changeID), nullable(headSHA), nullable(ruleID), nullable(matchedPathsDigest), nullable(reviewPolicySnapshotDigest), nowMS)
+	return err
 }
 
 // startupStallRetryRequestTx is the startup_stall retry request (§5). It does
@@ -410,7 +666,7 @@ func (d *DB) startupStallRetryRequestTx(ctx context.Context, tx *sql.Tx, env com
 	}
 	// Initial retry event (outcome=retry_pending). It is both the initial
 	// command event and the anchor for the pending probe and outcome relation.
-	initialEventID, err := persistCommandEventTx(ctx, tx, env, command.OutcomeRetryPending, command.ActionRetry, row.RunID, c.InterruptID, nextNonce, "", nowMS)
+	initialEventID, err := persistCommandEventTx(ctx, tx, env, command.OutcomeRetryPending, command.ActionRetry, row.RunID, c.InterruptID, nextNonce, "", nowMS, "")
 	if err != nil {
 		return "", "", err
 	}
@@ -429,31 +685,36 @@ func (d *DB) startupStallRetryRequestTx(ctx context.Context, tx *sql.Tx, env com
 
 // --- persistence helpers ---
 
-func persistCommandEventTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, outcome command.CommandOutcome, action command.CommandAction, runID, interruptID, nextNonce, finalForEventID string, nowMS int64) (string, error) {
+func persistCommandEventTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, outcome command.CommandOutcome, action command.CommandAction, runID, interruptID, nextNonce, finalForEventID string, nowMS int64, eventID string) (string, error) {
 	ev := command.NewEvent(env, outcome, action, runID, interruptID, nextNonce, finalForEventID)
 	body, err := ev.CanonicalBytes()
 	if err != nil {
 		return "", err
 	}
-	initialID := newID()
+	// eventID is pre-generated by the caller when a deterministic effect (Gate
+	// re-evaluation operation, command_effects fact) must reference the close
+	// event inside the same transaction; otherwise allocate here.
+	if eventID == "" {
+		eventID = newID()
+	}
 	idem := command.EventStageKey(env.EventKey, command.StageInitial)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO events (id,run_id,project_id,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES (?,?,?,'command.event','forge',1,?,?,?,?)`,
-		initialID, nullable(runID), env.ProjectID, string(body), idem, nowMS, nowMS); err != nil {
+		eventID, nullable(runID), env.ProjectID, string(body), idem, nowMS, nowMS); err != nil {
 		return "", err
 	}
 	if outcome == command.OutcomeRetryPending {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO command_event_outcomes (id,event_key,initial_event_id,final_event_id,state,created_at_ms,finalized_at_ms) VALUES (?,?,?,NULL,'pending',?,NULL)`,
-			newID(), env.EventKey, initialID, nowMS); err != nil {
+			newID(), env.EventKey, eventID, nowMS); err != nil {
 			return "", err
 		}
-		return initialID, nil
+		return eventID, nil
 	}
 	// final in one transaction (non-retry: initial == final).
 	if _, err := tx.ExecContext(ctx, `INSERT INTO command_event_outcomes (id,event_key,initial_event_id,final_event_id,state,created_at_ms,finalized_at_ms) VALUES (?,?,?,?, 'final', ?, ?)`,
-		newID(), env.EventKey, initialID, initialID, nowMS, nowMS); err != nil {
+		newID(), env.EventKey, eventID, eventID, nowMS, nowMS); err != nil {
 		return "", err
 	}
-	return initialID, nil
+	return eventID, nil
 }
 
 func writeCommandAckOpTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, outcome command.CommandOutcome, action command.CommandAction, finalEventID, interruptID, runID, nextNonce, ackKey string, nowMS int64) error {

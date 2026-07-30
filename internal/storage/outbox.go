@@ -14,14 +14,15 @@ import (
 type OperationKind string
 
 const (
-	OperationForgeComment   OperationKind = "forge_comment"
-	OperationForgeLabels    OperationKind = "forge_labels"
-	OperationCreateChange   OperationKind = "create_change"
-	OperationMergeChange    OperationKind = "merge_change"
-	OperationChannelPublish OperationKind = "channel_publish"
-	OperationLaunchAgent    OperationKind = "launch_agent"
-	OperationCommandAck     OperationKind = "command_ack"
-	OperationForgeAlert     OperationKind = "forge_alert"
+	OperationForgeComment     OperationKind = "forge_comment"
+	OperationForgeLabels      OperationKind = "forge_labels"
+	OperationCreateChange     OperationKind = "create_change"
+	OperationMergeChange      OperationKind = "merge_change"
+	OperationChannelPublish   OperationKind = "channel_publish"
+	OperationLaunchAgent      OperationKind = "launch_agent"
+	OperationCommandAck       OperationKind = "command_ack"
+	OperationGateReEvaluation OperationKind = "gate_re_evaluation"
+	OperationForgeAlert       OperationKind = "forge_alert"
 )
 
 type OperationState string
@@ -105,6 +106,14 @@ func LabelsOperationKey(subjectKind, subjectID string, version int) string {
 }
 func AlertOperationKey(kind, subjectID string, generation int) string {
 	return fmt.Sprintf("alert:%s:%s:%d", kind, subjectID, generation)
+}
+
+// GateReEvaluationOperationKey is the frozen source identity key for a Gate
+// re-evaluation enqueued by Command (storage.md §8.1). It is keyed by the
+// frozen source Interrupt and the exact head from the immutable binding, so it
+// is never reconstructed from the current Change or Run state.
+func GateReEvaluationOperationKey(sourceInterruptID, headSHA string) string {
+	return fmt.Sprintf("gate:%s:%s:reeval:1", sourceInterruptID, headSHA)
 }
 
 // EnqueueOperation is for operations without a Run state transition. Stateful
@@ -407,7 +416,7 @@ func digestJSON(b []byte) string {
 }
 func validOperationKind(k OperationKind) bool {
 	switch k {
-	case OperationForgeComment, OperationForgeLabels, OperationCreateChange, OperationMergeChange, OperationChannelPublish, OperationLaunchAgent, OperationCommandAck, OperationForgeAlert:
+	case OperationForgeComment, OperationForgeLabels, OperationCreateChange, OperationMergeChange, OperationChannelPublish, OperationLaunchAgent, OperationCommandAck, OperationGateReEvaluation, OperationForgeAlert:
 		return true
 	}
 	return false

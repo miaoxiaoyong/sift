@@ -347,7 +347,10 @@ func canonicalJSON(v any) ([]byte, error) {
 
 func recomputeCertification(ctx context.Context, tx *sql.Tx, runID string, rules config.Certification, asOf int64) (string, error) {
 	if rules.Window <= 0 {
-		return "", errors.New("storage: certification window is required")
+		// Certification tracking is optional: when the Run's config defines no
+		// certification window, the human decision still settles the calibration
+		// and Ledger entry, but no certification projection is recomputed.
+		return "", nil
 	}
 	var kind string
 	if err := tx.QueryRowContext(ctx, `SELECT kind FROM runs WHERE id=?`, runID).Scan(&kind); err != nil {

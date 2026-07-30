@@ -32,6 +32,10 @@ var migrationsFS embed.FS
 
 var migrationFileRE = regexp.MustCompile(`^([0-9]{4})_([a-z0-9_]+)\.sql$`)
 
+// foreignKeyRebuilds lists migrations that rebuild a table. They run with
+// foreign_keys temporarily disabled (PRAGMA is only honored outside a tx).
+var foreignKeyRebuilds = map[int]bool{21: true, 54: true}
+
 // migration is one embedded forward migration file.
 type migration struct {
 	version  int
@@ -168,12 +172,15 @@ func applyMigrations(ctx context.Context, db *sql.DB, binaryVersion string, now 
 // migration file itself contains no transaction control; the pool's
 // _txlock=immediate makes BeginTx a BEGIN IMMEDIATE.
 func applyOne(ctx context.Context, db *sql.DB, m migration, binaryVersion string, now time.Time) error {
-	// 0021 rebuilds interrupts. SQLite only honors foreign_keys outside a
-	// transaction, so execute its otherwise transactional migration with FK
-	// enforcement temporarily disabled. This preserves FK definitions on the
-	// replacement table and lets populated pre-0021 databases advance.
+	// These migrations rebuild a table (SQLite CHECK constraints are
+	// immutable). SQLite only honors foreign_keys outside a transaction, so
+	// execute the otherwise transactional migration with FK enforcement
+	// temporarily disabled. This preserves FK definitions on the replacement
+	// table and lets populated databases advance; foreign_key_check runs after.
+	// 0021 rebuilds interrupts; 0054 rebuilds outbox_operations to add the
+	// gate_re_evaluation outbox kind (storage.md §8.1).
 	foreignKeysDisabled := false
-	if m.version == 21 {
+	if foreignKeyRebuilds[m.version] {
 		if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
 			return fmt.Errorf("storage: disable foreign keys for migration %s: %w", m.name, err)
 		}
