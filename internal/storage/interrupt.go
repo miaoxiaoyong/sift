@@ -1108,12 +1108,29 @@ func chargeAttentionTx(ctx context.Context, tx *sql.Tx, cmd EmitInterruptCmd, s 
 		if _, err := tx.ExecContext(ctx, `INSERT INTO budget_counters (kind,scope,scope_id,bucket_start_ms,bucket_end_ms,limit_value,consumed_value,version,updated_at_ms) VALUES ('attention','severity',?,?,?, ?,0,1,?) ON CONFLICT DO NOTHING`, string(s), bucket, end, limit, cmd.NowMS); err != nil {
 			return "", err
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE budget_counters SET consumed_value=consumed_value+1,version=version+1,updated_at_ms=? WHERE kind='attention' AND scope='severity' AND scope_id=? AND bucket_start_ms=? AND consumed_value<limit_value`, cmd.NowMS, string(s), bucket)
-		if err != nil {
-			return "", err
-		}
-		n, _ := res.RowsAffected()
-		if n != 1 {
+		// A zero-row CAS is not, by itself, proof of exhaustion (config §3.9):
+		// re-read the authority counter and only treat consumed+1>limit as a
+		// quota_batched admission. A missing row or unreadable counter rolls the
+		// emission back so a storage fault cannot masquerade as a batched result.
+		const quotaCASRetries = 8
+		for attempt := 0; ; attempt++ {
+			res, err := tx.ExecContext(ctx, `UPDATE budget_counters SET consumed_value=consumed_value+1,version=version+1,updated_at_ms=? WHERE kind='attention' AND scope='severity' AND scope_id=? AND bucket_start_ms=? AND consumed_value<limit_value`, cmd.NowMS, string(s), bucket)
+			if err != nil {
+				return "", err
+			}
+			if n, _ := res.RowsAffected(); n == 1 {
+				break
+			}
+			var consumed, have int64
+			if err := tx.QueryRowContext(ctx, `SELECT consumed_value,limit_value FROM budget_counters WHERE kind='attention' AND scope='severity' AND scope_id=? AND bucket_start_ms=?`, string(s), bucket).Scan(&consumed, &have); err != nil {
+				return "", err
+			}
+			if consumed+1 <= have {
+				if attempt >= quotaCASRetries {
+					return "", fmt.Errorf("%w: attention quota CAS retry exhausted", ErrInterruptRejected)
+				}
+				continue
+			}
 			return "", ErrAttentionQuotaExceeded
 		}
 	}
