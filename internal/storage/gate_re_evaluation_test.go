@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -52,6 +53,14 @@ func TestGateReEvalFailedResultDigestVectors(t *testing.T) {
 	}
 }
 
+func gateReEvalInterruptCfg() GateReEvalInterruptEmission {
+	return GateReEvalInterruptEmission{
+		AttentionDailyQuota: interruptQuota(),
+		DayTimezone:         "UTC",
+		Channels:            []InterruptChannel{{ID: "text", Capabilities: []string{"text"}}},
+	}
+}
+
 // seedClaimedGateReEval sets up the full production precondition (closed source
 // Interrupt with effect binding + gate snapshot, command close event, one
 // claimed gate_re_evaluation operation) and returns the claim plus the frozen
@@ -60,6 +69,7 @@ func TestGateReEvalFailedResultDigestVectors(t *testing.T) {
 // hash; pass empty strings to reuse the fixture defaults.
 func seedClaimedGateReEval(t *testing.T, db *DB, ctx context.Context, reason InterruptReason, inputJSON, inputHash, verdictJSON, verdictDigest string) (ClaimedOperation, gateHITLFixture) {
 	t.Helper()
+	db.SetGateReEvalInterruptEmission(gateReEvalInterruptCfg())
 	if err := db.SeedProjectForTest(ctx, "cfg", "project", testNow); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +146,7 @@ func mustCanon(t *testing.T, v any) string {
 
 // TestCompleteGateReEvaluationFailedArm verifies the failed result union
 // terminal protocol: terminal gate.reevaluation.failed event, Run version bump
-// (waiting_human retained) and operation terminal.
+// (waiting_human retained), failure_review Interrupt successor and operation terminal.
 func TestCompleteGateReEvaluationFailedArm(t *testing.T) {
 	db, _ := openTestDB(t)
 	ctx := context.Background()
@@ -194,9 +204,86 @@ func TestCompleteGateReEvaluationFailedArm(t *testing.T) {
 	if runVersion != runVersionBefore+1 {
 		t.Fatalf("run version = %d, want %d", runVersion, runVersionBefore+1)
 	}
+	// failure_review Interrupt + frozen gate_recheck binding (storage.md §8.1).
+	facts := map[string]string{
+		"failure_class":        "forge_read_failed",
+		"failure_evidence_ref": "sift://event/event:" + evKey,
+		"recommended_action":   "retry",
+	}
+	factsJSON, err := canonicalJSON(facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failureDigest := SHA256Hex(factsJSON)
+	head := "0123456789012345678901234567890123456789"
+	var intrCount int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM interrupts WHERE run_id=? AND reason='failure_review' AND generation_key IS NOT NULL`, cmdRun).Scan(&intrCount); err != nil || intrCount != 1 {
+		t.Fatalf("failure_review interrupts = %d, want 1", intrCount)
+	}
+	var bindingJSON string
+	if err := db.db.QueryRow(`
+SELECT b.binding_json FROM interrupt_command_effect_bindings b
+JOIN interrupts i ON i.id=b.interrupt_id
+WHERE i.run_id=? AND i.reason='failure_review' AND json_extract(b.binding_json,'$.retry_kind')='gate_recheck'
+AND json_extract(b.binding_json,'$.change_id')='change-01'
+ORDER BY i.created_at_ms DESC LIMIT 1`, cmdRun).Scan(&bindingJSON); err != nil {
+		t.Fatalf("failed-arm binding: %v", err)
+	}
+	wantBinding := `{"arm":"failure_review_attempt","attempt_no":1,"change_id":"change-01","generation":1,"head_sha":"` + head + `","retry_kind":"gate_recheck","run_id":"` + cmdRun + `","terminal_attempt_no":null,"terminal_generation":null}`
+	if bindingJSON != wantBinding {
+		t.Fatalf("binding = %s, want %s", bindingJSON, wantBinding)
+	}
+	wantKey, err := interruptGenerationKey(cmdRun, InterruptFailureReview, InterruptGeneration{AttemptNo: 1, Generation: 1, FailureDigest: failureDigest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var genKey string
+	if err := db.db.QueryRow(`SELECT generation_key FROM interrupts WHERE run_id=? AND reason='failure_review'`, cmdRun).Scan(&genKey); err != nil {
+		t.Fatalf("generation key: %v", err)
+	}
+	if genKey != wantKey {
+		t.Fatalf("generation key = %s, want %s (facts digest %s)", genKey, wantKey, failureDigest)
+	}
 	// at-most-one: a second Complete under the same lease is rejected.
 	if err := db.CompleteGateReEvaluation(ctx, claim, result, testNow+30); !errors.Is(err, ErrRejectedStaleWorker) {
 		t.Fatalf("second Complete err = %v, want ErrRejectedStaleWorker", err)
+	}
+}
+
+// TestCompleteGateReEvaluationFailedArmConcurrentComplete verifies concurrent
+// Complete calls produce at most one failed-arm failure_review Interrupt.
+func TestCompleteGateReEvaluationFailedArmConcurrentComplete(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	claim, _ := seedClaimedGateReEval(t, db, ctx, InterruptGuardrailViolation, "", "", "", "")
+	result := canonicalResult(t, "failed", map[string]any{
+		"failure_class": "gate_contract_failed",
+		"failure_evidence": map[string]any{
+			"code": "verdict_digest_mismatch",
+		},
+	})
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = db.CompleteGateReEvaluation(ctx, claim, result, testNow+20+int64(i))
+		}(i)
+	}
+	wg.Wait()
+	var ok int
+	for _, err := range errs {
+		if err == nil {
+			ok++
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("exactly one Complete should succeed, got %d; errs=%v", ok, errs)
+	}
+	var n int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM interrupts WHERE run_id=? AND reason='failure_review' AND json_extract((SELECT binding_json FROM interrupt_command_effect_bindings WHERE interrupt_id=interrupts.id),'$.retry_kind')='gate_recheck'`, cmdRun).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("gate_recheck failure_review count = %d, want 1", n)
 	}
 }
 

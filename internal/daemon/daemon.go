@@ -77,6 +77,7 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 	// matching adapter by forge_kind|host|project_key.
 	forgeClients := make(map[string]forge.Client)
 	db.SetChannelPolicy(cfg.Attention.ChannelFailureAlertAfter, cfg.Outbox.MaxAttempts)
+	db.SetGateReEvalInterruptEmission(gateReEvalInterruptEmission(cfg.Attention, interruptChannels(cfg.Attention)))
 	// Channel payloads are already sealed by storage. The production consumer
 	// owns the only resolver and HTTP side effect; it is not project-scoped.
 	d.AddChannelWorker(&channelworker.Worker{
@@ -178,6 +179,23 @@ func interruptChannels(attention config.Attention) []storage.InterruptChannel {
 		channels = append(channels, storage.InterruptChannel{ID: c.ID, Type: c.Type, TargetRef: c.TargetRef, Renderer: c.Renderer, Capabilities: append([]string(nil), c.Capabilities...), Default: c.Default})
 	}
 	return channels
+}
+
+func gateReEvalInterruptEmission(attention config.Attention, channels []storage.InterruptChannel) storage.GateReEvalInterruptEmission {
+	return storage.GateReEvalInterruptEmission{
+		AttentionDailyQuota: map[storage.InterruptSeverity]int{
+			storage.SeverityLow:    attention.DailyQuota.Low,
+			storage.SeverityNormal: attention.DailyQuota.Normal,
+			storage.SeverityHigh:   attention.DailyQuota.High,
+		},
+		DayTimezone:         attention.DayTimezone,
+		DailySummaryAt:      attention.DailySummaryAt,
+		MaxEscalations:      attention.MaxEscalations,
+		CriticalWindowMS:    attention.CriticalFuse.Window.Milliseconds(),
+		CriticalTotalLimit:  attention.CriticalFuse.TotalLimit,
+		CriticalPerRunLimit: attention.CriticalFuse.PerRunLimit,
+		Channels:            channels,
+	}
 }
 
 func operators(o config.Operators, k forge.Kind) []string {

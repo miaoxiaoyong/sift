@@ -27,8 +27,9 @@ type GateReEvaluationResultProducer func(ctx context.Context, payload storage.Ga
 //
 // The worker never calls EmitInterrupt or RecordGateEvaluation. A verdict whose
 // successor is not yet wired in this slice is surfaced by storage as
-// ErrGateReEvaluationSuccessorNotWired; the worker then terminates the
-// operation (so it is not permanently pending) with an explicit deferred note.
+// ErrGateReEvaluationSuccessorNotWired (HITL verdict successors and
+// rerun_checks); the failed-arm failure_review successor is wired in storage.
+// The worker then terminates unwired operations so they are not permanently pending.
 type GateReEvaluationWorker struct {
 	DB       *storage.DB
 	Produce  GateReEvaluationResultProducer

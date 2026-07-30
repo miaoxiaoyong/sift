@@ -31,20 +31,18 @@ import (
 //     (Run CAS + terminal gate.reevaluation.ready.merge event).
 //   - failed result union (forge_read_failed | gate_input_assembly_failed |
 //     gate_contract_failed): terminal gate.reevaluation.failed event + Run CAS
-//     (waiting_human, version+1).
+//     (waiting_human, version+1) + failure_review Interrupt successor.
 //   - conflict: replacement-head successor operation + Run CAS + terminal
 //     gate.reevaluation.conflict event.
 //
 // Deferred to a follow-up slice (returned as ErrGateReEvaluationSuccessorNotWired
 // so the worker can terminate the operation rather than leave it pending):
 //   - HITL verdict successors (failure_review Interrupt emission),
-//   - retry_checks/flaky_retry (rerun_checks successor operation),
-//   - the failed result union's failure_review successor Interrupt.
+//   - retry_checks/flaky_retry (rerun_checks successor operation).
 //
-// The ready/merge -> merge_change successor is the minimal honest closure of
-// the #807/#808 remaining gap; it does not touch EmitInterrupt transactional
-// refactoring, does not claim once-charge, and does not close the full §8.1
-// matrix or M5.
+// The failed-arm failure_review successor and ready/merge -> merge_change are
+// minimal honest closures; they do not claim once-charge, the full §8.1 matrix,
+// or M5.
 //
 // The exact digest vectors in storage.md §8.1 for the failed result union and
 // the continuous conflict→replacement Complete are reproduced by the tests.
@@ -55,10 +53,9 @@ import (
 var ErrGateReEvaluationContract = errors.New("storage: gate re-evaluation contract violation")
 
 // ErrGateReEvaluationSuccessorNotWired signals that the submitted result
-// requires a successor (HITL Interrupt, rerun_checks or merge_change operation,
-// or the failed result union's failure_review Interrupt) whose emission is not
-// yet wired in this slice. The transaction is rolled back; the worker must
-// terminate the operation so it does not stay pending.
+// requires a successor (HITL Interrupt or rerun_checks operation) whose
+// emission is not yet wired in this slice. The failed-arm failure_review
+// successor is wired; this error remains for HITL verdict and rerun_checks arms.
 var ErrGateReEvaluationSuccessorNotWired = errors.New("storage: gate re-evaluation successor not wired")
 
 // ErrGateReEvaluationAssertion signals that the frozen lease/Run/Interrupt/
@@ -473,13 +470,88 @@ func (d *DB) completeGateReEvalFailedTx(ctx context.Context, tx *sql.Tx, claim C
 	if err := insertGateReEvalEventTx(ctx, tx, row, "gate.reevaluation.failed", eventKey, evPayload, nowMS); err != nil {
 		return err
 	}
-	// Run remains waiting_human but version increments (storage.md §8.1). The
-	// failure_review successor Interrupt emission is deferred to a follow-up
-	// slice; the operation still terminates so it is not permanently pending.
 	if err := gateReEvalBumpRunVersionTx(ctx, tx, row.op, nowMS); err != nil {
 		return err
 	}
+	if _, err := d.emitGateReEvalFailedFailureReviewTx(ctx, tx, row, p.FailureClass, eventKey, nowMS); err != nil {
+		return err
+	}
 	return finalizeGateReEvalOpTx(ctx, tx, claim, OperationFailed, R, nowMS)
+}
+
+func (d *DB) emitGateReEvalFailedFailureReviewTx(ctx context.Context, tx *sql.Tx, row gateReEvalAttemptRow, failureClass, eventKey string, nowMS int64) (Interrupt, error) {
+	cfg := d.gateReEvalInterruptEmission()
+	if cfg.AttentionDailyQuota == nil {
+		return Interrupt{}, errors.New("storage: gate re-eval interrupt emission not configured")
+	}
+	calibrationID, err := gateReEvalFailureReviewCalibrationTx(ctx, tx, row, nowMS)
+	if err != nil {
+		return Interrupt{}, err
+	}
+	facts := map[string]string{
+		"failure_class":         failureClass,
+		"failure_evidence_ref":  "sift://event/event:" + eventKey,
+		"recommended_action":    "retry",
+	}
+	factsJSON, err := canonicalJSON(facts)
+	if err != nil {
+		return Interrupt{}, err
+	}
+	failureDigest := sha256Hex(factsJSON)
+	attemptNo := row.op.AttemptNo
+	cmd := EmitInterruptCmd{
+		RunID:                  row.op.RunID,
+		ExpectedRunVersion:     row.op.SourceRunVersion + 1,
+		AttemptNo:              &attemptNo,
+		Reason:                 InterruptFailureReview,
+		FailureReviewVariant:   FailureReviewAttempt,
+		FailureReviewRetryKind: FailureReviewGateRecheck,
+		Facts:                  facts,
+		Generation: InterruptGeneration{
+			AttemptNo:     row.op.AttemptNo,
+			Generation:    row.op.Generation,
+			ChangeID:      row.op.ChangeID,
+			HeadSHA:       row.op.HeadSHA,
+			FailureDigest: failureDigest,
+		},
+		GatePhase:           GateReview,
+		GuardrailLevel:      GuardrailNone,
+		AttentionDailyQuota: cfg.AttentionDailyQuota,
+		DayTimezone:         cfg.DayTimezone,
+		DailySummaryAt:      cfg.DailySummaryAt,
+		MaxEscalations:      cfg.MaxEscalations,
+		CriticalWindowMS:    cfg.CriticalWindowMS,
+		CriticalTotalLimit:  cfg.CriticalTotalLimit,
+		CriticalPerRunLimit: cfg.CriticalPerRunLimit,
+		Channels:            cfg.Channels,
+		CalibrationID:       calibrationID,
+		Source:              SourceSystem,
+		NowMS:               nowMS,
+	}
+	return d.emitInterruptInExistingTx(ctx, tx, cmd, false)
+}
+
+// gateReEvalFailureReviewCalibrationTx allocates a fresh calibration_entries
+// row tied to the source Interrupt's gate evaluation. The failed arm records no
+// new gate evaluation (it has no VerdictV1), so the failure_review(gate_recheck)
+// successor inherits the source snapshot's change/head provenance. A fresh row
+// is required because interrupts.calibration_id is unique (migration 0007), so
+// the successor cannot reuse the source Interrupt's calibration directly. This
+// is what satisfies the failure_review_gate_recheck_provenance_insert trigger
+// (migration 0051).
+func gateReEvalFailureReviewCalibrationTx(ctx context.Context, tx *sql.Tx, row gateReEvalAttemptRow, nowMS int64) (string, error) {
+	var gateEvaluationID, predictedDecision, featuresJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT c.gate_evaluation_id,c.predicted_decision,c.features_json FROM calibration_entries c JOIN interrupts i ON i.calibration_id=c.id WHERE i.id=?`, row.op.SourceInterruptID).Scan(&gateEvaluationID, &predictedDecision, &featuresJSON); err != nil {
+		return "", fmt.Errorf("%w: source calibration missing: %v", ErrGateReEvaluationAssertion, err)
+	}
+	id := newID()
+	// gate_sample_entry_id is left NULL: the successor inherits the source
+	// evaluation's change/head provenance but owns no distinct gate sample, and
+	// the column carries a per-row unique index (migration 0008).
+	if _, err := tx.ExecContext(ctx, `INSERT INTO calibration_entries (id,run_id,gate_evaluation_id,predicted_decision,features_json,gate_sample_entry_id,predicted_at_ms) VALUES (?,?,?,?,?,?,?)`, id, row.op.RunID, gateEvaluationID, predictedDecision, featuresJSON, sql.NullString{}, nowMS); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func validateGateReEvalFailure(class string, evidence json.RawMessage) error {

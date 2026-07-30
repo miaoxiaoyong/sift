@@ -95,6 +95,7 @@ type DB struct {
 	outboxWakeup       func()
 	interruptT4        InterruptT4Caller
 	interruptT6        InterruptT6Caller
+	gateReEvalIntr     GateReEvalInterruptEmission
 	channelPolicyMu    sync.RWMutex
 	channelAlertAfter  int
 	channelMaxAttempts int
@@ -158,6 +159,31 @@ func (d *DB) interruptT6Caller() InterruptT6Caller {
 	d.wakeupMu.RLock()
 	defer d.wakeupMu.RUnlock()
 	return d.interruptT6
+}
+
+// GateReEvalInterruptEmission carries attention/channel defaults for
+// failure_review Interrupt emission inside CompleteGateReEvaluation.
+type GateReEvalInterruptEmission struct {
+	AttentionDailyQuota                     map[InterruptSeverity]int
+	DayTimezone, DailySummaryAt             string
+	MaxEscalations                          int
+	CriticalWindowMS                        int64
+	CriticalTotalLimit, CriticalPerRunLimit int
+	Channels                                []InterruptChannel
+}
+
+// SetGateReEvalInterruptEmission installs production defaults for the
+// gate_re_evaluation failed-arm failure_review successor (storage.md §8.1).
+func (d *DB) SetGateReEvalInterruptEmission(cfg GateReEvalInterruptEmission) {
+	d.wakeupMu.Lock()
+	defer d.wakeupMu.Unlock()
+	d.gateReEvalIntr = cfg
+}
+
+func (d *DB) gateReEvalInterruptEmission() GateReEvalInterruptEmission {
+	d.wakeupMu.RLock()
+	defer d.wakeupMu.RUnlock()
+	return d.gateReEvalIntr
 }
 
 // Path returns the database file path this handle opened.
