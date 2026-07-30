@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // SourceInfo records the on-disk facts about config.yaml at load time. The
@@ -45,7 +45,7 @@ func ConfigPath(home Home) string {
 
 // Load is the single entry point by which global config enters the system
 // (config.md §1.2, §4). It reads config.yaml once, converts YAML to JSON under
-// the strict bridge, decodes via [decode.Closed], normalizes to the effective
+// the strict bridge, decodes via [schema.Closed], normalizes to the effective
 // snapshot and computes the fingerprint. An absent file yields the full
 // zero-config default (config.md §6 scenario 1). now is accepted for symmetry
 // with the storage layer's injected clock; the fingerprint itself is
@@ -70,7 +70,7 @@ func Load(home Home, _ time.Time) (*Snapshot, error) {
 			return nil, err
 		}
 		raw := &RawConfig{}
-		if err := decode.Decode(jsonBytes, raw, decode.Closed); err != nil {
+		if err := schema.Decode(jsonBytes, raw, schema.Closed); err != nil {
 			return nil, fmt.Errorf("config: decode %s: %w", path, err)
 		}
 		return finalize(raw, src)
@@ -101,7 +101,7 @@ func finalize(raw *RawConfig, src SourceInfo) (*Snapshot, error) {
 
 // This file is the sole YAML entry point (config.md §1.2, §4 step 2). The
 // decode gateway speaks JSON only; on-disk config.yaml is converted to JSON
-// here under the four strict rules, then handed to [decode.Closed]:
+// here under the four strict rules, then handed to [schema.Closed]:
 //
 //   - exactly one document (multi-document input is rejected),
 //   - no duplicate mapping keys,
@@ -118,7 +118,7 @@ var (
 )
 
 // YAMLToJSON converts a single strict YAML document to compact JSON suitable
-// for [decode.Closed]. See the file comment for the enforced rules.
+// for [schema.Closed]. See the file comment for the enforced rules.
 func YAMLToJSON(data []byte) ([]byte, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil, ErrEmptyConfigFile
@@ -378,7 +378,7 @@ func makeHome(p string) Home {
 
 // EnsureHomeLayout verifies (or initially creates) the SIFT_HOME directory and,
 // when present, config.yaml, against the §2.1 permission and ownership
-// contract. It refuses startup on:
+// schema. It refuses startup on:
 //   - a home path that exists but is not a directory,
 //   - a home directory or config.yaml whose mode grants group/other access,
 //   - a home directory not owned by the current user.

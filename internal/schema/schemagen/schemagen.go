@@ -19,8 +19,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/contract"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // TopLevelExtender lets a boundary type contribute extra top-level schema
@@ -35,11 +34,11 @@ type TopLevelExtender interface {
 type Target struct {
 	Name string
 	Type reflect.Type
-	Mode decode.Mode
+	Mode schema.Mode
 }
 
 // TargetFor builds a Target from a boundary type, reading the decode mode
-// from its embedded contract.ClosedType / contract.OpenEnvelopeType marker.
+// from its embedded schema.ClosedType / schema.OpenEnvelopeType marker.
 // The schema document name is the snake_case type name.
 func TargetFor(v any) (Target, error) {
 	t := reflect.TypeOf(v)
@@ -57,11 +56,11 @@ func Generate(t Target) ([]byte, error) {
 }
 
 // ModeOfType reads the decode mode a boundary type declares by embedding
-// contract.ClosedType or contract.OpenEnvelopeType.
-func ModeOfType(t reflect.Type) (decode.Mode, error) {
-	closed := reflect.TypeOf(contract.ClosedType{})
-	open := reflect.TypeOf(contract.OpenEnvelopeType{})
-	mode := decode.Mode(-1)
+// schema.ClosedType or schema.OpenEnvelopeType.
+func ModeOfType(t reflect.Type) (schema.Mode, error) {
+	closed := reflect.TypeOf(schema.ClosedType{})
+	open := reflect.TypeOf(schema.OpenEnvelopeType{})
+	mode := schema.Mode(-1)
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		if !f.Anonymous {
@@ -69,19 +68,19 @@ func ModeOfType(t reflect.Type) (decode.Mode, error) {
 		}
 		switch f.Type {
 		case closed:
-			if mode == decode.OpenEnvelope {
+			if mode == schema.OpenEnvelope {
 				return 0, fmt.Errorf("embeds both ClosedType and OpenEnvelopeType")
 			}
-			mode = decode.Closed
+			mode = schema.Closed
 		case open:
-			if mode == decode.Closed {
+			if mode == schema.Closed {
 				return 0, fmt.Errorf("must embed either ClosedType or OpenEnvelopeType, not both")
 			}
-			mode = decode.OpenEnvelope
+			mode = schema.OpenEnvelope
 		}
 	}
-	if mode == decode.Mode(-1) {
-		return 0, fmt.Errorf("must embed contract.ClosedType or contract.OpenEnvelopeType")
+	if mode == schema.Mode(-1) {
+		return 0, fmt.Errorf("must embed schema.ClosedType or schema.OpenEnvelopeType")
 	}
 	return mode, nil
 }
@@ -105,7 +104,7 @@ func BuildSchema(t Target) map[string]any {
 	}
 	// Closed contracts forbid extra fields; open-envelope contracts allow them
 	// for forward compatibility (DESIGN §5.2).
-	if t.Mode == decode.Closed {
+	if t.Mode == schema.Closed {
 		doc["additionalProperties"] = false
 	}
 	if ext, ok := reflect.New(t.Type).Interface().(TopLevelExtender); ok {
@@ -116,7 +115,7 @@ func BuildSchema(t Target) map[string]any {
 	return doc
 }
 
-var nullStringType = reflect.TypeOf(decode.NullString{})
+var nullStringType = reflect.TypeOf(schema.NullString{})
 
 // objectSchema returns the "properties" object and the "required" array for a
 // struct type, recursing into nested structs.
@@ -132,7 +131,7 @@ func objectSchema(t reflect.Type) (map[string]any, []string) {
 		if !named || name == "-" {
 			continue
 		}
-		rules := decode.ParseFieldRules(f.Tag.Get("sift"))
+		rules := schema.ParseFieldRules(f.Tag.Get("sift"))
 		// Deref the field pointer once so nullability is decided here, not in
 		// typeSchema: a required pointer is non-nullable (null is rejected),
 		// an optional pointer is nullable. typeSchema keeps its own pointer
@@ -154,7 +153,7 @@ func objectSchema(t reflect.Type) (map[string]any, []string) {
 
 // fieldSchema emits the schema fragment for one struct field, applying the
 // `sift` tag constraint vocabulary.
-func fieldSchema(t reflect.Type, nullable bool, rules decode.FieldRules) map[string]any {
+func fieldSchema(t reflect.Type, nullable bool, rules schema.FieldRules) map[string]any {
 	if t == nullStringType {
 		// Required-but-nullable string (brain.md §7.2): null is a legal value.
 		s := map[string]any{"type": []string{"string", "null"}}
@@ -279,10 +278,10 @@ func withNullable(s map[string]any) map[string]any {
 }
 
 // enumValues returns the allowed values for a named string type implementing
-// decode.Enumerated, or nil if the type is not an enum.
+// schema.Enumerated, or nil if the type is not an enum.
 func enumValues(t reflect.Type) []string {
 	z := reflect.Zero(t).Interface()
-	e, ok := z.(decode.Enumerated)
+	e, ok := z.(schema.Enumerated)
 	if !ok {
 		return nil
 	}
@@ -306,11 +305,11 @@ func jsonName(f reflect.StructField) (string, bool) {
 	return name, true
 }
 
-func modeString(m decode.Mode) string {
+func modeString(m schema.Mode) string {
 	switch m {
-	case decode.Closed:
+	case schema.Closed:
 		return "closed"
-	case decode.OpenEnvelope:
+	case schema.OpenEnvelope:
 		return "open-envelope"
 	default:
 		return fmt.Sprintf("mode(%d)", int(m))

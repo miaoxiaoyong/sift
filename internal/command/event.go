@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // CommandEventV1 is the closed, canonical command event (§6.1, max 64 KiB). It
@@ -138,7 +138,7 @@ func NewAck(finalEventID string, ev CommandEventV1) CommandAckV1 {
 // CanonicalBytes returns the canonical JSON for an event, rejecting unknown
 // fields, non-canonical JSON or incompatible nulls at marshal time.
 func (e CommandEventV1) CanonicalBytes() ([]byte, error) {
-	b, err := decode.Canonical(e)
+	b, err := schema.Canonical(e)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func (e CommandEventV1) CanonicalBytes() ([]byte, error) {
 
 // CanonicalBytes returns the canonical JSON for an ack.
 func (a CommandAckV1) CanonicalBytes() ([]byte, error) {
-	b, err := decode.Canonical(a)
+	b, err := schema.Canonical(a)
 	if err != nil {
 		return nil, err
 	}

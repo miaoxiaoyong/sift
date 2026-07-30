@@ -8,8 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/contract"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 var headSHA = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
@@ -62,15 +61,15 @@ func BuildT3Input(in T3Input) ([]byte, error) {
 	if err := validateChange(in.Change.ChangeInput); err != nil {
 		return nil, fmt.Errorf("brain: T3 %w", err)
 	}
-	return decode.Canonical(in)
+	return schema.Canonical(in)
 }
 
 // T3Output is the closed risk recommendation contract in brain.md §9.2.
 type T3Output struct {
-	contract.ClosedType `json:"-"`
-	RiskScore           *int      `json:"risk_score" sift:"required,min=0,max=100"`
-	RiskPoints          *[]string `json:"risk_points" sift:"required,maxitems=10,itemminbytes=1,itemmaxbytes=1000"`
-	Rationale           *string   `json:"rationale" sift:"required,maxbytes=2000"`
+	schema.ClosedType `json:"-"`
+	RiskScore         *int      `json:"risk_score" sift:"required,min=0,max=100"`
+	RiskPoints        *[]string `json:"risk_points" sift:"required,maxitems=10,itemminbytes=1,itemmaxbytes=1000"`
+	Rationale         *string   `json:"rationale" sift:"required,maxbytes=2000"`
 }
 
 func (o T3Output) Validate() error {
@@ -90,7 +89,7 @@ func (o T3Output) Validate() error {
 
 // T3FallbackOutput is the fixed high-risk fallback required by brain.md §9.3.
 func T3FallbackOutput() []byte {
-	out, err := decode.Canonical(T3Output{RiskScore: intp(100), RiskPoints: &[]string{"T3 unavailable; deterministic high-risk fallback"}, Rationale: strp("fallback")})
+	out, err := schema.Canonical(T3Output{RiskScore: intp(100), RiskPoints: &[]string{"T3 unavailable; deterministic high-risk fallback"}, Rationale: strp("fallback")})
 	if err != nil {
 		panic(fmt.Sprintf("brain: T3 fallback: %v", err))
 	}
@@ -100,10 +99,10 @@ func T3FallbackOutput() []byte {
 func T3Contract() TouchpointContract {
 	return TouchpointContract{Touchpoint: "T3", Asset: T3Asset(), ValidateOutput: func(result []byte) ([]byte, error) {
 		var out T3Output
-		if err := decode.Decode(result, &out, decode.Closed); err != nil {
+		if err := schema.Decode(result, &out, schema.Closed); err != nil {
 			return nil, err
 		}
-		return decode.Canonical(out)
+		return schema.Canonical(out)
 	}, FallbackOutput: T3FallbackOutput}
 }
 
@@ -123,7 +122,7 @@ type BrainSource struct {
 func T3ResultFromCall(result CallResult) (T3Output, BrainSource, error) {
 	var out T3Output
 	if result.Status == "valid" {
-		if err := decode.Decode(result.Output, &out, decode.Closed); err != nil {
+		if err := schema.Decode(result.Output, &out, schema.Closed); err != nil {
 			return out, BrainSource{}, err
 		}
 		return out, BrainSource{Kind: "brain", LogicalCallID: result.CallID, PromptVersion: result.PromptVersion, OutputSchemaVersion: result.OutputSchemaVersion}, nil
@@ -131,7 +130,7 @@ func T3ResultFromCall(result CallResult) (T3Output, BrainSource, error) {
 	if result.Status != "fallback" {
 		return out, BrainSource{}, fmt.Errorf("brain: T3 call %s is not terminal", result.CallID)
 	}
-	if err := decode.Decode(T3FallbackOutput(), &out, decode.Closed); err != nil {
+	if err := schema.Decode(T3FallbackOutput(), &out, schema.Closed); err != nil {
 		return out, BrainSource{}, err
 	}
 	return out, BrainSource{Kind: "fallback", LogicalCallID: result.CallID, Version: "T3/fallback/v1", Reason: fallbackReason(result.FallbackReason)}, nil
@@ -203,7 +202,7 @@ func BuildT5Input(in T5Input) ([]byte, error) {
 		}
 	}
 	in.Checks.FailedJobs = jobs
-	return decode.Canonical(in)
+	return schema.Canonical(in)
 }
 
 type T5Classification string
@@ -220,10 +219,10 @@ func (T5Classification) EnumValues() []string {
 
 // T5Output is the closed triage recommendation contract in brain.md §10.2.
 type T5Output struct {
-	contract.ClosedType `json:"-"`
-	Classification      *T5Classification `json:"classification" sift:"required"`
-	RetryCheckID        decode.NullString `json:"retry_check_id" sift:"keyrequired,maxbytes=256"`
-	Rationale           *string           `json:"rationale" sift:"required,minbytes=1,maxbytes=2000"`
+	schema.ClosedType `json:"-"`
+	Classification    *T5Classification `json:"classification" sift:"required"`
+	RetryCheckID      schema.NullString `json:"retry_check_id" sift:"keyrequired,maxbytes=256"`
+	Rationale         *string           `json:"rationale" sift:"required,minbytes=1,maxbytes=2000"`
 }
 
 func (o T5Output) Validate() error {
@@ -252,13 +251,13 @@ func T5Contract(jobs []T5Job) TouchpointContract {
 	}
 	return TouchpointContract{Touchpoint: "T5", Asset: T5Asset(), ValidateOutput: func(result []byte) ([]byte, error) {
 		var out T5Output
-		if err := decode.Decode(result, &out, decode.Closed); err != nil {
+		if err := schema.Decode(result, &out, schema.Closed); err != nil {
 			return nil, err
 		}
 		if out.Classification != nil && *out.Classification == T5Flaky && !allowed[out.RetryCheckID.Value] {
 			return nil, fmt.Errorf("brain: T5 retry_check_id %q is not a non-allow-failure input job", out.RetryCheckID.Value)
 		}
-		return decode.Canonical(out)
+		return schema.Canonical(out)
 	}, FallbackOutput: nil}
 }
 
@@ -274,7 +273,7 @@ type T5Triage struct {
 func T5TriageFromCall(result CallResult) (T5Triage, error) {
 	if result.Status == "valid" {
 		var out T5Output
-		if err := decode.Decode(result.Output, &out, decode.Closed); err != nil {
+		if err := schema.Decode(result.Output, &out, schema.Closed); err != nil {
 			return T5Triage{}, err
 		}
 		var retry *string

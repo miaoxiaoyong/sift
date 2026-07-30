@@ -3,10 +3,10 @@ name: build
 # WBS M1 §1.1: CGO_ENABLED=0 four-way build (H7) + decode gateway schema drift
 # gate (V14). This workflow proves the module and the three command binaries
 # cross-build on darwin/linux × amd64/arm64, and that the generated JSON
-# Schemas (internal/contract/schema) never drift from their struct definitions.
+# Schemas (internal/schema/artifacts) never drift from their struct definitions.
 #
-# The decode gateway (internal/decode) is pure stdlib, so every combo builds
-# it under CGO_ENABLED=0. Schema generation (internal/contract/genschema) is
+# The decode gateway (internal/schema) is pure stdlib, so every combo builds
+# it under CGO_ENABLED=0. Schema generation (internal/schema/genschema) is
 # also pure stdlib; it runs once on the host and its deterministic output is
 # diffed against the committed files.
 
@@ -63,7 +63,7 @@ jobs:
         run: go generate ./...
       - name: detect drift
         run: |
-          if ! git diff --exit-code -- internal/contract/schema/; then
+          if ! git diff --exit-code -- internal/schema/artifacts/; then
             echo "::error::Generated JSON Schema drifts from struct definitions." \
               "Run 'go generate ./...' and commit the result."
             exit 1

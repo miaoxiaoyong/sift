@@ -31,6 +31,6 @@
   "type": "object",
   "x-sift": {
     "decodeMode": "open-envelope",
-    "sourceType": "contract.OpenEnvelopeExample"
+    "sourceType": "schema.OpenEnvelopeExample"
   }
 }

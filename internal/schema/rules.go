@@ -1,4 +1,4 @@
-package decode
+package schema
 
 import (
 	"bytes"
@@ -152,7 +152,7 @@ func checkFieldConstraints(fv reflect.Value, path string, r fieldRules) error {
 	if r.keyRequired {
 		k, ok := fv.Interface().(Keyed)
 		if !ok {
-			return &DecodeError{Kind: KindInternal, Field: path, Err: fmt.Errorf("keyrequired field must implement decode.Keyed")}
+			return &DecodeError{Kind: KindInternal, Field: path, Err: fmt.Errorf("keyrequired field must implement schema.Keyed")}
 		}
 		if !k.KeyPresent() {
 			return &DecodeError{Kind: KindMissingRequired, Field: path, Err: errMissingRequired}

@@ -10,8 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/miaoxiaoyong/sift/internal/contract"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -95,11 +94,11 @@ func BuildT4Input(in T4Input) ([]byte, error) {
 		}
 		seen[o.ID] = true
 	}
-	return decode.Canonical(in)
+	return schema.Canonical(in)
 }
 
 type T4Output struct {
-	contract.ClosedType `json:"-"`
+	schema.ClosedType   `json:"-"`
 	Headline            *string   `json:"headline" sift:"required,maxbytes=160"`
 	Conclusion          *string   `json:"conclusion" sift:"required,maxbytes=1000"`
 	KeyPoints           *[]string `json:"key_points" sift:"required,minitems=1,maxitems=3,itemminbytes=1,itemmaxbytes=1000"`
@@ -110,7 +109,7 @@ type T4Output struct {
 func T4Contract(in T4Input) TouchpointContract {
 	return TouchpointContract{Touchpoint: "T4", Asset: T4Asset(), FallbackOutput: func() []byte { return T4FallbackOutput(in) }, ValidateOutput: func(result []byte) ([]byte, error) {
 		var out T4Output
-		if err := decode.Decode(result, &out, decode.Closed); err != nil {
+		if err := schema.Decode(result, &out, schema.Closed); err != nil {
 			return nil, err
 		}
 		if *out.Headline != in.Interrupt.FallbackHeadline || !contains(in.Interrupt.BriefFragments, *out.Conclusion) || !containsOption(in.Interrupt.CandidateOptions, *out.RecommendedOptionID) || len(*out.Options) != len(in.Interrupt.CandidateOptions) {
@@ -128,7 +127,7 @@ func T4Contract(in T4Input) TouchpointContract {
 				return nil, errors.New("brain: T4 options must exactly preserve canonical order")
 			}
 		}
-		return decode.Canonical(out)
+		return schema.Canonical(out)
 	}}
 }
 
@@ -191,21 +190,21 @@ func BuildT6Input(in T6Input) ([]byte, error) {
 			return nil, errors.New("brain: invalid T6 quota snapshot")
 		}
 	}
-	return decode.Canonical(in)
+	return schema.Canonical(in)
 }
 
 type T6Output struct {
-	contract.ClosedType `json:"-"`
-	Delivery            *T6Delivery `json:"delivery" sift:"required"`
-	ChannelID           *string     `json:"channel_id" sift:"required,maxbytes=128"`
-	SuggestedDowngrade  *bool       `json:"suggested_downgrade" sift:"required"`
-	Rationale           *string     `json:"rationale" sift:"required,minbytes=1,maxbytes=2000"`
+	schema.ClosedType  `json:"-"`
+	Delivery           *T6Delivery `json:"delivery" sift:"required"`
+	ChannelID          *string     `json:"channel_id" sift:"required,maxbytes=128"`
+	SuggestedDowngrade *bool       `json:"suggested_downgrade" sift:"required"`
+	Rationale          *string     `json:"rationale" sift:"required,minbytes=1,maxbytes=2000"`
 }
 
 func T6Contract(in T6Input) TouchpointContract {
 	return TouchpointContract{Touchpoint: "T6", Asset: T6Asset(), FallbackOutput: func() []byte { return T6FallbackOutput(in) }, ValidateOutput: func(result []byte) ([]byte, error) {
 		var out T6Output
-		if err := decode.Decode(result, &out, decode.Closed); err != nil {
+		if err := schema.Decode(result, &out, schema.Closed); err != nil {
 			return nil, err
 		}
 		if !contains(in.Candidate.ChannelCandidates, *out.ChannelID) || *out.Rationale != strings.TrimSpace(*out.Rationale) || hasControlOrNewline(*out.Rationale) {
@@ -218,7 +217,7 @@ func T6Contract(in T6Input) TouchpointContract {
 		if (severity == "high" || severity == "critical") && *out.Delivery != "immediate" || (*out.Delivery == "immediate" && severity != "critical" && in.Availability.State == "unavailable") || (*out.Delivery == "next_window" && (in.Availability.NextWindowAtMS == nil || *in.Availability.NextWindowAtMS >= in.Candidate.ExpiresAtMS)) {
 			return nil, errors.New("brain: T6 delivery violates frozen scheduling constraints")
 		}
-		return decode.Canonical(out)
+		return schema.Canonical(out)
 	}}
 }
 
@@ -338,7 +337,7 @@ func BuildT7Input(in T7Input) ([]byte, error) {
 	if in.SemanticMaterial == nil {
 		in.SemanticMaterial = []T7SemanticMaterial{}
 	}
-	return decode.Canonical(in)
+	return schema.Canonical(in)
 }
 
 func validTaskKinds(kinds []TaskKind) bool {
@@ -398,7 +397,7 @@ type T7TargetScope string
 func (T7TargetScope) EnumValues() []string { return []string{"project", "global"} }
 
 type T7Output struct {
-	contract.ClosedType   `json:"-"`
+	schema.ClosedType     `json:"-"`
 	ProposalKind          *T7ProposalKind `json:"proposal_kind" sift:"required"`
 	TargetScope           *T7TargetScope  `json:"target_scope" sift:"required"`
 	Title                 *string         `json:"title" sift:"required,minbytes=1,maxbytes=160"`
@@ -413,7 +412,7 @@ type T7Output struct {
 func T7Contract(aggregateKey, traceProjectID string, allCategoryKinds []TaskKind, evidenceIDs []string) TouchpointContract {
 	return TouchpointContract{Touchpoint: "T7", Asset: T7Asset(), ValidateInput: func(p CallParams) error {
 		var in T7Input
-		if err := decode.Decode(p.Input, &in, decode.Closed); err != nil {
+		if err := schema.Decode(p.Input, &in, schema.Closed); err != nil {
 			return err
 		}
 		if p.Scope != storage.BrainScopeAggregate {
@@ -444,7 +443,7 @@ func T7Contract(aggregateKey, traceProjectID string, allCategoryKinds []TaskKind
 		return nil
 	}, ValidateOutput: func(result []byte) ([]byte, error) {
 		var out T7Output
-		if err := decode.Decode(result, &out, decode.Closed); err != nil {
+		if err := schema.Decode(result, &out, schema.Closed); err != nil {
 			return nil, err
 		}
 		scope, ok := aggregateScope(aggregateKey)
@@ -458,7 +457,7 @@ func T7Contract(aggregateKey, traceProjectID string, allCategoryKinds []TaskKind
 			}
 			seen[id] = true
 		}
-		return decode.Canonical(out)
+		return schema.Canonical(out)
 	}}
 }
 

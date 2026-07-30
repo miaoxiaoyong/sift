@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/miaoxiaoyong/sift/internal/brain"
-	"github.com/miaoxiaoyong/sift/internal/contract/schemagen"
+	"github.com/miaoxiaoyong/sift/internal/schema/schemagen"
 )
 
 func main() {

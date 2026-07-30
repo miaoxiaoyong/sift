@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -504,7 +504,7 @@ func TestShellT2ValidThenTaskSpec(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 	var out T2Output
-	if err := decode.Decode(res.Output, &out, decode.Closed); err != nil {
+	if err := schema.Decode(res.Output, &out, schema.Closed); err != nil {
 		t.Fatal(err)
 	}
 

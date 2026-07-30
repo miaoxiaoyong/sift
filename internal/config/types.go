@@ -5,8 +5,8 @@
 // scheduling hard guards.
 //
 // The package is the second consumer of the single decode gateway
-// (internal/decode, DESIGN §5.2). The on-disk file is YAML; a strict YAML→JSON
-// bridge converts it once, then [decode.Closed] enforces the closed contract
+// (internal/schema, DESIGN §5.2). The on-disk file is YAML; a strict YAML→JSON
+// bridge converts it once, then [schema.Closed] enforces the closed contract
 // (unknown fields, required fields, type and enum rules). Business code never
 // reads YAML or JSON directly: the only entry point is [Load].
 //
@@ -21,7 +21,7 @@ package config
 import (
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/contract"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // Version is the single supported global-config schema version (config.md §3).
@@ -272,11 +272,11 @@ type Logging struct {
 // zero. Only Version is required (and only when the file is present); the
 // absent-file path constructs a RawConfig directly and bypasses the gateway.
 //
-// It embeds [contract.ClosedType] and is decoded with [decode.Closed], so any
+// It embeds [schema.ClosedType] and is decoded with [schema.Closed], so any
 // unknown field is rejected. The generated JSON Schema lives in
-// internal/contract/schema/raw_config.schema.json.
+// internal/schema/artifacts/raw_config.schema.json.
 type RawConfig struct {
-	contract.ClosedType `json:"-"`
+	schema.ClosedType `json:"-"`
 
 	Version       *int              `json:"version" sift:"required"`
 	Operators     *RawOperators     `json:"operators,omitempty"`
@@ -419,8 +419,8 @@ type RawAttentionReasonDefault struct {
 }
 
 type RawAttentionChannelTarget struct {
-	contract.ClosedType `json:"-"`
-	SecretRef           string `json:"secret_ref"`
+	schema.ClosedType `json:"-"`
+	SecretRef         string `json:"secret_ref"`
 }
 
 type RawAttentionChannel struct {
@@ -508,7 +508,7 @@ type RawLogging struct {
 }
 
 // This file holds the closed-set enums of the global config. Each named string
-// type implements [decode.Enumerated]; EnumValues is the single source for both
+// type implements [schema.Enumerated]; EnumValues is the single source for both
 // the runtime membership check (run by the decode gateway) and the generated
 // JSON Schema. V0 pins several enums to a single allowed value: any other
 // value is rejected fail-closed rather than silently tolerated.
@@ -522,7 +522,7 @@ const (
 	TaskTransportFile  TaskTransport = "file"
 )
 
-// EnumValues satisfies [decode.Enumerated].
+// EnumValues satisfies [schema.Enumerated].
 func (TaskTransport) EnumValues() []string {
 	return []string{string(TaskTransportStdin), string(TaskTransportFile)}
 }
@@ -535,7 +535,7 @@ const (
 	BackendTmux    Backend = "tmux"
 )
 
-// EnumValues satisfies [decode.Enumerated].
+// EnumValues satisfies [schema.Enumerated].
 func (Backend) EnumValues() []string {
 	return []string{string(BackendProcess), string(BackendTmux)}
 }
@@ -548,7 +548,7 @@ const (
 	ForgeKindGitLab ForgeKind = "gitlab"
 )
 
-// EnumValues satisfies [decode.Enumerated].
+// EnumValues satisfies [schema.Enumerated].
 func (ForgeKind) EnumValues() []string {
 	return []string{string(ForgeKindGitHub), string(ForgeKindGitLab)}
 }
@@ -587,7 +587,7 @@ const (
 	BrainProtocolClaudeJSONv1 BrainProtocol = "claude-json-v1"
 )
 
-// EnumValues satisfies [decode.Enumerated].
+// EnumValues satisfies [schema.Enumerated].
 func (BrainProtocol) EnumValues() []string {
 	return []string{string(BrainProtocolClaudeJSONv1)}
 }
@@ -601,7 +601,7 @@ const (
 	ReviewPolicyNever     ReviewPolicy = "never"
 )
 
-// EnumValues satisfies [decode.Enumerated].
+// EnumValues satisfies [schema.Enumerated].
 func (ReviewPolicy) EnumValues() []string {
 	return []string{string(ReviewPolicyAlways), string(ReviewPolicyRiskyOnly), string(ReviewPolicyNever)}
 }
@@ -614,7 +614,7 @@ const (
 	InterruptQuotaFailureReviewOnce InterruptQuotaExceededAction = "failure_review_once"
 )
 
-// EnumValues satisfies [decode.Enumerated].
+// EnumValues satisfies [schema.Enumerated].
 func (InterruptQuotaExceededAction) EnumValues() []string {
 	return []string{string(InterruptQuotaFailureReviewOnce)}
 }

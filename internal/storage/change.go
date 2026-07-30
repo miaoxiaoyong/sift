@@ -9,7 +9,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // ProjectForgeRef returns the immutable project routing facts needed by an
@@ -203,7 +203,7 @@ func (d *DB) ExportReplayJSONL(ctx context.Context, w io.Writer) error {
 		return records[i].id < records[j].id
 	})
 	for _, record := range records {
-		line, err := decode.Canonical(record.record)
+		line, err := schema.Canonical(record.record)
 		if err != nil {
 			return err
 		}
@@ -288,7 +288,7 @@ func (d *DB) ExportBrainCallsJSONLV2(ctx context.Context, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		line, err := decode.Canonical(record)
+		line, err := schema.Canonical(record)
 		if err != nil {
 			return fmt.Errorf("canonical brain replay record: %w", err)
 		}

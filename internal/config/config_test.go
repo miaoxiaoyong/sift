@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // tempHome returns a fresh SIFT_HOME under a temp dir, with the home directory
@@ -273,8 +273,8 @@ func TestClosedContractRejectsUnknownNestedField(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown nested field must be rejected")
 	}
-	var de *decode.DecodeError
-	if !errors.As(err, &de) || de.Kind != decode.KindUnknownField {
+	var de *schema.DecodeError
+	if !errors.As(err, &de) || de.Kind != schema.KindUnknownField {
 		t.Fatalf("expected unknown_field, got %v", err)
 	}
 }

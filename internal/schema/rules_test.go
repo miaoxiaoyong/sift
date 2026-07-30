@@ -1,4 +1,4 @@
-package decode
+package schema
 
 import (
 	"errors"
@@ -12,9 +12,6 @@ type constrained struct {
 	Tags  *[]string  `json:"tags" sift:"required,minitems=1,maxitems=2,itemminbytes=1,itemmaxbytes=3"`
 	Maybe NullString `json:"maybe" sift:"keyrequired,maxbytes=3"`
 }
-
-// ClosedType marker for test-local closed decoding.
-type ClosedType struct{}
 
 func TestFieldConstraints(t *testing.T) {
 	cases := []struct {

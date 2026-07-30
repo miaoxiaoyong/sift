@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -227,7 +227,7 @@ func (s *Server) handle(c *net.UnixConn, operator bool) error {
 		return err
 	}
 	var req Request
-	if err := decode.Decode(body, &req, decode.Closed); err != nil {
+	if err := schema.Decode(body, &req, schema.Closed); err != nil {
 		return writeFrame(c, failure("", "invalid_request", "invalid request", false))
 	}
 	if code, message := validateEnvelope(req); code != "" {

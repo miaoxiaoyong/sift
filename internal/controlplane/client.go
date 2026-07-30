@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // OperatorRequest sends one operator RPC. It deliberately has no database
@@ -40,7 +40,7 @@ func OperatorRequest(home config.Home, method string, params map[string]any) (Re
 		return Response{}, err
 	}
 	var response Response
-	if err := decode.Decode(body, &response, decode.Closed); err != nil {
+	if err := schema.Decode(body, &response, schema.Closed); err != nil {
 		return Response{}, fmt.Errorf("invalid daemon response: %w", err)
 	}
 	return response, nil
@@ -69,7 +69,7 @@ func RunReportRequest(home config.Home, auth Auth, params map[string]any) (Respo
 		return Response{}, err
 	}
 	var response Response
-	if err := decode.Decode(body, &response, decode.Closed); err != nil {
+	if err := schema.Decode(body, &response, schema.Closed); err != nil {
 		return Response{}, fmt.Errorf("invalid daemon response: %w", err)
 	}
 	return response, nil

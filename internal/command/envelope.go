@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // CommandSource is the closed set of candidate origins. It is exactly the
@@ -165,7 +165,7 @@ func RecomputeEventKey(projectID string, source CommandSource, remoteEventID str
 	if projectID == "" || (source != SourceForgeComment && source != SourceApprovalLabel) || remoteEventID == "" {
 		return "", fmt.Errorf("command: event key requires project, source and remote id")
 	}
-	b, err := decode.Canonical(map[string]any{"v": 1, "project_id": projectID, "source": string(source), "remote_event_id": remoteEventID})
+	b, err := schema.Canonical(map[string]any{"v": 1, "project_id": projectID, "source": string(source), "remote_event_id": remoteEventID})
 	if err != nil {
 		return "", err
 	}

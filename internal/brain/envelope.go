@@ -7,8 +7,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/miaoxiaoyong/sift/internal/contract"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -26,7 +25,7 @@ type Usage struct {
 }
 
 type claudeEnvelope struct {
-	contract.OpenEnvelopeType `json:"-"`
+	schema.OpenEnvelopeType `json:"-"`
 
 	ResultText *string `json:"result_text" sift:"required"`
 	Usage      *Usage  `json:"usage" sift:"required"`
@@ -49,25 +48,25 @@ func ParseEnvelope(raw []byte) (resultText []byte, inputTokens, outputTokens int
 	if !utf8.Valid(raw) {
 		return nil, 0, 0, &EnvelopeError{Code: storage.ProviderErrInvalidEnvelope, Err: errors.New("stdout is not valid UTF-8")}
 	}
-	if err := decode.RejectDuplicateKeys(raw); err != nil {
+	if err := schema.RejectDuplicateKeys(raw); err != nil {
 		return nil, 0, 0, &EnvelopeError{Code: storage.ProviderErrInvalidEnvelope, Err: err}
 	}
 	var env claudeEnvelope
-	decErr := decode.Decode(raw, &env, decode.OpenEnvelope)
+	decErr := schema.Decode(raw, &env, schema.OpenEnvelope)
 	if decErr == nil {
 		if *env.Usage.InputTokens < 0 || *env.Usage.OutputTokens < 0 {
 			return nil, 0, 0, &EnvelopeError{Code: storage.ProviderErrUsageInvalid, Err: errors.New("negative token count")}
 		}
 		return singleJSONObject(*env.ResultText, *env.Usage.InputTokens, *env.Usage.OutputTokens)
 	}
-	var de *decode.DecodeError
+	var de *schema.DecodeError
 	if !errors.As(decErr, &de) {
 		return nil, 0, 0, &EnvelopeError{Code: storage.ProviderErrInvalidEnvelope, Err: decErr}
 	}
 	switch {
-	case de.Kind == decode.KindMissingRequired && de.Field == "usage":
+	case de.Kind == schema.KindMissingRequired && de.Field == "usage":
 		return nil, 0, 0, &EnvelopeError{Code: storage.ProviderErrUsageMissing, Err: decErr}
-	case de.Kind == decode.KindMissingRequired && (de.Field == "usage.input_tokens" || de.Field == "usage.output_tokens"):
+	case de.Kind == schema.KindMissingRequired && (de.Field == "usage.input_tokens" || de.Field == "usage.output_tokens"):
 		return nil, 0, 0, &EnvelopeError{Code: storage.ProviderErrUsageMissing, Err: decErr}
 	case de.Field == "usage" || len(de.Field) > 6 && de.Field[:6] == "usage.":
 		return nil, 0, 0, &EnvelopeError{Code: storage.ProviderErrUsageInvalid, Err: decErr}

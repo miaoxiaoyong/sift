@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/contract/schemagen"
+	"github.com/miaoxiaoyong/sift/internal/schema/schemagen"
 )
 
 func TestPromptAssetsVersioning(t *testing.T) {

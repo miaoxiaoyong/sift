@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -48,7 +48,7 @@ func TestIssue415ReasonsUseStorageCanonicalSet(t *testing.T) {
 
 func issue436T7JSON(t *testing.T, in T7Input) []byte {
 	t.Helper()
-	b, err := decode.Canonical(in)
+	b, err := schema.Canonical(in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func issue436T7Without(t *testing.T, input []byte, path ...string) []byte {
 			t.Fatalf("invalid T7 test path %q", strings.Join(path, "."))
 		}
 	}
-	b, err := decode.Canonical(value)
+	b, err := schema.Canonical(value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestIssue436ValidAdaptersPreserveOutputAndCompleteBrainSource(t *testing.T)
 	wantSource := BrainSource{Kind: "brain", LogicalCallID: result.CallID, PromptVersion: result.PromptVersion, OutputSchemaVersion: result.OutputSchemaVersion}
 	t4JSON := []byte(`{"headline":"Review required","conclusion":"check failed","key_points":["review needed"],"recommended_option_id":"review","options":["review"]}`)
 	var wantT4 T4Output
-	if err := decode.Decode(t4JSON, &wantT4, decode.Closed); err != nil {
+	if err := schema.Decode(t4JSON, &wantT4, schema.Closed); err != nil {
 		t.Fatal(err)
 	}
 	t4, source, err := T4ResultFromCall(CallResult{CallID: result.CallID, Status: result.Status, PromptVersion: result.PromptVersion, OutputSchemaVersion: result.OutputSchemaVersion, Output: t4JSON}, t4Input())
@@ -335,7 +335,7 @@ func TestIssue436ValidAdaptersPreserveOutputAndCompleteBrainSource(t *testing.T)
 	}
 	t6JSON := []byte(`{"delivery":"batch","channel_id":"chat","suggested_downgrade":false,"rationale":"wait"}`)
 	var wantT6 T6Output
-	if err := decode.Decode(t6JSON, &wantT6, decode.Closed); err != nil {
+	if err := schema.Decode(t6JSON, &wantT6, schema.Closed); err != nil {
 		t.Fatal(err)
 	}
 	t6, source, err := T6ResultFromCall(CallResult{CallID: result.CallID, Status: result.Status, PromptVersion: result.PromptVersion, OutputSchemaVersion: result.OutputSchemaVersion, Output: t6JSON}, t6Input())
@@ -344,7 +344,7 @@ func TestIssue436ValidAdaptersPreserveOutputAndCompleteBrainSource(t *testing.T)
 	}
 	t7JSON := []byte(`{"proposal_kind":"policy","target_scope":"global","title":"Review trend","body":"Human review only.","evidence_entry_ids":["cat"],"requires_human_approval":true}`)
 	var wantT7 T7Output
-	if err := decode.Decode(t7JSON, &wantT7, decode.Closed); err != nil {
+	if err := schema.Decode(t7JSON, &wantT7, schema.Closed); err != nil {
 		t.Fatal(err)
 	}
 	t7, source, err := T7ResultFromCall(CallResult{CallID: result.CallID, Status: result.Status, PromptVersion: result.PromptVersion, OutputSchemaVersion: result.OutputSchemaVersion, Output: t7JSON}, "aggregate:v1:global:all:1:2", []string{"cat"})
@@ -401,7 +401,7 @@ func TestIssue436FallbackAdaptersPreserveSourceAndT4Skeleton(t *testing.T) {
 		t.Fatalf("lossless T4 fixture is not a valid frozen skeleton: %v", err)
 	}
 	var fallback T4Input
-	if err := decode.Decode(T4FallbackOutput(in), &fallback, decode.Closed); err != nil || !reflect.DeepEqual(fallback, in) {
+	if err := schema.Decode(T4FallbackOutput(in), &fallback, schema.Closed); err != nil || !reflect.DeepEqual(fallback, in) {
 		t.Fatalf("lossless T4 fallback skeleton = %#v, want %#v: %v", fallback, in, err)
 	}
 }

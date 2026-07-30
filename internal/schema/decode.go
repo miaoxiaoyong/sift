@@ -1,5 +1,5 @@
-// Package decode is the single entry point by which external JSON enters the
-// Sift domain layer. It implements the two explicit strategies mandated by
+// The decode gateway is the single entry point by which external JSON enters
+// the Sift domain layer. It implements the two explicit strategies mandated by
 // DESIGN §5.2:
 //
 //   - Closed rejects unknown fields outright. Used for config, LLM touchpoint
@@ -21,7 +21,7 @@
 //     from the same method.
 //
 // The companion JSON Schema artifacts are generated from these struct types
-// (see internal/contract/genschema) and checked into git. A CI drift check
+// (see internal/schema/genschema) and checked into git. A CI drift check
 // regenerates them and fails on any diff, so the schema and the struct cannot
 // silently diverge.
 //
@@ -29,7 +29,7 @@
 // file, LLM touchpoint output, control-plane frame and Forge payload flows
 // through [Decode]. config.md §1.2 and control-plane.md §1.4 make this a
 // hard contract, not a convention.
-package decode
+package schema
 
 import (
 	"bytes"

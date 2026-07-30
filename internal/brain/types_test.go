@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // T1/T2 contract tests (brain.md §7/§8, §10.3): unknown fields, wrong types,
@@ -81,7 +81,7 @@ func TestT1FallbackShape(t *testing.T) {
 		t.Fatalf("fallback not canonical: %s vs %s", canonical, fallback)
 	}
 	var doc map[string]any
-	if err := decode.Decode(fallback, &doc, decode.OpenEnvelope); err != nil {
+	if err := schema.Decode(fallback, &doc, schema.OpenEnvelope); err != nil {
 		t.Fatal(err)
 	}
 	if doc["disposition"] != "ready" || doc["rationale"] != "fallback" {
@@ -209,8 +209,8 @@ func TestBuildT2Input(t *testing.T) {
 // map to schema failure.
 func TestT1UnknownFieldKind(t *testing.T) {
 	err := validateT1(t, `{"disposition":"ready","questions":[],"possible_duplicate_run_id":null,"rationale":"","bogus":true}`)
-	var de *decode.DecodeError
-	if !errors.As(err, &de) || de.Kind != decode.KindUnknownField {
+	var de *schema.DecodeError
+	if !errors.As(err, &de) || de.Kind != schema.KindUnknownField {
 		t.Fatalf("kind = %v", err)
 	}
 }

@@ -1,10 +1,8 @@
-package contract
+package schema
 
 import (
 	"errors"
 	"testing"
-
-	"github.com/miaoxiaoyong/sift/internal/decode"
 )
 
 // V14 golden suite (DESIGN §12, WBS M1 §1.1).
@@ -15,14 +13,14 @@ import (
 // fields still hold. Type and enum variants are covered for both.
 
 // noErr marks a golden case that must decode successfully. It must not
-// collide with any real decode.Kind (the iota sequence starts at 0).
-const noErr decode.Kind = -1
+// collide with any real Kind (the iota sequence starts at 0).
+const noErr Kind = -1
 
 func TestV14ClosedExample(t *testing.T) {
 	cases := []struct {
 		name    string
 		json    string
-		wantErr decode.Kind // noErr = accept
+		wantErr Kind // noErr = accept
 		check   func(t *testing.T, v ClosedExample)
 	}{
 		{
@@ -54,60 +52,60 @@ func TestV14ClosedExample(t *testing.T) {
 		{
 			name:    "missing_required_name",
 			json:    `{"severity":"low"}`,
-			wantErr: decode.KindMissingRequired,
+			wantErr: KindMissingRequired,
 		},
 		{
 			name:    "missing_required_severity",
 			json:    `{"name":"x"}`,
-			wantErr: decode.KindMissingRequired,
+			wantErr: KindMissingRequired,
 		},
 		{
 			// Required + JSON null is the same as absent.
 			name:    "required_field_null",
 			json:    `{"name":"x","severity":null}`,
-			wantErr: decode.KindMissingRequired,
+			wantErr: KindMissingRequired,
 		},
 		{
 			name:    "extra_field_rejected",
 			json:    `{"name":"x","severity":"low","unknown":7}`,
-			wantErr: decode.KindUnknownField,
+			wantErr: KindUnknownField,
 		},
 		{
 			name:    "wrong_type_name_is_number",
 			json:    `{"name":123,"severity":"low"}`,
-			wantErr: decode.KindInvalidType,
+			wantErr: KindInvalidType,
 		},
 		{
 			name:    "wrong_type_severity_is_number",
 			json:    `{"name":"x","severity":5}`,
-			wantErr: decode.KindInvalidType,
+			wantErr: KindInvalidType,
 		},
 		{
 			name:    "wrong_enum_severity",
 			json:    `{"name":"x","severity":"urgent"}`,
-			wantErr: decode.KindInvalidEnum,
+			wantErr: KindInvalidEnum,
 		},
 		{
 			name:    "empty_enum_value",
 			json:    `{"name":"x","severity":""}`,
-			wantErr: decode.KindInvalidEnum,
+			wantErr: KindInvalidEnum,
 		},
 		{
 			name:    "trailing_data",
 			json:    `{"name":"x","severity":"low"}{}`,
-			wantErr: decode.KindTrailingData,
+			wantErr: KindTrailingData,
 		},
 		{
 			name:    "malformed_json",
 			json:    `{"name":"x","severity":`,
-			wantErr: decode.KindInvalidJSON,
+			wantErr: KindInvalidJSON,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var v ClosedExample
-			err := decode.Decode([]byte(tc.json), &v, decode.Closed)
+			err := Decode([]byte(tc.json), &v, Closed)
 			if tc.wantErr == noErr {
 				if err != nil {
 					t.Fatalf("expected accept, got %v", err)
@@ -128,7 +126,7 @@ func TestV14OpenEnvelopeExample(t *testing.T) {
 	cases := []struct {
 		name    string
 		json    string
-		wantErr decode.Kind
+		wantErr Kind
 		check   func(t *testing.T, v OpenEnvelopeExample)
 	}{
 		{
@@ -159,22 +157,22 @@ func TestV14OpenEnvelopeExample(t *testing.T) {
 		{
 			name:    "missing_required_number",
 			json:    `{"title":"issue","state":"open"}`,
-			wantErr: decode.KindMissingRequired,
+			wantErr: KindMissingRequired,
 		},
 		{
 			name:    "missing_required_state",
 			json:    `{"number":1,"title":"issue"}`,
-			wantErr: decode.KindMissingRequired,
+			wantErr: KindMissingRequired,
 		},
 		{
 			name:    "consumed_wrong_type_number_is_string",
 			json:    `{"number":"42","title":"issue","state":"open"}`,
-			wantErr: decode.KindInvalidType,
+			wantErr: KindInvalidType,
 		},
 		{
 			name:    "consumed_wrong_enum_state",
 			json:    `{"number":1,"title":"issue","state":"merged"}`,
-			wantErr: decode.KindInvalidEnum,
+			wantErr: KindInvalidEnum,
 		},
 		{
 			name:    "consumed_wrong_type_in_extra_field_does_not_matter",
@@ -188,7 +186,7 @@ func TestV14OpenEnvelopeExample(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var v OpenEnvelopeExample
-			err := decode.Decode([]byte(tc.json), &v, decode.OpenEnvelope)
+			err := Decode([]byte(tc.json), &v, OpenEnvelope)
 			if tc.wantErr == noErr {
 				if err != nil {
 					t.Fatalf("expected accept, got %v", err)
@@ -212,7 +210,7 @@ func TestV14ClosedVsOpenContrast(t *testing.T) {
 	payload := []byte(`{"number":1,"title":"t","state":"open","extra":"ignored"}`)
 
 	var oe OpenEnvelopeExample
-	if err := decode.Decode(payload, &oe, decode.OpenEnvelope); err != nil {
+	if err := Decode(payload, &oe, OpenEnvelope); err != nil {
 		t.Fatalf("open-envelope must accept extra field, got %v", err)
 	}
 
@@ -220,7 +218,7 @@ func TestV14ClosedVsOpenContrast(t *testing.T) {
 	// ClosedExample has different fields; the point is that closed mode rejects
 	// the extra field. Use a closed-shaped payload to isolate the policy.
 	cePayload := []byte(`{"name":"x","severity":"low","extra":1}`)
-	if err := decode.Decode(cePayload, &ce, decode.Closed); err == nil {
+	if err := Decode(cePayload, &ce, Closed); err == nil {
 		t.Fatal("closed mode must reject extra field")
 	}
 }
@@ -253,14 +251,14 @@ func TestEnumSingleSource(t *testing.T) {
 	}
 }
 
-func kindOf(t *testing.T, err error) decode.Kind {
+func kindOf(t *testing.T, err error) Kind {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var de *decode.DecodeError
+	var de *DecodeError
 	if !errors.As(err, &de) {
-		t.Fatalf("expected *decode.DecodeError, got %T: %v", err, err)
+		t.Fatalf("expected *DecodeError, got %T: %v", err, err)
 	}
 	return de.Kind
 }

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // TestV12ZeroConfigStartsDaemon verifies the executable startup path accepts an
@@ -174,7 +174,7 @@ func call(t *testing.T, path string, request Request) Response {
 		t.Fatal(err)
 	}
 	var response Response
-	if err := decode.Decode(b, &response, decode.Closed); err != nil {
+	if err := schema.Decode(b, &response, schema.Closed); err != nil {
 		t.Fatal(err)
 	}
 	return response

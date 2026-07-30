@@ -29,6 +29,6 @@
   "type": "object",
   "x-sift": {
     "decodeMode": "closed",
-    "sourceType": "contract.ClosedExample"
+    "sourceType": "schema.ClosedExample"
   }
 }

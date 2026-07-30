@@ -26,8 +26,8 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/attempt"
 	"github.com/miaoxiaoyong/sift/internal/brain"
 	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/decode"
 	"github.com/miaoxiaoyong/sift/internal/forge"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -159,7 +159,7 @@ func (c *Chain) Drive(ctx context.Context, runID string, issue forge.Issue, trig
 	// bug, not a flow the chain should paper over.
 	if t1res.Status == storage.BrainCallValid {
 		var t1out brain.T1Output
-		if err := decode.Decode(t1res.Output, &t1out, decode.Closed); err != nil {
+		if err := schema.Decode(t1res.Output, &t1out, schema.Closed); err != nil {
 			return out, fmt.Errorf("skeleton: decode T1 output: %w", err)
 		}
 		if t1out.Disposition == nil || *t1out.Disposition != brain.T1Ready {
@@ -218,7 +218,7 @@ func (c *Chain) Drive(ctx context.Context, runID string, issue forge.Issue, trig
 		return out, errors.New("skeleton: T2 did not produce a valid assignment (M1 fake provider must emit a legal T2 output)")
 	}
 	var t2out brain.T2Output
-	if err := decode.Decode(t2res.Output, &t2out, decode.Closed); err != nil {
+	if err := schema.Decode(t2res.Output, &t2out, schema.Closed); err != nil {
 		return out, fmt.Errorf("skeleton: decode T2 output: %w", err)
 	}
 	// Effective HITL = LLM OR deterministic force (brain.md §8.3); the M1 fake

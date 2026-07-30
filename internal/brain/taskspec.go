@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // Task Spec v1 assembler (brain.md §9). The assembler is deterministic:
@@ -127,7 +127,7 @@ func AssembleTaskSpec(p TaskSpecParams) (canonical []byte, digest string, err er
 			"prompt_version":  p.PromptVersion,
 		},
 	}
-	canonical, err = decode.Canonical(doc)
+	canonical, err = schema.Canonical(doc)
 	if err != nil {
 		return nil, "", fmt.Errorf("brain: canonical task spec: %w", err)
 	}

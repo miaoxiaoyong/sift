@@ -16,7 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 const Version = 1
@@ -65,7 +65,7 @@ func Parse(data []byte) (BasePolicy, error) {
 		return BasePolicy{}, err
 	}
 	var raw rawPolicy
-	if err := decode.Decode(jsonBytes, &raw, decode.Closed); err != nil {
+	if err := schema.Decode(jsonBytes, &raw, schema.Closed); err != nil {
 		return BasePolicy{}, fmt.Errorf("policy: decode: %w", err)
 	}
 	if *raw.Version != Version {

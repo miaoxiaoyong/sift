@@ -1,8 +1,8 @@
 // Command genschema generates JSON Schema (Draft 2020-12) for the seed
-// boundary types in package contract via [schemagen]. It is invoked by the
+// boundary types in package schema via [schemagen]. It is invoked by the
 // `//go:generate` directive in contract.go.
 //
-// Output is deterministic so that the committed files in schema/ are
+// Output is deterministic so that the committed files in artifacts/ are
 // diffable. The CI drift check runs `go generate ./...` then
 // `git diff --exit-code`: if a struct changes without regenerating its
 // schema, CI fails.
@@ -15,17 +15,17 @@ import (
 	"path/filepath"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/contract"
-	"github.com/miaoxiaoyong/sift/internal/contract/schemagen"
+	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/miaoxiaoyong/sift/internal/schema/schemagen"
 )
 
 func main() {
-	out := flag.String("out", "schema", "output directory for generated schemas")
+	out := flag.String("out", "artifacts", "output directory for generated schemas")
 	flag.Parse()
 
 	types := []any{
-		contract.ClosedExample{},
-		contract.OpenEnvelopeExample{},
+		schema.ClosedExample{},
+		schema.OpenEnvelopeExample{},
 		config.RawConfig{},
 	}
 

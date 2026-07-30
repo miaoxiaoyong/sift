@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // Prompt assets are versioned, git-committed files embedded into the binary
@@ -64,11 +64,11 @@ func mustAsset(touchpoint string, version int) PromptAsset {
 	if err != nil {
 		panic(fmt.Sprintf("brain: embedded prompt %s/v%d: %v", touchpoint, version, err))
 	}
-	schema, err := promptFS.ReadFile(fmt.Sprintf("prompts/%s/v%d.schema.json", touchpoint, version))
+	schemaBytes, err := promptFS.ReadFile(fmt.Sprintf("prompts/%s/v%d.schema.json", touchpoint, version))
 	if err != nil {
 		panic(fmt.Sprintf("brain: embedded schema %s/v%d: %v", touchpoint, version, err))
 	}
-	canonicalSchema, err := decode.Canonical(schemaTreeFor(schema))
+	canonicalSchema, err := schema.Canonical(schemaTreeFor(schemaBytes))
 	if err != nil {
 		panic(fmt.Sprintf("brain: canonical schema %s/v%d: %v", touchpoint, version, err))
 	}
@@ -82,15 +82,15 @@ func mustAsset(touchpoint string, version int) PromptAsset {
 		Touchpoint:          touchpoint,
 		Version:             version,
 		Prompt:              prompt,
-		Schema:              schema,
+		Schema:              schemaBytes,
 		PromptVersion:       fmt.Sprintf("%s/v%d/%s", touchpoint, version, hex.EncodeToString(h.Sum(nil))[:12]),
 		OutputSchemaVersion: version,
 	}
 }
 
-func schemaTreeFor(schema []byte) any {
+func schemaTreeFor(schemaBytes []byte) any {
 	var tree any
-	if err := decode.Decode(schema, &tree, decode.OpenEnvelope); err != nil {
+	if err := schema.Decode(schemaBytes, &tree, schema.OpenEnvelope); err != nil {
 		panic(fmt.Sprintf("brain: parse embedded schema: %v", err))
 	}
 	return tree

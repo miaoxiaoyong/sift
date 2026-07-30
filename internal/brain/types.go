@@ -6,8 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/contract"
-	"github.com/miaoxiaoyong/sift/internal/decode"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 // T1/T2 boundary contracts (specs/brain.md §7/§8). Input structs are built by
@@ -107,7 +106,7 @@ func BuildT1Input(in T1Input) ([]byte, error) {
 	if in.Issue.Labels == nil {
 		in.Issue.Labels = []string{}
 	}
-	return decode.Canonical(in)
+	return schema.Canonical(in)
 }
 
 // T1Disposition is the closed T1 output enum (brain.md §7.2).
@@ -119,19 +118,19 @@ const (
 	T1PossibleDuplicate  T1Disposition = "possible_duplicate"
 )
 
-// EnumValues satisfies decode.Enumerated.
+// EnumValues satisfies schema.Enumerated.
 func (T1Disposition) EnumValues() []string {
 	return []string{string(T1Ready), string(T1NeedsClarification), string(T1PossibleDuplicate)}
 }
 
 // T1Output is the §7.2 closed output contract. possible_duplicate_run_id is
-// required but nullable (decode.NullString tracks key presence).
+// required but nullable (schema.NullString tracks key presence).
 type T1Output struct {
-	contract.ClosedType `json:"-"`
+	schema.ClosedType `json:"-"`
 
 	Disposition            *T1Disposition    `json:"disposition" sift:"required"`
 	Questions              *[]string         `json:"questions" sift:"required,maxitems=5,itemminbytes=1,itemmaxbytes=1000"`
-	PossibleDuplicateRunID decode.NullString `json:"possible_duplicate_run_id" sift:"keyrequired,maxbytes=64"`
+	PossibleDuplicateRunID schema.NullString `json:"possible_duplicate_run_id" sift:"keyrequired,maxbytes=64"`
 	Rationale              *string           `json:"rationale" sift:"required,maxbytes=2000"`
 }
 
@@ -208,10 +207,10 @@ func T1FallbackOutput() []byte {
 	d := T1Ready
 	q := []string{}
 	r := "fallback"
-	out, err := decode.Canonical(T1Output{
+	out, err := schema.Canonical(T1Output{
 		Disposition:            &d,
 		Questions:              &q,
-		PossibleDuplicateRunID: decode.NullString{Present: true, Null: true},
+		PossibleDuplicateRunID: schema.NullString{Present: true, Null: true},
 		Rationale:              &r,
 	})
 	if err != nil {
@@ -300,7 +299,7 @@ func BuildT2Input(in T2Input) ([]byte, error) {
 	if in.BaseContext.TaskAnnotations == nil {
 		in.BaseContext.TaskAnnotations = []T2Annotation{}
 	}
-	return decode.Canonical(in)
+	return schema.Canonical(in)
 }
 
 // TaskKind is the closed T2 task-kind enum (brain.md §8.2).
@@ -314,15 +313,15 @@ const (
 	TaskRefactor TaskKind = "refactor"
 )
 
-// EnumValues satisfies decode.Enumerated.
+// EnumValues satisfies schema.Enumerated.
 func (TaskKind) EnumValues() []string {
 	return []string{string(TaskFeature), string(TaskBug), string(TaskChore), string(TaskDocs), string(TaskRefactor)}
 }
 
 // T2Output is the §8.2 closed output contract. Guardrails, attempts and
-// concurrency never appear here: extra fields are rejected by closed decode.
+// concurrency never appear here: extra fields are rejected by the closed contract.
 type T2Output struct {
-	contract.ClosedType `json:"-"`
+	schema.ClosedType `json:"-"`
 
 	Kind            *TaskKind `json:"kind" sift:"required"`
 	Agent           *string   `json:"agent" sift:"required,maxbytes=64"`
@@ -379,14 +378,14 @@ func T1Contract(candidateRunIDs []string) TouchpointContract {
 		Asset:      T1Asset(),
 		ValidateOutput: func(resultText []byte) ([]byte, error) {
 			var out T1Output
-			if err := decode.Decode(resultText, &out, decode.Closed); err != nil {
+			if err := schema.Decode(resultText, &out, schema.Closed); err != nil {
 				return nil, err
 			}
 			if out.PossibleDuplicateRunID.Present && !out.PossibleDuplicateRunID.Null &&
 				out.PossibleDuplicateRunID.Value != "" && !allowed[out.PossibleDuplicateRunID.Value] {
 				return nil, fmt.Errorf("brain: T1 duplicate %q is not an input candidate", out.PossibleDuplicateRunID.Value)
 			}
-			return decode.Canonical(out)
+			return schema.Canonical(out)
 		},
 		FallbackOutput: T1FallbackOutput,
 	}
@@ -404,13 +403,13 @@ func T2Contract(candidateIDs []string) TouchpointContract {
 		Asset:      T2Asset(),
 		ValidateOutput: func(resultText []byte) ([]byte, error) {
 			var out T2Output
-			if err := decode.Decode(resultText, &out, decode.Closed); err != nil {
+			if err := schema.Decode(resultText, &out, schema.Closed); err != nil {
 				return nil, err
 			}
 			if !allowed[*out.Agent] {
 				return nil, fmt.Errorf("brain: T2 agent %q is not an input candidate", *out.Agent)
 			}
-			return decode.Canonical(out)
+			return schema.Canonical(out)
 		},
 		// T2 has no synthetic output: the fallback keeps the Run for human
 		// assignment (brain.md §8.2), never a fabricated first-agent pick.
