@@ -21,7 +21,7 @@
 //     from the same method.
 //
 // The companion JSON Schema artifacts are generated from these struct types
-// (see internal/schema/genschema) and checked into git. A CI drift check
+// (see tools/schema/cmd/contracts) and checked into git. A CI drift check
 // regenerates them and fails on any diff, so the schema and the struct cannot
 // silently diverge.
 //

@@ -107,7 +107,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 - [x] 单一 decode gateway，调用方显式选 `closed` 或 `open-envelope`（`internal/schema`；调用方传 `schema.Closed`/`schema.OpenEnvelope`）
 - [x] 配置、LLM 输出、socket 请求用 `closed`；Forge envelope 用 `open-envelope`，必需语义仍 fail closed（gateway 与两种模式已落；config/LLM/socket 已接 `schema.Closed`、Brain provider envelope 接 `schema.OpenEnvelope`，各消费者类型随各自切片接线；#9 + #16/#18/#20）
-- [x] 结构体生成 JSON Schema 并入 git；schema 漂移使 CI 失败（`internal/schema/genschema` + CI `schema-drift` job）
+- [x] 结构体生成 JSON Schema 并入 git；schema 漂移使 CI 失败（`tools/schema/cmd/contracts` + CI `schema-drift` job）
 - [x] V14 golden tests 覆盖缺失字段、额外字段、类型/枚举变型（`internal/schema/contract_test.go`）
 - [x] 从本片起在 CI 构建 darwin/linux × arm64/amd64，保持 `CGO_ENABLED=0`（`build-matrix` job）
 

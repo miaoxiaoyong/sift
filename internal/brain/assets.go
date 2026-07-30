@@ -1,4 +1,4 @@
-//go:generate go run ./genschemas
+//go:generate go -C ../../tools/schema run ./cmd/brain -out ../../internal/brain/prompts
 
 package brain
 
@@ -14,7 +14,7 @@ import (
 // Prompt assets are versioned, git-committed files embedded into the binary
 // (brain.md §2). The runtime never re-reads them from disk. Each touchpoint
 // pairs a prompt (v<N>.md) with its generated output schema (v<N>.schema.json,
-// produced from the contract structs by genschemas — never a hand-written
+// produced from the contract structs by tools/schema — never a hand-written
 // second copy).
 
 // ProtocolClaudeJSONV1 is the V0 provider envelope protocol (brain.md §4).

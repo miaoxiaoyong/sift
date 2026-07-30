@@ -187,6 +187,8 @@ summary: 代码精简整改任务清单 — 原因、必要性、证据支撑
 | **风险** | 中（若硬删生成器）。外置+文档则低 |
 | **时机** | idle |
 
+再生入口与 drift 检查见 [JSON Schema 再生](../dev/schema-generation.md)。
+
 ### T011 审计单实现接口 — **ACCEPT P3 audit**
 
 | 维度 | 内容 |

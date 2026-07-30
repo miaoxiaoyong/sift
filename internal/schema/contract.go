@@ -1,4 +1,4 @@
-//go:generate go run ./genschema -out artifacts
+//go:generate go -C ../../tools/schema run ./cmd/contracts -out ../../internal/schema/artifacts
 
 // Package schema owns Sift's boundary types, JSON decode gateway, validation
 // rules, and generated JSON Schema artifacts. The seed types below fix the

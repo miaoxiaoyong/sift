@@ -1,6 +1,6 @@
-// Command genschema generates JSON Schema (Draft 2020-12) for the seed
-// boundary types in package schema via [schemagen]. It is invoked by the
-// `//go:generate` directive in contract.go.
+// Command contracts generates JSON Schema (Draft 2020-12) for the seed
+// boundary types. The root module invokes it through the //go:generate
+// directive in internal/schema/contract.go.
 //
 // Output is deterministic so that the committed files in artifacts/ are
 // diffable. The CI drift check runs `go generate ./...` then
@@ -16,7 +16,7 @@ import (
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/schema"
-	"github.com/miaoxiaoyong/sift/internal/schema/schemagen"
+	"github.com/miaoxiaoyong/sift/tools/schema/schemagen"
 )
 
 func main() {

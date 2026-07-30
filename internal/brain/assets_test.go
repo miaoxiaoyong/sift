@@ -3,8 +3,6 @@ package brain
 import (
 	"regexp"
 	"testing"
-
-	"github.com/miaoxiaoyong/sift/internal/schema/schemagen"
 )
 
 func TestPromptAssetsVersioning(t *testing.T) {
@@ -22,37 +20,6 @@ func TestPromptAssetsVersioning(t *testing.T) {
 	}
 	if T1Asset().PromptVersion == T2Asset().PromptVersion {
 		t.Fatal("touchpoint prompt versions must differ")
-	}
-}
-
-// TestSchemaDrift regenerates the v1 schemas from the contract structs and
-// fails on any diff with the committed assets (brain.md §2: the .schema.json
-// is generated from §7/§8 field definitions, never a hand-written copy).
-func TestSchemaDrift(t *testing.T) {
-	cases := []struct {
-		asset PromptAsset
-		typ   any
-	}{
-		{T1Asset(), T1Output{}},
-		{T2Asset(), T2Output{}},
-		{T3Asset(), T3Output{}},
-		{T4Asset(), T4Output{}},
-		{T5Asset(), T5Output{}},
-		{T6Asset(), T6Output{}},
-		{T7Asset(), T7Output{}},
-	}
-	for _, tc := range cases {
-		tgt, err := schemagen.TargetFor(tc.typ)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := schemagen.Generate(tgt)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(data) != string(tc.asset.Schema) {
-			t.Fatalf("%s schema drift: run `go generate ./internal/brain` and commit the result", tc.asset.Touchpoint)
-		}
 	}
 }
 

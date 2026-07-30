@@ -6,9 +6,9 @@ name: build
 # Schemas (internal/schema/artifacts) never drift from their struct definitions.
 #
 # The decode gateway (internal/schema) is pure stdlib, so every combo builds
-# it under CGO_ENABLED=0. Schema generation (internal/schema/genschema) is
-# also pure stdlib; it runs once on the host and its deterministic output is
-# diffed against the committed files.
+# it under CGO_ENABLED=0. Schema generation lives in the nested tools/schema
+# module, outside the root build package set; root go:generate directives invoke
+# it explicitly and CI diffs its deterministic output against committed files.
 
 on:
   push:
@@ -63,8 +63,8 @@ jobs:
         run: go generate ./...
       - name: detect drift
         run: |
-          if ! git diff --exit-code -- internal/schema/artifacts/; then
-            echo "::error::Generated JSON Schema drifts from struct definitions." \
+          if ! git diff --exit-code -- internal/schema/artifacts/ internal/brain/prompts/; then
+            echo "::error::Generated JSON Schema artifacts drift from struct definitions." \
               "Run 'go generate ./...' and commit the result."
             exit 1
           fi
