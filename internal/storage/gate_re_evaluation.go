@@ -26,6 +26,8 @@ import (
 //     failed/change_not_open, failed/hard_guardrail (Run -> failed(gate_verdict)),
 //     wait_checks/checks_pending (Run -> running),
 //     ready/no_auto_merge (Run -> done(gate_passed_no_auto_merge)).
+//   - succeeded HITL verdicts: Run stays waiting_human (version+1) plus the
+//     section 8.1 Interrupt successor in the same transaction.
 //   - succeeded ready/merge: Run -> running(gate_merge_requested) plus the
 //     sole merge_change successor operation enqueued in the same transaction
 //     (Run CAS + terminal gate.reevaluation.ready.merge event).
@@ -37,15 +39,14 @@ import (
 //
 // Deferred to a follow-up slice (returned as ErrGateReEvaluationSuccessorNotWired
 // so the worker can terminate the operation rather than leave it pending):
-//   - HITL verdict successors (failure_review Interrupt emission),
 //   - retry_checks/flaky_retry (rerun_checks successor operation).
 //
-// The failed-arm failure_review successor and ready/merge -> merge_change are
-// minimal honest closures; they do not claim once-charge, the full §8.1 matrix,
-// or M5.
+// This slice wires all seven HITL verdict successors via closed
+// GateReEvaluationInterruptV1 -> EmitInterrupt inside CompleteGateReEvaluation.
+// It does not claim once-charge, rerun_checks, or M5.
 //
-// The exact digest vectors in storage.md §8.1 for the failed result union and
-// the continuous conflict→replacement Complete are reproduced by the tests.
+// The exact digest vectors in storage.md section 8.1 for the failed result union and
+// the continuous conflict-to-replacement Complete are reproduced by the tests.
 
 // ErrGateReEvaluationContract is a closed contract violation: non-canonical
 // result bytes, an unknown result kind, a hash/version/digest mismatch, or an
@@ -53,9 +54,9 @@ import (
 var ErrGateReEvaluationContract = errors.New("storage: gate re-evaluation contract violation")
 
 // ErrGateReEvaluationSuccessorNotWired signals that the submitted result
-// requires a successor (HITL Interrupt or rerun_checks operation) whose
-// emission is not yet wired in this slice. The failed-arm failure_review
-// successor is wired; this error remains for HITL verdict and rerun_checks arms.
+// requires a successor whose emission is not yet wired in this slice. All HITL
+// verdict and failed-arm failure_review successors are wired; this error
+// remains for retry_checks/flaky_retry (rerun_checks operation).
 var ErrGateReEvaluationSuccessorNotWired = errors.New("storage: gate re-evaluation successor not wired")
 
 // ErrGateReEvaluationAssertion signals that the frozen lease/Run/Interrupt/
@@ -232,6 +233,18 @@ type gateReEvalVerdictProjection struct {
 	HeadSHA string `json:"head_sha"`
 }
 
+// gateReEvalVerdictFields carries the closed HITL verdict payload fields
+// needed to assemble ?8.1 successor facts and bindings.
+type gateReEvalVerdictFields struct {
+	ExternalURL        string `json:"external_url"`
+	Classification     string `json:"classification"`
+	RuleID             string `json:"rule_id"`
+	MatchedPathsDigest string `json:"matched_paths_digest"`
+	ReviewPolicy       string `json:"review_policy"`
+	Mergeability       string `json:"mergeability"`
+	Field              string `json:"field"`
+}
+
 type gateInputIdentityJSON struct {
 	RunID     string `json:"run_id"`
 	ProjectID string `json:"project_id"`
@@ -261,16 +274,24 @@ func (d *DB) completeGateReEvalSucceededTx(ctx context.Context, tx *sql.Tx, clai
 		return fmt.Errorf("%w: verdict_digest mismatch", ErrGateReEvaluationContract)
 	}
 	var v gateReEvalVerdictProjection
+	var vf gateReEvalVerdictFields
 	if err := json.Unmarshal([]byte(p.VerdictJSON), &v); err != nil {
 		return fmt.Errorf("%w: verdict decode: %v", ErrGateReEvaluationContract, err)
 	}
 	if v.HeadSHA != row.op.HeadSHA {
 		return fmt.Errorf("%w: verdict head differs from operation", ErrGateReEvaluationContract)
 	}
-	// The wired succeeded matrix: no-successor verdicts plus ready/merge, whose
-	// merge_change successor is enqueued below in the same transaction.
+	if v.Kind == "hitl" {
+		if err := json.Unmarshal([]byte(p.VerdictJSON), &vf); err != nil {
+			return fmt.Errorf("%w: hitl verdict decode: %v", ErrGateReEvaluationContract, err)
+		}
+	}
+	// The wired succeeded matrix: no-successor verdicts, all HITL arms, plus
+	// ready/merge whose merge_change successor is enqueued below.
 	switch v.Kind + "/" + v.Code {
-	case "failed/change_not_open", "failed/hard_guardrail", "wait_checks/checks_pending", "ready/no_auto_merge", "ready/merge":
+	case "failed/change_not_open", "failed/hard_guardrail", "wait_checks/checks_pending", "ready/no_auto_merge", "ready/merge",
+		"hitl/checks_timeout", "hitl/failure_review", "hitl/guardrail_violation", "hitl/code_review",
+		"hitl/merge_conflict", "hitl/mergeability_unknown", "hitl/input_unknown":
 	default:
 		return fmt.Errorf("%w: succeeded verdict %s/%s successor not wired", ErrGateReEvaluationSuccessorNotWired, v.Kind, v.Code)
 	}
@@ -313,6 +334,11 @@ func (d *DB) completeGateReEvalSucceededTx(ctx context.Context, tx *sql.Tx, clai
 	}
 	if err := insertGateReEvalEventTx(ctx, tx, row, eventType, eventKey, evPayload, nowMS); err != nil {
 		return err
+	}
+	if v.Kind == "hitl" {
+		if _, err := d.emitGateReEvalHITLSuccessorTx(ctx, tx, row, v, vf, p, recorded, eventKey, nowMS); err != nil {
+			return err
+		}
 	}
 	// ready/merge successor: enqueue the sole merge_change operation in the same
 	// transaction as the terminal event and Run CAS (storage.md §8.1). This
@@ -379,7 +405,7 @@ func gateReEvalRecord(op GateReEvaluationPayload, p gateReEvalSucceededPayload, 
 	if proj.Checks.Triage != nil && proj.Checks.Triage.Source.LogicalCallID != "" {
 		links = append(links, GateBrainInputLink{LogicalCallID: proj.Checks.Triage.Source.LogicalCallID, Touchpoint: "T5"})
 	}
-	return GateEvaluationRecord{
+	rec := GateEvaluationRecord{
 		RunID:                 op.RunID,
 		GateInputHash:         p.GateInputHash,
 		GateVersion:           p.GateVersion,
@@ -396,7 +422,11 @@ func gateReEvalRecord(op GateReEvaluationPayload, p gateReEvalSucceededPayload, 
 		BrainInputLinks:       links,
 		CacheHit:              false,
 		NowMS:                 nowMS,
-	}, nil
+	}
+	if v.Kind == "hitl" && v.Code == "merge_conflict" {
+		rec.ConflictDigest = MergeConflictDigest(proj.Identity.ChangeID, proj.Change.HeadSHA)
+	}
+	return rec, nil
 }
 
 func gateShadowDecision(kind, code string) string {
@@ -424,6 +454,9 @@ func gateReEvalRunCASTx(ctx context.Context, tx *sql.Tx, op GateReEvaluationPayl
 	case "ready/no_auto_merge":
 		base += `, status='done', change_id=COALESCE(?, change_id), change_head_sha=COALESCE(?, change_head_sha), completed_at_ms=?`
 		args = append(args, nullable(op.ChangeID), nullable(op.HeadSHA), nowMS)
+	case "hitl/checks_timeout", "hitl/failure_review", "hitl/guardrail_violation", "hitl/code_review",
+		"hitl/merge_conflict", "hitl/mergeability_unknown", "hitl/input_unknown":
+		// HITL matrix: Run stays waiting_human; version increments only.
 	default:
 		return fmt.Errorf("%w: run CAS for %s/%s not wired", ErrGateReEvaluationSuccessorNotWired, kind, code)
 	}
@@ -552,6 +585,151 @@ func gateReEvalFailureReviewCalibrationTx(ctx context.Context, tx *sql.Tx, row g
 		return "", err
 	}
 	return id, nil
+}
+
+// emitGateReEvalHITLSuccessorTx emits the ?8.1 HITL verdict Interrupt successor
+// inside the same CompleteGateReEvaluation transaction as the terminal event and
+// Run CAS. The caller must have already recorded the gate evaluation so
+// recorded.CalibrationID satisfies binding provenance triggers.
+func (d *DB) emitGateReEvalHITLSuccessorTx(ctx context.Context, tx *sql.Tx, row gateReEvalAttemptRow, v gateReEvalVerdictProjection, vf gateReEvalVerdictFields, p gateReEvalSucceededPayload, recorded RecordedGateEvaluation, eventKey string, nowMS int64) (Interrupt, error) {
+	cfg := d.gateReEvalInterruptEmission()
+	if cfg.AttentionDailyQuota == nil {
+		return Interrupt{}, errors.New("storage: gate re-eval interrupt emission not configured")
+	}
+	eventRef := "sift://event/event:" + eventKey
+	attemptNo := row.op.AttemptNo
+	cmd := EmitInterruptCmd{
+		RunID:               row.op.RunID,
+		ExpectedRunVersion:  row.op.SourceRunVersion + 1,
+		AttemptNo:           &attemptNo,
+		GatePhase:           GateReview,
+		GuardrailLevel:      GuardrailNone,
+		AttentionDailyQuota: cfg.AttentionDailyQuota,
+		DayTimezone:         cfg.DayTimezone,
+		DailySummaryAt:      cfg.DailySummaryAt,
+		MaxEscalations:      cfg.MaxEscalations,
+		CriticalWindowMS:    cfg.CriticalWindowMS,
+		CriticalTotalLimit:  cfg.CriticalTotalLimit,
+		CriticalPerRunLimit: cfg.CriticalPerRunLimit,
+		Channels:            cfg.Channels,
+		CalibrationID:       recorded.CalibrationID,
+		Source:              SourceSystem,
+		NowMS:               nowMS,
+		Generation: InterruptGeneration{
+			AttemptNo:  row.op.AttemptNo,
+			Generation: row.op.Generation,
+			ChangeID:   row.op.ChangeID,
+			HeadSHA:    row.op.HeadSHA,
+		},
+	}
+	switch v.Kind + "/" + v.Code {
+	case "hitl/checks_timeout":
+		if vf.ExternalURL == "" {
+			return Interrupt{}, fmt.Errorf("%w: checks_timeout missing external_url", ErrGateReEvaluationContract)
+		}
+		cmd.Reason = InterruptFailureReview
+		cmd.FailureReviewVariant = FailureReviewAttempt
+		cmd.FailureReviewRetryKind = FailureReviewGateRecheck
+		cmd.Facts = map[string]string{
+			"failure_class":        "checks_timeout",
+			"failure_evidence_ref": vf.ExternalURL,
+			"recommended_action":   "retry",
+		}
+	case "hitl/failure_review":
+		if vf.ExternalURL == "" || vf.Classification == "" {
+			return Interrupt{}, fmt.Errorf("%w: failure_review missing external_url or classification", ErrGateReEvaluationContract)
+		}
+		cmd.Reason = InterruptFailureReview
+		cmd.FailureReviewVariant = FailureReviewAttempt
+		cmd.FailureReviewRetryKind = FailureReviewGateRecheck
+		cmd.Facts = map[string]string{
+			"failure_class":        "checks_" + vf.Classification,
+			"failure_evidence_ref": vf.ExternalURL,
+			"recommended_action":   "retry",
+		}
+	case "hitl/mergeability_unknown":
+		cmd.Reason = InterruptFailureReview
+		cmd.FailureReviewVariant = FailureReviewAttempt
+		cmd.FailureReviewRetryKind = FailureReviewGateRecheck
+		cmd.Facts = map[string]string{
+			"failure_class":        "mergeability_unknown",
+			"failure_evidence_ref": eventRef,
+			"recommended_action":   "retry",
+		}
+	case "hitl/input_unknown":
+		if vf.Field == "" {
+			return Interrupt{}, fmt.Errorf("%w: input_unknown missing field", ErrGateReEvaluationContract)
+		}
+		cmd.Reason = InterruptFailureReview
+		cmd.FailureReviewVariant = FailureReviewAttempt
+		cmd.FailureReviewRetryKind = FailureReviewGateRecheck
+		cmd.Facts = map[string]string{
+			"failure_class":        "gate_input_unknown:" + vf.Field,
+			"failure_evidence_ref": eventRef,
+			"recommended_action":   "retry",
+		}
+	case "hitl/guardrail_violation":
+		if vf.RuleID == "" || vf.MatchedPathsDigest == "" {
+			return Interrupt{}, fmt.Errorf("%w: guardrail_violation missing rule_id or matched_paths_digest", ErrGateReEvaluationContract)
+		}
+		var proj struct {
+			EffectivePolicyHash string `json:"effective_policy_hash"`
+		}
+		if err := json.Unmarshal([]byte(p.GateInputJSON), &proj); err != nil || proj.EffectivePolicyHash == "" {
+			return Interrupt{}, fmt.Errorf("%w: gate input missing effective_policy_hash", ErrGateReEvaluationContract)
+		}
+		cmd.Reason = InterruptGuardrailViolation
+		cmd.GuardrailLevel = GuardrailSoft
+		cmd.Generation.PolicySnapshotID = proj.EffectivePolicyHash
+		cmd.Generation.ViolationCode = vf.RuleID
+		cmd.Generation.SubjectDigest = vf.MatchedPathsDigest
+		cmd.Facts = map[string]string{
+			"rule_id":               vf.RuleID,
+			"impact_scope":          "matched_paths:" + vf.MatchedPathsDigest,
+			"recommended_action":    "approve",
+			"policy_evidence_ref":   eventRef,
+		}
+	case "hitl/code_review":
+		if vf.ReviewPolicy == "" {
+			return Interrupt{}, fmt.Errorf("%w: code_review missing review_policy", ErrGateReEvaluationContract)
+		}
+		var proj struct {
+			EffectivePolicyHash string `json:"effective_policy_hash"`
+		}
+		if err := json.Unmarshal([]byte(p.GateInputJSON), &proj); err != nil || proj.EffectivePolicyHash == "" {
+			return Interrupt{}, fmt.Errorf("%w: gate input missing effective_policy_hash", ErrGateReEvaluationContract)
+		}
+		cmd.Reason = InterruptCodeReview
+		cmd.Generation.PolicySnapshotID = proj.EffectivePolicyHash
+		cmd.Facts = map[string]string{
+			"change_ref":           "sift://change/" + row.op.ChangeID,
+			"head_sha":             row.op.HeadSHA,
+			"review_requirement":   vf.ReviewPolicy,
+			"recommended_action":   "approve",
+			"diff_ref":             eventRef,
+		}
+	case "hitl/merge_conflict":
+		cmd.Reason = InterruptMergeConflict
+		cmd.GatePhase = GateMerge
+		cmd.Generation.ConflictDigest = MergeConflictDigest(row.op.ChangeID, row.op.HeadSHA)
+		cmd.Facts = map[string]string{
+			"change_ref":              "sift://change/" + row.op.ChangeID,
+			"head_sha":                row.op.HeadSHA,
+			"conflict_summary":        "mergeability=conflicting",
+			"recommended_action":      "retry",
+			"conflict_evidence_ref":   eventRef,
+		}
+	default:
+		return Interrupt{}, fmt.Errorf("%w: hitl verdict %s/%s not wired", ErrGateReEvaluationSuccessorNotWired, v.Kind, v.Code)
+	}
+	if cmd.Reason == InterruptFailureReview {
+		factsJSON, err := canonicalJSON(cmd.Facts)
+		if err != nil {
+			return Interrupt{}, err
+		}
+		cmd.Generation.FailureDigest = sha256Hex(factsJSON)
+	}
+	return d.emitInterruptInExistingTx(ctx, tx, cmd, false)
 }
 
 func validateGateReEvalFailure(class string, evidence json.RawMessage) error {

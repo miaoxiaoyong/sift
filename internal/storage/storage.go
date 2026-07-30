@@ -162,7 +162,7 @@ func (d *DB) interruptT6Caller() InterruptT6Caller {
 }
 
 // GateReEvalInterruptEmission carries attention/channel defaults for
-// failure_review Interrupt emission inside CompleteGateReEvaluation.
+// Interrupt emission inside CompleteGateReEvaluation (failed-arm and HITL arms).
 type GateReEvalInterruptEmission struct {
 	AttentionDailyQuota                     map[InterruptSeverity]int
 	DayTimezone, DailySummaryAt             string
@@ -172,8 +172,8 @@ type GateReEvalInterruptEmission struct {
 	Channels                                []InterruptChannel
 }
 
-// SetGateReEvalInterruptEmission installs production defaults for the
-// gate_re_evaluation failed-arm failure_review successor (storage.md §8.1).
+// SetGateReEvalInterruptEmission installs production defaults for
+// gate_re_evaluation Interrupt successors (storage.md §8.1).
 func (d *DB) SetGateReEvalInterruptEmission(cfg GateReEvalInterruptEmission) {
 	d.wakeupMu.Lock()
 	defer d.wakeupMu.Unlock()

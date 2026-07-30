@@ -566,8 +566,8 @@ func TestCompleteGateReEvaluationContractRejections(t *testing.T) {
 	if err := db.CompleteGateReEvaluation(ctx, claim, unknown, testNow+21); !errors.Is(err, ErrGateReEvaluationContract) {
 		t.Fatalf("unknown kind err = %v", err)
 	}
-	// Unwired verdict successor (hitl/guardrail_violation).
-	vJSON := mustCanon(t, map[string]any{"schema_version": 1, "kind": "hitl", "code": "guardrail_violation", "head_sha": head})
+	// Unwired verdict successor (retry_checks/flaky_retry — deferred rerun_checks).
+	vJSON := mustCanon(t, map[string]any{"schema_version": 1, "kind": "retry_checks", "code": "flaky_retry", "head_sha": head, "check_run_id": "cr-1", "retry_no": 1})
 	result := canonicalResult(t, "succeeded", map[string]any{
 		"gate_input_json": inputJSON,
 		"gate_input_hash": inputHash,
@@ -577,6 +577,121 @@ func TestCompleteGateReEvaluationContractRejections(t *testing.T) {
 	})
 	if err := db.CompleteGateReEvaluation(ctx, claim, result, testNow+22); !errors.Is(err, ErrGateReEvaluationSuccessorNotWired) {
 		t.Fatalf("unwired verdict err = %v, want ErrGateReEvaluationSuccessorNotWired", err)
+	}
+}
+
+// TestCompleteGateReEvaluationHITLGuardrailViolation verifies the succeeded
+// hitl/guardrail_violation arm: terminal event, Run version bump (waiting_human
+// retained), and guardrail_violation Interrupt successor with closed binding.
+func TestCompleteGateReEvaluationHITLGuardrailViolation(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	head := "0123456789012345678901234567890123456789"
+	policyHash := strings.Repeat("c", 64)
+	ruleID := "soft-recheck-rule"
+	matchedPathsDigest := strings.Repeat("f", 64)
+	inputJSON := mustCanon(t, map[string]any{
+		"schema_version":        1,
+		"effective_policy_hash": policyHash,
+		"certification_version": strings.Repeat("d", 64),
+		"change":                map[string]any{"head_sha": head, "mergeability": "mergeable"},
+		"identity":              map[string]any{"change_id": "change-01", "run_id": cmdRun, "project_id": "project", "task_kind": "bug"},
+		"risk":                  map[string]any{"source": map[string]any{"version": "T3/fallback/v1"}},
+	})
+	inputHash := SHA256Hex([]byte(inputJSON))
+	verdictJSON := mustCanon(t, map[string]any{
+		"schema_version": 1, "kind": "hitl", "code": "guardrail_violation", "head_sha": head,
+		"rule_id": ruleID, "matched_paths_digest": matchedPathsDigest,
+	})
+	verdictDigest := SHA256Hex([]byte(verdictJSON))
+	claim, _ := seedClaimedGateReEval(t, db, ctx, InterruptGuardrailViolation, inputJSON, inputHash, "", "")
+
+	var runVersionBefore int64
+	if err := db.db.QueryRow(`SELECT version FROM runs WHERE id=?`, cmdRun).Scan(&runVersionBefore); err != nil {
+		t.Fatal(err)
+	}
+	result := canonicalResult(t, "succeeded", map[string]any{
+		"gate_input_json": inputJSON, "gate_input_hash": inputHash, "gate_version": "gate/v1",
+		"verdict_json": verdictJSON, "verdict_digest": verdictDigest,
+	})
+	if err := db.CompleteGateReEvaluation(ctx, claim, result, testNow+20); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	var runStatus string
+	var runVersion int64
+	if err := db.db.QueryRow(`SELECT status, version FROM runs WHERE id=?`, cmdRun).Scan(&runStatus, &runVersion); err != nil {
+		t.Fatal(err)
+	}
+	if runStatus != "waiting_human" || runVersion != runVersionBefore+1 {
+		t.Fatalf("run = %s v%d, want waiting_human v%d", runStatus, runVersion, runVersionBefore+1)
+	}
+	evKey := claim.Key + ":verdict:hitl:guardrail_violation"
+	var evType string
+	if err := db.db.QueryRow(`SELECT type FROM events WHERE idempotency_key=?`, evKey).Scan(&evType); err != nil {
+		t.Fatalf("event: %v", err)
+	}
+	if evType != "gate.reevaluation.hitl.guardrail_violation" {
+		t.Fatalf("event type = %s", evType)
+	}
+	var intrCount int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM interrupts WHERE run_id=? AND reason='guardrail_violation'`, cmdRun).Scan(&intrCount); err != nil || intrCount != 2 {
+		t.Fatalf("guardrail_violation interrupts = %d, want 2 (source + successor)", intrCount)
+	}
+	wantBinding := `{"arm":"guardrail_violation","head_sha":"` + head + `","matched_paths_digest":"` + matchedPathsDigest + `","rule_id":"` + ruleID + `","run_id":"` + cmdRun + `"}`
+	var bindingJSON string
+	if err := db.db.QueryRow(`
+SELECT b.binding_json FROM interrupt_command_effect_bindings b
+JOIN interrupts i ON i.id=b.interrupt_id
+WHERE i.run_id=? AND i.reason='guardrail_violation' AND b.binding_json LIKE '%`+matchedPathsDigest+`%'
+ORDER BY i.created_at_ms DESC LIMIT 1`, cmdRun).Scan(&bindingJSON); err != nil {
+		t.Fatalf("binding: %v", err)
+	}
+	if bindingJSON != wantBinding {
+		t.Fatalf("binding = %s, want %s", bindingJSON, wantBinding)
+	}
+}
+
+// TestCompleteGateReEvaluationHITLChecksTimeout verifies the succeeded
+// hitl/checks_timeout arm emits a failure_review gate_recheck successor.
+func TestCompleteGateReEvaluationHITLChecksTimeout(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	head := "0123456789012345678901234567890123456789"
+	externalURL := "https://forge.example/checks/1"
+	inputJSON := mustCanon(t, map[string]any{
+		"schema_version":        1,
+		"effective_policy_hash": strings.Repeat("c", 64),
+		"certification_version": strings.Repeat("d", 64),
+		"change":                map[string]any{"head_sha": head, "mergeability": "mergeable"},
+		"identity":              map[string]any{"change_id": "change-01", "run_id": cmdRun, "project_id": "project", "task_kind": "bug"},
+		"risk":                  map[string]any{"source": map[string]any{"version": "T3/fallback/v1"}},
+	})
+	inputHash := SHA256Hex([]byte(inputJSON))
+	verdictJSON := mustCanon(t, map[string]any{
+		"schema_version": 1, "kind": "hitl", "code": "checks_timeout", "head_sha": head, "external_url": externalURL,
+	})
+	verdictDigest := SHA256Hex([]byte(verdictJSON))
+	claim, _ := seedClaimedGateReEval(t, db, ctx, InterruptGuardrailViolation, inputJSON, inputHash, "", "")
+
+	result := canonicalResult(t, "succeeded", map[string]any{
+		"gate_input_json": inputJSON, "gate_input_hash": inputHash, "gate_version": "gate/v1",
+		"verdict_json": verdictJSON, "verdict_digest": verdictDigest,
+	})
+	if err := db.CompleteGateReEvaluation(ctx, claim, result, testNow+20); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	facts := map[string]string{
+		"failure_class": "checks_timeout", "failure_evidence_ref": externalURL, "recommended_action": "retry",
+	}
+	factsJSON, _ := canonicalJSON(facts)
+	failureDigest := SHA256Hex(factsJSON)
+	wantKey, err := interruptGenerationKey(cmdRun, InterruptFailureReview, InterruptGeneration{AttemptNo: 1, Generation: 1, FailureDigest: failureDigest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var genKey string
+	if err := db.db.QueryRow(`SELECT generation_key FROM interrupts WHERE run_id=? AND reason='failure_review' AND generation_key=?`, cmdRun, wantKey).Scan(&genKey); err != nil {
+		t.Fatalf("checks_timeout failure_review: %v (want key %s)", err, wantKey)
 	}
 }
 
