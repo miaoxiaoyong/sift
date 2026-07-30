@@ -1,12 +1,8 @@
-// Package forgebudget wires the Forge adapter's API budget charging port
-// (forge.Charger) to the storage persistence port (storage.ChargeForgeAPICall).
-//
-// This is the single concrete Charger implementation over storage; the daemon
-// constructs one per resolved forge budget (config.md §3.8) and injects it
-// into the adapter via Adapter.WithCharger. Keeping it out of both the forge
-// and storage packages leaves forge free of storage imports and storage free
-// of forge imports — this package is the only place that depends on both.
-package forgebudget
+// forgeBudgetCharger wires the Forge adapter API budget port to storage.
+// The daemon constructs one per resolved forge budget (config.md §3.8) and
+// injects it through Adapter.WithCharger. Owning the adapter in the assembly
+// layer keeps forge free of storage imports and storage free of forge imports.
+package daemon
 
 import (
 	"context"
@@ -17,10 +13,9 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
-// Charger implements forge.Charger over the storage forge API budget port.
-// Now supplies the wall-clock timestamp used to resolve the UTC hour bucket;
-// it defaults to time.Now when nil.
-type Charger struct {
+// forgeBudgetCharger implements forge.Charger over the storage budget port.
+// Now supplies the wall-clock timestamp used to resolve the UTC hour bucket.
+type forgeBudgetCharger struct {
 	DB           *storage.DB
 	Limit        int64
 	WarningRatio float64
@@ -33,7 +28,7 @@ type Charger struct {
 // surfaces it as forge.ErrRateLimited without launching the CLI. A charge that
 // succeeds is never marked Exhausted even when it consumes the last unit:
 // that call is allowed to proceed; only the *next* one is refused.
-func (c *Charger) Charge(ctx context.Context, project forge.ProjectRef, chargeKey string) (forge.ChargeResult, error) {
+func (c *forgeBudgetCharger) Charge(ctx context.Context, project forge.ProjectRef, chargeKey string) (forge.ChargeResult, error) {
 	if c.DB == nil {
 		return forge.ChargeResult{}, errors.New("forgebudget: nil storage handle")
 	}

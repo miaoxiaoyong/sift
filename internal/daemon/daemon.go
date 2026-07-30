@@ -14,7 +14,6 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/channelworker"
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/forgebudget"
 	"github.com/miaoxiaoyong/sift/internal/forgeworker"
 	"github.com/miaoxiaoyong/sift/internal/gate"
 	"github.com/miaoxiaoyong/sift/internal/intake"
@@ -90,7 +89,7 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 			continue
 		}
 		ref := forge.ProjectRef{Kind: forge.Kind(p.Forge.Kind), Host: p.Forge.Host, ProjectKey: p.Forge.Project}
-		charger := &forgebudget.Charger{DB: db, Limit: int64(cfg.Forge.HourlyAPILimit), WarningRatio: cfg.Forge.WarningRatio, Now: now}
+		charger := &forgeBudgetCharger{DB: db, Limit: int64(cfg.Forge.HourlyAPILimit), WarningRatio: cfg.Forge.WarningRatio, Now: now}
 		adapter, err := newAdapter(ref.Kind, p.Forge.CLI, runner, charger)
 		if err != nil {
 			return nil, fmt.Errorf("project %s: %w", p.ID, err)

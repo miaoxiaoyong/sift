@@ -1,4 +1,4 @@
-package forgebudget_test
+package daemon
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/forgebudget"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -48,7 +47,7 @@ func TestAdapterEnforcesPersistedBudget(t *testing.T) {
 		return []byte(`{"number":1,"title":"t","body":"b","html_url":"https://x/1","state":"open","user":{"login":"a"},"labels":[{"name":"sift"}]}`), nil, nil
 	}
 	now := time.UnixMilli(e2eNow)
-	ch := &forgebudget.Charger{DB: db, Limit: 2, WarningRatio: 0.8, Now: func() time.Time { return now }}
+	ch := &forgeBudgetCharger{DB: db, Limit: 2, WarningRatio: 0.8, Now: func() time.Time { return now }}
 	a := forge.NewGitHub("gh", run).WithCharger(ch)
 
 	project := forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo-proj-1"}
@@ -98,7 +97,7 @@ func TestAdapterBudgetSurvivesRestart(t *testing.T) {
 	now := time.UnixMilli(e2eNow)
 
 	// Process 1: consume the whole limit of 1.
-	ch1 := &forgebudget.Charger{DB: db, Limit: 1, WarningRatio: 0.8, Now: func() time.Time { return now }}
+	ch1 := &forgeBudgetCharger{DB: db, Limit: 1, WarningRatio: 0.8, Now: func() time.Time { return now }}
 	a1 := forge.NewGitHub("gh", func(context.Context, string, []string, []byte) ([]byte, []byte, error) {
 		return []byte(`{"number":1,"title":"t","body":"b","html_url":"https://x/1","state":"open","user":{"login":"a"}}`), nil, nil
 	}).WithCharger(ch1)
@@ -113,7 +112,7 @@ func TestAdapterBudgetSurvivesRestart(t *testing.T) {
 	// request is refused without recounting.
 	db2 := open()
 	t.Cleanup(func() { _ = db2.Close() })
-	ch2 := &forgebudget.Charger{DB: db2, Limit: 1, WarningRatio: 0.8, Now: func() time.Time { return now }}
+	ch2 := &forgeBudgetCharger{DB: db2, Limit: 1, WarningRatio: 0.8, Now: func() time.Time { return now }}
 	a2 := forge.NewGitHub("gh", func(context.Context, string, []string, []byte) ([]byte, []byte, error) {
 		t.Fatal("CLI must not launch when the persisted bucket is exhausted")
 		return nil, nil, nil
