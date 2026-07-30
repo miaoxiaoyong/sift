@@ -6,7 +6,7 @@ summary: PRD §10.2 九项指标、CLI 与事件时间线的派生口径
 
 # 指标、CLI 与时间线规格
 
-本文冻结 M5 WBS §5.7 的指标 / CLI / 时间线 bootstrap：从已落盘的事件流 / Ledger / 预算表确定性派生 [PRD §10.2](../PRD.md) 的九项指标，提供 `sift ps` / `logs` / 事件时间线与触发→启动延迟分布的只读查询面。它**不闭合 M5**：critical 熔断、Channel `ops.ps`/`ops.doctor` 端点级验收仍开，真实 P50<60s 属 M7。
+本文冻结 M5 WBS §5.7 的指标 / CLI / 时间线 bootstrap：从已落盘的事件流 / Ledger / 预算表确定性派生 [PRD §10.2](../PRD.md) 的九项指标，提供 `sift ps` / `logs` / 事件时间线与触发→启动延迟分布的只读查询面。它**不闭合 M5**：Channel `ops.ps`/`ops.doctor` 端点级验收与完整 Command 仍开，真实 P50<60s 属 M7（critical 熔断已由 [#779 PASS](../reviews/2026-07-30-m5-critical-fuse-779-rereview-pi-deepseek-v4-pro.md) 在发射器侧闭合，不属本规格验收）。
 
 来源：[PRD §10.2](../PRD.md)、[WBS M5 §5.7](../WBS.md)、[`config.md` §3.13](config.md)、[`ledger.md` §2.4、§4](ledger.md)、[`storage.md` §6.3、§7](storage.md)、[`control-plane.md` §6](control-plane.md)、[`interrupt.md`](interrupt.md)。
 
@@ -72,6 +72,6 @@ summary: PRD §10.2 九项指标、CLI 与事件时间线的派生口径
 
 ## 6. 不闭合项（诚实声明）
 
-- **critical 熔断**、**完整 Command**、**Channel `ops.ps`/`ops.doctor` 端点级验收**仍开。
+- **完整 Command**、**Channel `ops.ps`/`ops.doctor` 端点级验收**仍开；critical 熔断已由 [#779 PASS](../reviews/2026-07-30-m5-critical-fuse-779-rereview-pi-deepseek-v4-pro.md) 闭合（不在本规格验收范围内）。
 - 误放行率分子（合并后 revert/修复）与经验性分派改写检测依赖尚未写入的事件；本 bootstrap 暴露查询与 fixture 路径，不发明数据。
 - 本规格 `active` 不表示 M5 已实现。
