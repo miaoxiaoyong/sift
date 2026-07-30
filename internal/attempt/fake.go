@@ -8,8 +8,8 @@ import (
 )
 
 // FakeAgent is the in-memory agent runner of the M1 skeleton chain (WBS M1
-// §1.6). It implements Runner with the same evidence contract the real Runtime
-// (M3) will honor: Launch records the agent-start timestamp immediately (the
+// §1.6). It preserves the evidence contract the real Runtime (M3) honors:
+// Launch records the agent-start timestamp immediately (the
 // skeleton has no process to wait on), and Complete injects a finished result
 // with the configured exit code and head SHA.
 //

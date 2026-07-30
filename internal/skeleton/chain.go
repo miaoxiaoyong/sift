@@ -82,7 +82,7 @@ type Chain struct {
 	db     *storage.DB
 	forge  *forge.Fake
 	shell  *brain.Shell
-	agent  attempt.Runner
+	agent  *attempt.FakeAgent
 	clock  *Clock
 	config ChainConfig
 }
@@ -104,7 +104,7 @@ type ChainConfig struct {
 // NewChain wires the chain. The brain Shell must be constructed with the
 // FakeProvider; the Agent runner should be the FakeAgent. The clock is owned by
 // the caller so tests can assert the trigger→started delta deterministically.
-func NewChain(db *storage.DB, fc *forge.Fake, shell *brain.Shell, agent attempt.Runner, clock *Clock, cfg ChainConfig) *Chain {
+func NewChain(db *storage.DB, fc *forge.Fake, shell *brain.Shell, agent *attempt.FakeAgent, clock *Clock, cfg ChainConfig) *Chain {
 	return &Chain{db: db, forge: fc, shell: shell, agent: agent, clock: clock, config: cfg}
 }
 
@@ -290,12 +290,9 @@ func (c *Chain) Drive(ctx context.Context, runID string, issue forge.Issue, trig
 	// SHA). The skeleton records it as an event; M3 will record it on the
 	// attempt row via the launch protocol.
 	c.clock.Advance(time.Second)
-	// The M1 skeleton's runner is the FakeAgent; Complete publishes the
-	// result.json-equivalent evidence the chain then reads. The real Runtime
-	// (M3) publishes it from the wrapper, not from the supervisor.
-	if cr, ok := c.agent.(*attempt.FakeAgent); ok {
-		cr.Complete(runID, 1)
-	}
+	// Complete publishes the result.json-equivalent evidence the chain then
+	// reads. The real Runtime (M3) publishes it from the wrapper.
+	c.agent.Complete(runID, 1)
 	res, err := c.agent.Result(ctx, runID, 1)
 	if err != nil {
 		return out, fmt.Errorf("skeleton: agent result: %w", err)

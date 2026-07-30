@@ -1,20 +1,10 @@
-// Package attempt defines the Agent execution evidence port (DESIGN §8.4).
-//
-// The real Runtime (M3) spawns a per-attempt wrapper that directly spawns the
-// agent into its process group, records the agent start facts atomically and
-// writes result.json on completion. This file freezes the evidence types and
-// the Runner port the M1 skeleton chain needs; FakeAgent in fake.go serves the
-// V9 first-segment CI chain with the same contract.
-//
-// The port deliberately exposes only the two facts the skeleton chain drives
-// state on — "the agent started" and "the attempt produced completion evidence"
-// (DESIGN §8.4: running only admits agent-start evidence; done only admits a
-// merged Change). The full launch protocol (claim:acquire/permit/started,
-// process-group evidence, worktree lifecycle) lands in M3 behind this port.
+// Package attempt defines the Agent execution evidence used by the M1
+// skeleton chain (DESIGN §8.4). FakeAgent supplies deterministic started and
+// completion facts; the production M3 process runtime uses its own launch and
+// wrapper protocol.
 package attempt
 
 import (
-	"context"
 	"errors"
 	"time"
 )
@@ -61,17 +51,3 @@ type Result struct {
 // ErrNotFinished is returned by Result before the fake agent has produced
 // completion evidence.
 var ErrNotFinished = errors.New("attempt: not finished")
-
-// Runner is the agent execution port. Launch starts one attempt and returns the
-// agent-start evidence; Result returns the completion evidence once available.
-// The real process/tmux backends (M3) implement this by spawning the wrapper;
-// FakeAgent serves the skeleton chain in-process.
-type Runner interface {
-	// Launch starts the agent for one attempt. The returned Started carries the
-	// agent-start timestamp that drives the Run queued→running transition.
-	Launch(ctx context.Context, l Launch) (Started, error)
-
-	// Result returns the completion evidence for one attempt, or ErrNotFinished
-	// while it is still running. The skeleton drives the reconciler from this.
-	Result(ctx context.Context, runID string, attemptNo int) (Result, error)
-}

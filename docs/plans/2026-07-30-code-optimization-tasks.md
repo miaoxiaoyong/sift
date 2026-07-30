@@ -199,6 +199,8 @@ summary: 代码精简整改任务清单 — 原因、必要性、证据支撑
 | **风险** | 低–中（测假体） |
 | **时机** | idle |
 
+审计结论见 [单实现接口审计](../analysis/2026-07-30-single-implementation-interface-audit.md)：收敛 `attempt.Runner`，保留 `launchworker.Backend` 与 `channelworker` 的两个 side-effect 接口。
+
 ---
 
 ## 执行建议
