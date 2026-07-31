@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 created: 2026-07-30
 summary: M5 收口第三波依赖与门禁顺序
 ---
