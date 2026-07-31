@@ -79,6 +79,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	workers.SetT7Scheduler(&brain.T7Scheduler{DB: db, Shell: shell, Now: time.Now, Limit: snapshot.Config.Scheduler.PerClassTickLimit})
 	daemonPath, err := os.Executable()
 	if err != nil {
 		fatal(err)
@@ -195,6 +196,9 @@ func startSchedulersWithFactory(ctx context.Context, db *storage.DB, workers *da
 			if err := probeCheck.Tick(ctx); err != nil {
 				return err
 			}
+		}
+		if err := workers.T7Tick(ctx); err != nil {
+			return err
 		}
 		return db.SupervisorInterruptTick(ctx, time.Now().UnixMilli())
 	}))

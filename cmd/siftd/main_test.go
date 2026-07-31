@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/miaoxiaoyong/sift/internal/brain"
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/daemon"
 	"github.com/miaoxiaoyong/sift/internal/forge"
@@ -148,6 +150,20 @@ func TestStartSchedulersKeepsProductionEdgesIndependent(t *testing.T) {
 	workers := &daemon.Daemon{DB: db, Now: func() time.Time { return now }, Pollers: []*intake.Poller{{
 		DB: db, Forge: client, Projects: []intake.Project{{ID: "project", Ref: forge.ProjectRef{Kind: forge.KindGitHub, Host: "github.com", ProjectKey: "org/repo"}}}, Now: func() time.Time { return now }, Idle: time.Minute,
 	}}}
+	certificationVersion := strings.Repeat("a", 64)
+	if _, err := db.ExecForTest(ctx, `INSERT INTO certifications(task_kind,certification_version,total_samples,negative_samples,leak_count,false_block_count,certified,evidence_digest,updated_at_ms,certification_rules_version,window_start_ms,window_end_ms) VALUES('bug',?,1,1,0,0,1,?,?,?,?,?)`, certificationVersion, strings.Repeat("b", 64), now.UnixMilli(), strings.Repeat("c", 64), now.Add(-time.Hour).UnixMilli(), now.Add(-time.Second).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecForTest(ctx, `INSERT INTO certification_current(task_kind,certification_version,version,updated_at_ms) VALUES('bug',?,1,?)`, certificationVersion, now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AppendT7ReplayEvidence(ctx, storage.AppendT7ReplayEvidenceCmd{Scope: "global", TaskKind: "bug", WindowStartMS: now.Add(-time.Hour).UnixMilli(), WindowEndMS: now.Add(-time.Second).UnixMilli(), DatasetVersion: "dataset/v1", GateVersion: "gate/v1", TotalSamples: 1, NegativeSamples: 1, CreatedAtMS: now.UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	evidenceID := "t7:certification:bug:" + certificationVersion
+	t7Provider := &brain.FakeProvider{Responses: []brain.FakeResponse{{ResultText: `{"proposal_kind":"policy","target_scope":"global","title":"Review","body":"Human review.","evidence_entry_ids":["` + evidenceID + `"],"requires_human_approval":true}`, InputTokens: 1, OutputTokens: 1}}}
+	brainCfg := config.Brain{Executable: "fake", DailyTokenLimit: 100, CallTimeout: time.Minute, SchemaRetries: 1, MaxInputBytes: 262144, MaxRawOutputBytes: 1048576}
+	workers.SetT7Scheduler(&brain.T7Scheduler{DB: db, Shell: brain.NewShell(db, brainCfg, t7Provider, func() time.Time { return now }), Now: func() time.Time { return now }})
 	termination := &daemon.TerminationCoordinator{DB: db, Runtime: config.Runtime{}, Now: func() time.Time { return now }}
 	factory := &manualSchedulerFactory{}
 	var intakeEdges, supervisorEdges, outboxEdges int
@@ -177,6 +193,9 @@ func TestStartSchedulersKeepsProductionEdgesIndependent(t *testing.T) {
 	factory.supervisor.Edge(t, ctx)
 	if intakeEdges != 1 || supervisorEdges != 1 || outboxEdges != 0 {
 		t.Fatalf("supervisor edge hooks = intake:%d supervisor:%d outbox:%d", intakeEdges, supervisorEdges, outboxEdges)
+	}
+	if len(t7Provider.Requests) != 1 {
+		t.Fatalf("supervisor T7 provider calls = %d, want 1", len(t7Provider.Requests))
 	}
 	// A committed operation wakes only the outbox edge. Manually advancing that
 	// clock proves it does not invoke intake or supervisor callbacks.

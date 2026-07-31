@@ -39,6 +39,7 @@ type Daemon struct {
 	Gates             []*gate.Reconciler
 	Replies           []*intake.ReplyConsumer
 	Launch            *launchworker.Worker
+	T7                *brain.T7Scheduler
 	Now               func() time.Time
 	intakeMu          sync.Mutex
 	outboxMu          sync.Mutex
@@ -164,6 +165,15 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 // SetLaunchWorker installs the sole launch_agent consumer after startup
 // recovery has produced this daemon's boot ID.
 func (d *Daemon) SetLaunchWorker(w *launchworker.Worker) { d.Launch = w }
+
+func (d *Daemon) SetT7Scheduler(s *brain.T7Scheduler) { d.T7 = s }
+
+func (d *Daemon) T7Tick(ctx context.Context) error {
+	if d.T7 == nil {
+		return nil
+	}
+	return d.T7.Tick(ctx)
+}
 
 // AddChannelWorker installs the independently scoped channel_publish consumer.
 // Assembly owns production construction; this seam is also used by integration

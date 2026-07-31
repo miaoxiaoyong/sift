@@ -970,6 +970,12 @@ critical fuse 的唯一权威计数（整数毫秒）是 `attention_admissions.k
 - `outcome=valid` 必须有非空 token、`raw_output_digest`；`output_too_large` 时 `raw_output_truncated=1` 且 digest/bytes 覆盖已读部分。
 - attempt 行不存 `fallback_used`：单 attempt 失败与整 call 终结兜底是两层事实，后者在 `brain_calls.status/fallback_reason`。
 
+#### T7 aggregate 调度证据与 cursor
+
+`t7_replay_evidence` 是 offline replay 聚合的 append-only 输入，按 `(scope, project_id, task_kind, window_start_ms, window_end_ms)` 唯一冻结 dataset/gate version 与四项计数；project/global 身份互斥。调度器只把该表与当前不可变 certification revision、窗口内 `semantic_material` Ledger entry 组装为 [`brain.md` §13.1](brain.md) 输入，不读取当前 Gate candidate、open Interrupt 或可写 policy/context。
+
+`t7_aggregate_call_bindings` 以 aggregate key 唯一绑定 scheduler-owned T7 logical call；它与 `brain_calls` 同事务创建，使崩溃后复用冻结 call/input 而不重调不确定 provider。terminal trace 后，valid 才经唯一 `SaveProposalDraft` 写 inert draft，fallback 不写；最后 append `t7_aggregate_completions`。三表均不可更新/删除，故 terminal→draft→completion 任一崩溃窗都可 insert-or-return 收敛。
+
 ### 10.2 `gate_input_snapshots`（不可变）
 
 | 列 | 类型 | 约束/说明 |

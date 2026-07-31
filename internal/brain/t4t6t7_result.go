@@ -157,12 +157,16 @@ func PersistT7ProposalDraft(ctx context.Context, db *storage.DB, result CallResu
 }
 
 func T7ResultFromCall(result CallResult, aggregateKey string, evidenceIDs []string) (T7CallResult, BrainSource, error) {
+	return t7ResultFromCall(result, T7Contract(aggregateKey, "", nil, evidenceIDs))
+}
+
+func t7ResultFromCall(result CallResult, contract TouchpointContract) (T7CallResult, BrainSource, error) {
 	if result.Status == "valid" {
 		var out T7Output
 		if err := schema.Decode(result.Output, &out, schema.Closed); err != nil {
 			return T7CallResult{}, BrainSource{}, err
 		}
-		if _, err := T7Contract(aggregateKey, "", nil, evidenceIDs).ValidateOutput(result.Output); err != nil {
+		if _, err := contract.ValidateOutput(result.Output); err != nil {
 			return T7CallResult{}, BrainSource{}, err
 		}
 		return T7CallResult{Proposal: &out}, brainSource(result), nil

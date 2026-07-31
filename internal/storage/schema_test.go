@@ -305,6 +305,7 @@ func TestSchemaInventory(t *testing.T) {
 		"brain_call_counters", "brain_calls", "brain_attempts",
 		"gate_input_snapshots", "gate_evaluations", "gate_cache",
 		"calibration_entries", "certifications", "ledger_entries", "proposal_drafts",
+		"t7_replay_evidence", "t7_aggregate_call_bindings", "t7_aggregate_completions",
 	}
 	assertObjectsExist(t, db, "table", wantTables)
 
@@ -319,7 +320,7 @@ func TestSchemaInventory(t *testing.T) {
 		"events_run_seq", "events_project_seq", "outbox_operations_state_next",
 		"outbox_operations_lease_expiry", "budget_entries_kind_created_run",
 		"forge_cursors_next_poll", "forge_reply_state_updated", "brain_calls_run_attempt_touchpoint",
-		"intake_items_state_updated", "gate_evaluations_run_created", "ledger_entries_run_created", "proposal_drafts_aggregate_created", "report_quota_exhaustions_run_bucket",
+		"intake_items_state_updated", "gate_evaluations_run_created", "ledger_entries_run_created", "proposal_drafts_aggregate_created", "report_quota_exhaustions_run_bucket", "t7_replay_evidence_window",
 	}
 	assertObjectsExist(t, db, "index", wantIndexes)
 
@@ -329,6 +330,7 @@ func TestSchemaInventory(t *testing.T) {
 		"report_receipts", "outbox_attempts", "outbox_attempt_results", "budget_entries",
 		"brain_attempts", "intake_assessments", "gate_input_snapshots", "gate_evaluations",
 		"gate_cache", "ledger_entries", "proposal_drafts", "report_quota_exhaustions", "interrupt_command_effect_bindings",
+		"t7_replay_evidence", "t7_aggregate_call_bindings", "t7_aggregate_completions",
 	}
 	wantTriggers := []string{
 		"daemon_boots_stop_completion_only", "daemon_boots_append_only_delete",

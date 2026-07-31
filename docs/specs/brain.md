@@ -32,7 +32,7 @@ B1–B3 全部 P1 与 B4–B7 均已处置；P3 编辑项（版本独立 bump、
 
 ### T4/T6/T7 字段级评审
 
-2026-07-29 M5 字段级评审结论为 **PASS WITH NOTES**；报告见 [2026-07-29-m5-brain-t4-t6-t7-field-review-pi-gpt-5.6-sol.md](../reviews/2026-07-29-m5-brain-t4-t6-t7-field-review-pi-gpt-5.6-sol.md)。评审关闭了 T4 canonical option 顺序与安全渲染、T6 冻结时间/阈值/Channel 候选、T7 aggregate identity/证据闭包/目标 scope，以及三触点来源 union 与 fallback reason 枚举；无遗留 P1，§11–§13 转为 `active`。非阻断注记仅涉及待独立评审的 Interrupt 接缝与 M5 尚未交付的 prompt/schema/storage 实现，不把规格通过描述为 M5 已完成。
+2026-07-29 M5 字段级评审结论为 **PASS WITH NOTES**；报告见 [2026-07-29-m5-brain-t4-t6-t7-field-review-pi-gpt-5.6-sol.md](../reviews/2026-07-29-m5-brain-t4-t6-t7-field-review-pi-gpt-5.6-sol.md)。评审关闭了 T4 canonical option 顺序与安全渲染、T6 冻结时间/阈值/Channel 候选、T7 aggregate identity/证据闭包/目标 scope，以及三触点来源 union 与 fallback reason 枚举；无遗留 P1，§11–§13 转为 `active`。该历史评审时的非阻断注记涉及待独立评审的 Interrupt 接缝与当时尚未交付的 prompt/schema/storage 实现；后续实现证据见 WBS §5.1，仍不得把字段或组件通过描述为 M5 已完成。
 
 ## 1. 不变量
 
@@ -663,7 +663,7 @@ T2 valid 后由确定性 assembler 生成：
 - [x] M5 active contract：T4/T6/T7 各自的 closed schema、独立 prompt/schema/fallback 版本、调用壳/trace 身份、source union、T4/T6 兜底和 T7 不提案兜底已冻结。
 - [x] T4 canonical option 同序、纯文本安全 renderer；T6 冻结时间、`high` fallback 阈值、quota/Channel 闭包；T7 aggregate grammar、证据 shape/count 与 target-scope 约束均可生成 fixture。
 - [x] A7：T7 聚合输入、每 call 唯一 immutable proposal draft 写口、Gate/Interrupt 的禁止读取面及回放测试判据已写成结构契约。
-- [ ] M5 实现、对应 prompt assets/schema 生成源、proposal draft 存储迁移和集成测试尚未交付；不得将 §11–§13 的规格通过描述为实现完成。
+- [x] M5 T4/T6/T7 实现、prompt assets/schema、proposal draft 与 T7 aggregate scheduler 已分别交付（生产接线与证据见 WBS §5.1）；该组件项完成不等于 M5 综合门禁通过。
 - [x] 相对链接存在、代码围栏闭合、无尾随空白。
 
 **自查结论：** T1–T7 契约均为 `active`；T4/T6/T7 已关闭本次字段评审的全部 P1/P2，但仍须在 M5 实现与独立 Interrupt 字段评审中兑现交叉接缝。

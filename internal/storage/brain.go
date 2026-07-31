@@ -71,12 +71,14 @@ type ReserveBrainCallCmd struct {
 	InputJSON           []byte // canonical JSON, stored once per call
 	InputDigest         string // sha256 of the exact provider request bytes
 	StartedAtMS         int64
+	T7AggregateOnce     bool // scheduler-owned aggregate window idempotency
 }
 
 // ReservedBrainCall is the outcome of a successful reservation.
 type ReservedBrainCall struct {
-	ID      string
-	CallSeq int64
+	ID       string
+	CallSeq  int64
+	Existing bool
 }
 
 // ReserveBrainCall increments the per-subject counter and inserts the
@@ -97,6 +99,34 @@ func (d *DB) ReserveBrainCall(ctx context.Context, cmd ReserveBrainCallCmd) (Res
 		return ReservedBrainCall{}, err
 	}
 	defer tx.Rollback()
+
+	// A T7 aggregate subject names one frozen window. Returning its existing
+	// logical call is the crash-safe cursor between provider completion and the
+	// append-only aggregate completion row.
+	if cmd.T7AggregateOnce {
+		if cmd.Scope != BrainScopeAggregate || cmd.Touchpoint != "T7" {
+			return ReservedBrainCall{}, errors.New("storage: T7 aggregate idempotency on another call kind")
+		}
+		var existing ReservedBrainCall
+		var projectID, runID string
+		var attemptNo sql.NullInt64
+		var promptVersion string
+		var schemaVersion int
+		err := tx.QueryRowContext(ctx, `SELECT b.id,b.call_seq,COALESCE(b.project_id,''),COALESCE(b.run_id,''),b.attempt_no,b.prompt_version,b.output_schema_version
+			FROM t7_aggregate_call_bindings x JOIN brain_calls b ON b.id=x.logical_call_id
+			WHERE x.aggregate_key=?`, cmd.SubjectKey).
+			Scan(&existing.ID, &existing.CallSeq, &projectID, &runID, &attemptNo, &promptVersion, &schemaVersion)
+		if err == nil {
+			if projectID != cmd.ProjectID || runID != "" || attemptNo.Valid || promptVersion != cmd.PromptVersion || schemaVersion != cmd.OutputSchemaVersion {
+				return ReservedBrainCall{}, errors.New("storage: T7 aggregate call identity conflicts with frozen window")
+			}
+			existing.Existing = true
+			return existing, tx.Commit()
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return ReservedBrainCall{}, err
+		}
+	}
 
 	var callSeq int64
 	var next, version int64
@@ -135,6 +165,11 @@ func (d *DB) ReserveBrainCall(ctx context.Context, cmd ReserveBrainCallCmd) (Res
 		cmd.Touchpoint, callSeq, cmd.PromptVersion, cmd.OutputSchemaVersion,
 		string(cmd.InputJSON), cmd.InputDigest, cmd.StartedAtMS); err != nil {
 		return ReservedBrainCall{}, fmt.Errorf("storage: insert brain call: %w", err)
+	}
+	if cmd.T7AggregateOnce {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO t7_aggregate_call_bindings(aggregate_key,logical_call_id) VALUES(?,?)`, cmd.SubjectKey, id); err != nil {
+			return ReservedBrainCall{}, fmt.Errorf("storage: bind T7 aggregate call: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return ReservedBrainCall{}, fmt.Errorf("storage: commit reserve brain call: %w", err)
@@ -625,8 +660,18 @@ func (d *DB) BrainCallAttempts(ctx context.Context, callID string) ([]BrainAttem
 // RunningBrainCalls lists leftover running calls in reserve order, used by
 // crash recovery convergence (brain.md §5).
 func (d *DB) RunningBrainCalls(ctx context.Context) ([]BrainCall, error) {
+	return d.runningBrainCalls(ctx, `FROM brain_calls WHERE status='running'`)
+}
+
+// RunningT7AggregateCalls returns only scheduler-owned T7 calls. Explicit
+// replay calls with the same aggregate subject are outside the restart cursor.
+func (d *DB) RunningT7AggregateCalls(ctx context.Context) ([]BrainCall, error) {
+	return d.runningBrainCalls(ctx, `FROM brain_calls JOIN t7_aggregate_call_bindings x ON x.logical_call_id=brain_calls.id WHERE brain_calls.status='running'`)
+}
+
+func (d *DB) runningBrainCalls(ctx context.Context, from string) ([]BrainCall, error) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT `+brainCallColumns+` FROM brain_calls WHERE status='running' ORDER BY started_at_ms, id`)
+		`SELECT `+brainCallColumns+` `+from+` ORDER BY started_at_ms, brain_calls.id`)
 	if err != nil {
 		return nil, err
 	}

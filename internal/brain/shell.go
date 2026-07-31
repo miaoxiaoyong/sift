@@ -53,12 +53,13 @@ type TouchpointContract struct {
 
 // CallParams is the logical-call identity plus its canonical input JSON.
 type CallParams struct {
-	Scope      string
-	SubjectKey string
-	ProjectID  string
-	RunID      string
-	AttemptNo  *int
-	Input      []byte // canonical input JSON from BuildT1Input/BuildT2Input
+	Scope           string
+	SubjectKey      string
+	ProjectID       string
+	RunID           string
+	AttemptNo       *int
+	Input           []byte // canonical input JSON from BuildT1Input/BuildT2Input
+	T7AggregateOnce bool   // periodic scheduler cursor; explicit replay calls leave false
 }
 
 // CallResult is the converged outcome of one logical call.
@@ -66,6 +67,7 @@ type CallResult struct {
 	CallID              string
 	CallSeq             int64
 	Status              string // valid | fallback
+	Input               []byte // frozen canonical input; persisted input on replay
 	Output              []byte // validated canonical output (valid) or fallback output
 	FallbackReason      string
 	PromptVersion       string
@@ -97,11 +99,33 @@ func (s *Shell) Call(ctx context.Context, tp TouchpointContract, p CallParams) (
 		InputJSON:           p.Input,
 		InputDigest:         digest,
 		StartedAtMS:         s.now().UnixMilli(),
+		T7AggregateOnce:     p.T7AggregateOnce,
 	})
 	if err != nil {
 		return CallResult{}, err
 	}
-	result := CallResult{CallID: reserved.ID, CallSeq: reserved.CallSeq, PromptVersion: tp.Asset.PromptVersion, OutputSchemaVersion: tp.Asset.OutputSchemaVersion}
+	result := CallResult{CallID: reserved.ID, CallSeq: reserved.CallSeq, Input: p.Input, PromptVersion: tp.Asset.PromptVersion, OutputSchemaVersion: tp.Asset.OutputSchemaVersion}
+	if reserved.Existing {
+		call, _, err := s.db.BrainCallTrace(ctx, reserved.ID)
+		if err != nil {
+			return CallResult{}, err
+		}
+		result.Input = call.InputJSON
+		result.Status = call.Status
+		result.FallbackReason = call.FallbackReason
+		switch call.Status {
+		case storage.BrainCallValid:
+			result.Output = call.ValidatedOutputJSON
+			return result, nil
+		case storage.BrainCallFallback:
+			if tp.FallbackOutput != nil {
+				result.Output = tp.FallbackOutput()
+			}
+			return result, nil
+		default:
+			return CallResult{}, fmt.Errorf("brain: aggregate call %s requires recovery", call.ID)
+		}
+	}
 
 	// Pre-flight gates (brain.md §5.2): each physical attempt re-checks; the
 	// input bound is a per-call contract gate (§7.1/§8.1).
