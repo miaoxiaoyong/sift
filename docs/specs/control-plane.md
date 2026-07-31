@@ -343,13 +343,14 @@ V10a wrapper 段至少逐行覆盖上表，并额外断言：同 acquire 请求�
 | `ops.ps` | read | Run/attempt/Interrupt/outbox/预算摘要 |
 | `ops.logs` | read | 日志文件定位及有界读取结果 |
 | `ops.worktree` | read | Run worktree 路径与隔离状态 |
+| `ops.attach` | read | 当前 tmux attempt 的只读 exact session descriptor |
 | `ops.doctor` | read | 健康项、warning/error、`unsafe-local` 暴露面 |
 | `ops.metrics` | read | PRD §10.2 九项指标与触发→启动延迟分布（[`metrics.md`](metrics.md)） |
 | `ops.timeline` | read | append-only 事件流的有界 keyset 查询（[`metrics.md`](metrics.md) §3/§4） |
 | `ops.kill` | write | 立即收敛或 accepted/in_progress |
 | `ops.retry` | write | 立即收敛或 accepted/in_progress |
 
-所有方法要求 operator token。read 方法不得返回 token/hash、nonce/session/permit、完整 config snapshot、Brain raw output或控制文件内容。
+所有方法要求 operator token。read 方法不得返回 credential token/hash、nonce、wrapper session/permit、完整 config snapshot、Brain raw output或控制文件内容；`ops.attach` 只返回 [`runtime.md`](runtime.md) 定义的非秘密 tmux session name，不返回任何启动凭据。
 
 ### 6.2 读方法 schema
 
@@ -390,6 +391,14 @@ attempt 为空时选择最大 attempt_no；`offset>=0`，`limit=1..262144`。res
 ```
 
 无 attempt/worktree 返回 `not_found`；本方法只返回路径，不创建 shell、不修改目录。
+
+`ops.attach` params 为 `{"run_id":"..."}`。服务端只从唯一 active attempt 与 current claim/dispatch 重建 session，不接受 session/backend 参数。成功 result：
+
+```json
+{"run_id":"...","attempt_no":1,"generation":1,"backend":"tmux","session_name":"sift-<64 lowercase hex>"}
+```
+
+`session_name` 必须与 [`runtime.md`](runtime.md) §4 的 exact binding 一致。Run/attempt 不存在返回 `not_found`；process backend、terminal/ambiguous attempt、binding 不完整、session absent/unknown/mismatch 返回 `conflict`。该方法除通用 operator 安全审计外无写入，不执行 tmux client，也不参与恢复裁定。
 
 `ops.doctor` params 必须是 `{}`。result：
 
@@ -535,7 +544,7 @@ wrapper 原样追加 Agent PTY 字节流并按 config 轮转。日志不是 JSON
 ## 8. CLI 行为
 
 - `sift report` 只读 `$SIFT_RUN_DIR/control.json` 的 run token并连接 `run.sock`；缺目录、文件不安全或 token 不合法时本地失败，不回退运维 socket。
-- `sift ps/logs/worktree/doctor/kill/retry/metrics/timeline` 只连接 `siftd.sock` 并读 operator token；不得把 operator token发送到 `run.sock`。`metrics`/`timeline` 是只读派生（[`metrics.md`](metrics.md)）。
+- `sift ps/logs/worktree/attach/doctor/kill/retry/metrics/timeline` 只连接 `siftd.sock` 并读 operator token；不得把 operator token发送到 `run.sock`。`metrics`/`timeline` 是只读派生（[`metrics.md`](metrics.md)）；`attach` 取得 closed descriptor 后仅执行 [`runtime.md`](runtime.md) §6 的 read-only tmux client。
 - daemon 不可用时，写命令一律失败且不改 DB/文件。V0 只有显式 `sift doctor --offline` 可走离线只读诊断；输出必须含 `offline:true`，不得迁移、创建 token、清理 socket或修正权限。
 - `sift report` 只使用首次 `not_ready` response 的 closed `retry_policy` 和单调时钟计算指数退避；不得读 `config.yaml`。第 n 次等待为 `min(max_delay_ms, floor(initial_delay_ms × multiplier_micros^n / 1,000,000^n))`；中间整数溢出、`initial <= max <= total` 不成立，或累计等待超过 total timeout 均 fail closed。示例 policy 的等待为 `100,200,400,800,1000×8` ms（累计 9500ms）；下一次 1000ms 拒绝。`multiplier_micros=1000000` 的长序列保持 100ms，不得漂移。`10.5ms`、`1.0000001` 等配置在加载时拒绝；同一次序列中 policy 变化或 schema 非法时本地失败；其他 auth/stale/conflict 错误不重试。
 

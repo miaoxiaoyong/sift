@@ -245,6 +245,7 @@ Command 字段迁移必须把旧 `forge_event_receipts(project_id,forge_event_id
 | `generation` | INTEGER | NOT NULL，正整数；换 owner 时递增 |
 | `backend` | TEXT | `process \| tmux` |
 | `agent_id` | TEXT | NOT NULL |
+| `topology_qualification_key` | TEXT | NULL；dispatch prepare 时绑定 exact runtime qualification key，历史/未绑定视为 unverified |
 | `task_spec_snapshot_id` | TEXT | NOT NULL FK task_spec_snapshots |
 | `worktree_path` | TEXT | NOT NULL |
 | `branch_name` | TEXT | NOT NULL |
@@ -278,6 +279,8 @@ Command 字段迁移必须把旧 `forge_event_receipts(project_id,forge_event_id
 
 约束：
 
+- `backend` 由 Run 冻结 config snapshot 的 effective Agent backend 写入，retry/daemon restart 不得从当前磁盘配置重算。tmux session name 由本行 identity 与 current claim `dispatch_id` 确定性派生，不新增 session-authority 列。
+- `topology_qualification_key` 只允许在 current generation 的 dispatch prepare 事务中从 NULL 绑定一次，之后不可修改；缺失或找不到 exact verified evidence 时按 `process-group-unverified` 处理。
 - wrapper 身份字段必须全空或 `pid/started/executable/pgid/instance` 全具备；Agent 身份三元组必须全空或全具备。
 - `task_spec_snapshot_id` 以 `(run_id, task_spec_snapshot_id)` 组合外键保证属于本 Run。
 - `running` 必须有 Agent 身份；`finished` 必须有 result，且 `result_exit_code/result_signal` 恰有一个非空；`orphaned` 不要求 result。
@@ -338,6 +341,32 @@ Command 字段迁移必须把旧 `forge_event_receipts(project_id,forge_event_id
 | `finished_at_ms` | INTEGER | NULL |
 
 每个 Interrupt 最多一个 `pending/running` probe（partial unique index）。Supervisor tick 推进该本地持久 operation；进程观测和幂等信号发送不进入 outbox，崩溃后从 pending/running 继续。每次观测/信号结果写事件，probe 成功只表示可尝试 ADR-013 结果事务；不能在事务外关闭 Interrupt 或创建新 attempt。
+
+### 5.6 `agent_topology_qualifications`（不可变）
+
+保存 [`runtime.md`](runtime.md) §7 的 exact Agent/OS topology evidence，不保存原始 version 输出或凭据：
+
+| 列 | 类型 | 约束/说明 |
+|----|------|-----------|
+| `id` | TEXT | PK |
+| `qualification_key` | TEXT | NOT NULL，64 lowercase hex |
+| `method_version` | TEXT | NOT NULL；V0=`runtime-topology/v1` |
+| `agent_id` | TEXT | NOT NULL |
+| `agent_definition_hash` | TEXT | NOT NULL，64 lowercase hex |
+| `executable_path` | TEXT | NOT NULL absolute/symlink-resolved |
+| `executable_sha256` | TEXT | NOT NULL，64 lowercase hex |
+| `version_output_digest` | TEXT | NOT NULL，64 lowercase hex |
+| `goos` | TEXT | `linux \| darwin` |
+| `goarch` | TEXT | `amd64 \| arm64` |
+| `status` | TEXT | `process-group-verified \| process-group-unverified` |
+| `reason` | TEXT | `qualified \| detached_descendant \| identity_incomplete \| group_not_empty \| unsupported` |
+| `evidence_json` | TEXT | NOT NULL canonical closed evidence；不含原始日志/版本文本 |
+| `evidence_digest` | TEXT | NOT NULL，SHA-256(evidence_json) |
+| `recorded_at_ms` | INTEGER | NOT NULL |
+
+`qualification_key` 必须等于 runtime closed key 的 canonical SHA-256，列投影必须与 key input/evidence 自洽。`status=process-group-verified` 当且仅当 `reason=qualified`；其余 reason 只能配 `process-group-unverified`，由 CHECK 强制。`UNIQUE(qualification_key,evidence_digest)` 使同一证据重放收敛；表由 trigger 禁止 UPDATE/DELETE。
+
+门控查询对 exact key fail closed：无记录即 unverified；存在任一 `process-group-unverified` 行时结果为 unverified；否则至少一条 verified 才返回 verified。普通 daemon 启动不能把 negative evidence 覆盖为 verified。attempt 仅引用 key，不以 FK 阻止“先启动但未资格”的合法 unverified 路径；自动 absence/retry 必须同时要求 key 非空且门控查询为 verified。
 
 ## 6. Interrupt
 

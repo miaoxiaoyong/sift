@@ -12,7 +12,7 @@ M1–M4 已有 Go 实现：控制面/配置/Brain 壳、双平台 Forge 与 Inta
 
 M5 收口第三波依赖见 [wave3 plan](docs/plans/2026-07-30-m5-closeout-wave3.md)：[#831](https://github.com/miaoxiaoyong/sift/issues/831) 已关闭 wrapper `claim.started` 崩溃窗时序 flake；[#832](https://github.com/miaoxiaoyong/sift/issues/832) 接通 `rerun_checks` durable request-start；[#833](https://github.com/miaoxiaoyong/sift/issues/833) 以跨 Interrupt/Channel/Command/restart 生命周期证据闭合 Attention once-charge；[#834](https://github.com/miaoxiaoyong/sift/issues/834) 接通 Supervisor 周期聚合 → T7 unified shell → inert draft 及 restart cursor。M5 综合门禁已由 [#835 独立复审 PASS WITH NOTES](docs/reviews/2026-07-31-m5-phase-gate-835-claude-sonnet.md) 通过；后续进入 M6，但不得据此宣称 M7/M8 或完整 PoC 发布通过。
 
-M6 由 [#842](https://github.com/miaoxiaoyong/sift/issues/842) 与 [执行计划](docs/plans/2026-07-31-m6-tmux-runtime-fault-matrix.md) 跟踪，按 #843→#852 串行：先冻结 Runtime/PTY/tmux/attach/qualification 契约，再实现 wrapper-owned PTY、tmux backend 与只读 attach，随后闭合 backend-session/qualification、hooks carryover 和双后端 V2/V4 全矩阵。只有 #852 独立复审可更新 M6 结论；真实 Agent/version 资格、双 Forge 与手机证据仍留 M7。
+M6 由 [#842](https://github.com/miaoxiaoyong/sift/issues/842) 与 [执行计划](docs/plans/2026-07-31-m6-tmux-runtime-fault-matrix.md) 跟踪，按 #843→#852 串行。#843 已冻结 [`specs/runtime.md`](docs/specs/runtime.md) 与 [`testing/runtime-matrix.md`](docs/testing/runtime-matrix.md)，并经 [独立字段复审 PASS WITH NOTES](docs/reviews/2026-07-31-m6-runtime-field-rereview-pi-claude-sonnet.md) 转 `active`；这不表示 PTY/tmux 已实现。下一片 #844 实现 wrapper-owned PTY，随后才是 tmux backend、只读 attach、backend-session/qualification、hooks carryover 和双后端 V2/V4 全矩阵。只有 #852 独立复审可更新 M6 结论；真实 Agent/version 资格、双 Forge 与手机证据仍留 M7。
 
 ## 上下文规则（摘要）
 

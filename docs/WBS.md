@@ -542,7 +542,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ## M6：tmux 与完整故障矩阵
 
-> 执行计划：[#842 / M6 tmux 与完整故障矩阵](plans/2026-07-31-m6-tmux-runtime-fault-matrix.md)。按 #843→#852 串行推进；只有最终 #852 独立复审可更新 M6 结论。
+> 执行计划：[#842 / M6 tmux 与完整故障矩阵](plans/2026-07-31-m6-tmux-runtime-fault-matrix.md)。按 #843→#852 串行推进；只有最终 #852 独立复审可更新 M6 结论。字段与测试基线由 [`specs/runtime.md`](specs/runtime.md) / [`testing/runtime-matrix.md`](testing/runtime-matrix.md) 冻结，[#843 独立复审 PASS WITH NOTES](reviews/2026-07-31-m6-runtime-field-rereview-pi-claude-sonnet.md) 后转 `active`；这不表示 PTY/tmux 或完整 V2/V4 已实现。
 
 ### 前置
 

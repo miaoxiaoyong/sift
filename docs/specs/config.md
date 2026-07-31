@@ -132,11 +132,11 @@ agents:
 | `executable` | string | — | 必填；非空；直接传给 `exec`，不得包含 shell 片段 |
 | `args` | `string[]` | `[]` | argv；每项不得含 NUL；仅允许完整 token `{task_file}` 占位符 |
 | `task_transport` | enum | `stdin` | `stdin \| file`；`file` 要求 args 中恰有一个 `{task_file}`，具体文件契约在 `specs/control-plane.md` 定义 |
-| `backend` | enum | `process` | `process \| tmux` |
+| `backend` | enum | `runtime.backend` | `process \| tmux`；非空时覆盖根默认 |
 | `max_concurrent` | integer | `runtime.default_agent_max_concurrent` | `1..32`；Agent 省略时继承根配置 |
 | `version_args` | `string[]` | `["--version"]` | 启动探测 argv；空数组表示只探测 executable 可执行 |
 
-`task_transport=stdin` 时禁止 `{task_file}`；`file` 时必须恰有一个完整 argv token 等于 `{task_file}`，wrapper 只做单 token 替换，不做字符串插值或 shell 展开。Agent 定义不接受任意环境变量映射。Runtime 只注入协议明确允许的非机密变量（V0 为 `SIFT_RUN_DIR`）；凭据不得经配置、argv 或环境变量传递。
+`task_transport=stdin` 时禁止 `{task_file}`；`file` 时必须恰有一个完整 argv token 等于 `{task_file}`，wrapper 只做单 token 替换，不做字符串插值或 shell 展开。Agent 定义不接受任意环境变量映射。Runtime 只注入协议明确允许的非机密变量（V0 为 `SIFT_RUN_DIR`）；凭据不得经配置、argv 或环境变量传递。规范化按 `agent.backend ?? runtime.backend` 为每个 Agent 产生 concrete backend；Run/attempt 从其冻结 config snapshot 写入 `attempts.backend`，retry 与 daemon 重启不得重新读取当前磁盘配置。执行、PTY、tmux session 与资格契约见 [`runtime.md`](runtime.md)。
 
 ### 3.3 `projects[]`
 
@@ -522,7 +522,7 @@ metrics:
 3. SQLite 打开、PRAGMA、迁移；数据库 schema 比二进制新时拒启。
 4. 每个已定义 Agent executable；仅当存在启用项目时要求至少一个可用候选 Agent。即使 Agent 暂未被项目引用也探测——Agent 定义是启动期敏感配置，V0 选择整份 closed 校验而非保留潜在坏定义。
 5. Brain executable（仅配置时）。
-6. `tmux`（仅有效 Agent/backend 使用时）。
+6. `tmux`（`runtime.backend=tmux` 或任一 effective Agent backend 为 tmux 时）：解析 absolute path，`tmux -V` 必须为 `>=3.2` 且支持 `new-session ... [shell-command [argument ...]]` 的多 argv 形态；process-only 配置不探测。
 7. 每个启用项目引用的 forge CLI 登录与版本；未引用的 forge 不探测。
 8. 双 socket 路径可安全创建，且进程未创建 TCP/UDP listener。
 
