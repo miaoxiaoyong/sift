@@ -817,6 +817,70 @@ func (a *Adapter) GetChecks(ctx context.Context, p ProjectRef, sha string) (Chec
 	return suite, nil
 }
 
+// RerunCheck verifies that the immutable remote check/job ID belongs to the
+// frozen head, then invokes only that target's rerun endpoint. IDs are stable,
+// so the mutation remains bound to the object whose head was just verified;
+// there is no rerun-all fallback.
+func (a *Adapter) RerunCheck(ctx context.Context, p ProjectRef, checkRunID, expectedHeadSHA string) error {
+	if checkRunID == "" || expectedHeadSHA == "" {
+		return &ClassifiedError{Class: ErrContractViolation, Summary: "check id and expected head sha are required"}
+	}
+	if a.Kind == KindGitHub {
+		var check struct {
+			ID      int64  `json:"id"`
+			HeadSHA string `json:"head_sha"`
+		}
+		path := a.base(p) + "/check-runs/" + pathPart(checkRunID)
+		if err := a.call(ctx, p, path, "GET", nil, &check); err != nil {
+			return err
+		}
+		if strconv.FormatInt(check.ID, 10) != checkRunID || check.HeadSHA != expectedHeadSHA {
+			return &ClassifiedError{Class: ErrSemanticConflict, Summary: "check run does not match expected head"}
+		}
+		return a.call(ctx, p, path+"/rerequest", "POST", []byte(`{}`), nil)
+	}
+	var job struct {
+		ID       int64 `json:"id"`
+		Pipeline struct {
+			SHA string `json:"sha"`
+		} `json:"pipeline"`
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
+	}
+	path := a.base(p) + "/jobs/" + pathPart(checkRunID)
+	if err := a.call(ctx, p, path, "GET", nil, &job); err != nil {
+		return err
+	}
+	head := job.Pipeline.SHA
+	if head == "" {
+		head = job.Commit.ID
+	}
+	if strconv.FormatInt(job.ID, 10) != checkRunID || head != expectedHeadSHA {
+		return &ClassifiedError{Class: ErrSemanticConflict, Summary: "job does not match expected head"}
+	}
+	var retried struct {
+		ID       int64 `json:"id"`
+		Pipeline struct {
+			SHA string `json:"sha"`
+		} `json:"pipeline"`
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
+	}
+	if err := a.call(ctx, p, path+"/retry", "POST", []byte(`{}`), &retried); err != nil {
+		return err
+	}
+	retriedHead := retried.Pipeline.SHA
+	if retriedHead == "" {
+		retriedHead = retried.Commit.ID
+	}
+	if retriedHead != expectedHeadSHA {
+		return &ClassifiedError{Class: ErrSemanticConflict, Summary: "retried job changed expected head"}
+	}
+	return nil
+}
+
 func normalizeGitHubStatus(s string) string {
 	switch s {
 	case "failure", "error":

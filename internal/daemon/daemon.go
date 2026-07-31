@@ -34,6 +34,7 @@ type Daemon struct {
 	Alerts            *forgeworker.AlertWorker
 	CommandAcks       *forgeworker.CommandAckWorker
 	GateReEvaluations *forgeworker.GateReEvaluationWorker
+	RerunChecks       *forgeworker.RerunChecksWorker
 	Successes         []*gate.SuccessReconciler
 	Gates             []*gate.Reconciler
 	Replies           []*intake.ReplyConsumer
@@ -75,6 +76,7 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 	// routing, so each worker resolves the frozen target and selects the
 	// matching adapter by forge_kind|host|project_key.
 	forgeClients := make(map[string]forge.Client)
+	rerunClients := make(map[string]forgeworker.RerunCheckClient)
 	db.SetChannelPolicy(cfg.Attention.ChannelFailureAlertAfter, cfg.Outbox.MaxAttempts)
 	db.SetGateReEvalInterruptEmission(gateReEvalInterruptEmission(cfg.Attention, interruptChannels(cfg.Attention)))
 	// Channel payloads are already sealed by storage. The production consumer
@@ -95,7 +97,9 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 			return nil, fmt.Errorf("project %s: %w", p.ID, err)
 		}
 		adapter.WithAutoMergeCapabilityReader(db)
-		forgeClients[string(ref.Kind)+"|"+ref.Host+"|"+ref.ProjectKey] = adapter
+		clientKey := string(ref.Kind) + "|" + ref.Host + "|" + ref.ProjectKey
+		forgeClients[clientKey] = adapter
+		rerunClients[clientKey] = adapter
 		probeCtx := context.Background()
 		if cfg.Forge.CommandTimeout > 0 {
 			var cancel context.CancelFunc
@@ -130,6 +134,7 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 		// (CommandAckV1) carries no forge routing; the worker resolves the
 		// immutable target from the append-only command receipt.
 		d.CommandAcks = &forgeworker.CommandAckWorker{DB: db, Clients: forgeClients, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:command_ack"}
+		d.RerunChecks = &forgeworker.RerunChecksWorker{DB: db, Clients: rerunClients, Now: now, Lease: cfg.Outbox.LeaseTTL, WorkerID: "siftd:rerun_checks"}
 	}
 	// gate_re_evaluation resolves the run's project, then delegates Forge/Brain
 	// assembly to the matching Gate reconciler (storage.md §8.1). It is wired
@@ -277,6 +282,11 @@ func (d *Daemon) OutboxTick(ctx context.Context) error {
 	if d.GateReEvaluations != nil {
 		if err := d.GateReEvaluations.RunOnce(ctx); err != nil {
 			return fmt.Errorf("gate_re_evaluation: %w", err)
+		}
+	}
+	if d.RerunChecks != nil {
+		if err := d.RerunChecks.RunOnce(ctx); err != nil {
+			return fmt.Errorf("rerun_checks: %w", err)
 		}
 	}
 	if d.Launch != nil {

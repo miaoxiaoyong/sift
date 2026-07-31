@@ -43,13 +43,12 @@ import (
 //
 // Deferred to a follow-up slice (returned as ErrGateReEvaluationSuccessorNotWired
 // so the worker can terminate the operation rather than leave it pending): none.
-// The retry_checks/flaky_retry -> rerun_checks successor is wired below; the
-// Forge RerunCheck worker / §8.5 request-start execution path remains a later
-// slice and is out of scope here.
+// The retry_checks/flaky_retry -> rerun_checks successor is wired below and
+// consumed by RerunChecksWorker through the §8.5 request-start boundary.
 //
 // This slice wires all seven HITL verdict successors via closed
 // GateReEvaluationInterruptV1 -> EmitInterrupt inside CompleteGateReEvaluation.
-// It does not claim once-charge, rerun_checks, or M5.
+// It does not claim once-charge or M5 completion.
 //
 // The exact digest vectors in storage.md section 8.1 for the failed result union and
 // the continuous conflict-to-replacement Complete are reproduced by the tests.
@@ -1107,9 +1106,8 @@ func insertGateReEvalMergeSuccessorTx(ctx context.Context, tx *sql.Tx, row gateR
 // retry_no) so a replayed transaction cannot create a second successor
 // (insertOperation dedupes by key); the consumption row PK is the same
 // (run, head, check, retry) quadruple and operation_id is UNIQUE, so it is
-// at-most-one too. The successor is claimable by a future RerunCheck worker via
-// ClaimOutboxOperationKind(..., OperationRerunChecks); the §8.5 request-start
-// execution path is out of scope for this slice.
+// at-most-one too. The production RerunChecksWorker claims it by kind and
+// commits the §8.5 request-start boundary before calling Forge.
 func insertGateReEvalRerunChecksSuccessorTx(ctx context.Context, tx *sql.Tx, row gateReEvalAttemptRow, p gateReEvalSucceededPayload, v gateReEvalVerdictProjection, eventKey string, nowMS int64) error {
 	triageDigest, err := gateReEvalTriageSourceDigest(p.GateInputJSON)
 	if err != nil {

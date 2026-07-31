@@ -578,6 +578,9 @@ func (f *phaseForge) GetChecks(context.Context, forge.ProjectRef, string) (forge
 	}
 	return s, nil
 }
+func (f *phaseForge) RerunCheck(context.Context, forge.ProjectRef, string, string) error {
+	return nil
+}
 func (f *phaseForge) MergeChange(context.Context, forge.ProjectRef, string, string, string) (forge.Change, error) {
 	return forge.Change{}, nil
 }

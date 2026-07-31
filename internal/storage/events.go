@@ -218,6 +218,7 @@ type CompleteOutcome struct {
 var ErrOperationConflict = errors.New("storage: operation key payload conflict")
 var ErrRejectedStaleWorker = errors.New("storage: rejected stale outbox worker")
 var ErrMissingCommandAckRoute = errors.New("storage: command ack route not found")
+var ErrMissingRerunChecksRoute = errors.New("storage: rerun checks route not found")
 
 // Stable operation-key constructors are the sole key vocabulary from
 // specs/outbox.md §2. They use only frozen identities, never wall-clock data.
@@ -291,6 +292,31 @@ func (d *DB) ResolveCommandAckRouting(ctx context.Context, eventKey string) (Com
 		Scan(&r.ProjectID, &r.ForgeKind, &r.ForgeHost, &r.ForgeProjectKey, &r.TargetKind, &r.TargetID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CommandAckRoute{}, ErrMissingCommandAckRoute
+	}
+	return r, err
+}
+
+// RerunChecksRoute is the immutable project routing for a Gate-created
+// rerun_checks operation. The payload freezes run/change identity; routing is
+// resolved from that Run's persisted project rather than caller input.
+type RerunChecksRoute struct {
+	ProjectID       string
+	ForgeKind       string
+	ForgeHost       string
+	ForgeProjectKey string
+}
+
+func (d *DB) ResolveRerunChecksRouting(ctx context.Context, runID, changeID string) (RerunChecksRoute, error) {
+	if runID == "" || changeID == "" {
+		return RerunChecksRoute{}, ErrMissingRerunChecksRoute
+	}
+	var r RerunChecksRoute
+	err := d.db.QueryRowContext(ctx, `SELECT r.project_id,p.forge_kind,p.forge_host,p.forge_project_key
+		FROM runs r JOIN projects p ON p.id=r.project_id
+		WHERE r.id=? AND r.change_id=?`, runID, changeID).
+		Scan(&r.ProjectID, &r.ForgeKind, &r.ForgeHost, &r.ForgeProjectKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RerunChecksRoute{}, ErrMissingRerunChecksRoute
 	}
 	return r, err
 }
@@ -454,11 +480,34 @@ func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, l
 		if err := tx.QueryRowContext(ctx, `SELECT id FROM outbox_attempts WHERE operation_id=? AND attempt_no=?`, c.ID, oldCount).Scan(&oldAttempt); err != nil {
 			return nil, err
 		}
+		if c.Kind == OperationRerunChecks {
+			started, err := rerunRequestStartedTx(ctx, tx, oldAttempt)
+			if err != nil {
+				return nil, err
+			}
+			if started {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO outbox_attempt_results (attempt_id,finished_at_ms,outcome,error_class,error_summary) VALUES (?,?,'conflict','semantic_conflict','request_started_lease_expired') ON CONFLICT(attempt_id) DO NOTHING`, oldAttempt, nowMS); err != nil {
+					return nil, err
+				}
+				c.AttemptID, c.ClaimAttemptNo = oldAttempt, oldCount
+				if err := d.applyRerunChecksConflictTx(ctx, tx, c, nowMS); err != nil {
+					return nil, err
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE outbox_operations SET state='conflict',lease_owner=NULL,lease_expires_at_ms=NULL,last_error_class='semantic_conflict',last_error_summary='request_started_lease_expired',completed_at_ms=?,updated_at_ms=?,version=version+1 WHERE id=? AND state='executing'`, nowMS, nowMS, c.ID); err != nil {
+					return nil, err
+				}
+				if err := tx.Commit(); err != nil {
+					return nil, err
+				}
+				d.wakeOutbox()
+				return nil, nil
+			}
+		}
 		alertAfter, maxAttempts := d.channelPolicy()
 		reclaim := CompleteOutcome{State: OperationRetryable, ErrorClass: ErrorTransient, ErrorSummary: "lease_expired", NowMS: nowMS, ChannelFailureAlertAfter: alertAfter, MaxAttempts: maxAttempts}
 		// Channel's terminal projection is failed, but the expired attempt is
 		// immutable evidence of a retryable transient lease expiry.
-		if c.Kind == OperationChannelPublish && maxAttempts > 0 && oldCount >= maxAttempts {
+		if (c.Kind == OperationChannelPublish || c.Kind == OperationRerunChecks) && maxAttempts > 0 && oldCount >= maxAttempts {
 			reclaim.State = OperationFailed
 			terminalReclaim = true
 		}
@@ -507,6 +556,119 @@ func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, l
 	return &c, nil
 }
 
+// MarkOutboxAttemptRequestStarted commits the rerun_checks at-most-once
+// boundary before any remote request. The current lease and immutable attempt
+// must still match; replay of the same attempt is idempotent.
+func (d *DB) MarkOutboxAttemptRequestStarted(ctx context.Context, claim ClaimedOperation, nowMS int64) error {
+	if claim.Kind != OperationRerunChecks || claim.ID == "" || claim.AttemptID == "" || claim.LeaseOwner == "" || nowMS <= 0 {
+		return errors.New("storage: invalid rerun checks request start")
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM outbox_operations o JOIN outbox_attempts a ON a.operation_id=o.id
+		WHERE o.id=? AND o.kind='rerun_checks' AND o.state='executing' AND o.lease_owner=? AND o.lease_expires_at_ms=? AND o.lease_expires_at_ms>=? AND a.id=?`,
+		claim.ID, claim.LeaseOwner, claim.LeaseExpiresAtMS, nowMS, claim.AttemptID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrRejectedStaleWorker
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO outbox_attempt_request_starts (attempt_id,started_at_ms) VALUES (?,?) ON CONFLICT(attempt_id) DO NOTHING`, claim.AttemptID, nowMS); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func rerunRequestStartedTx(ctx context.Context, tx *sql.Tx, attemptID string) (bool, error) {
+	var one int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM outbox_attempt_request_starts WHERE attempt_id=?`, attemptID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+type rerunChecksPayload struct {
+	RunID              string `json:"run_id"`
+	ChangeID           string `json:"change_id"`
+	HeadSHA            string `json:"head_sha"`
+	CheckRunID         string `json:"check_run_id"`
+	RetryNo            int    `json:"retry_no"`
+	TriageSourceDigest string `json:"triage_source_digest"`
+	CreatedFromEventID string `json:"created_from_event_id"`
+}
+
+// applyRerunChecksConflictTx creates the unique failure_review successor in
+// the same transaction that makes an ambiguous rerun terminal. Its calibration
+// is tied to the Gate evaluation which created the rerun operation.
+func (d *DB) applyRerunChecksConflictTx(ctx context.Context, tx *sql.Tx, claim ClaimedOperation, nowMS int64) error {
+	var p rerunChecksPayload
+	if err := json.Unmarshal(claim.Payload, &p); err != nil || p.RunID == "" || p.ChangeID == "" || p.HeadSHA == "" || p.CheckRunID == "" || p.RetryNo < 1 || p.CreatedFromEventID == "" {
+		return errors.New("storage: invalid rerun checks conflict payload")
+	}
+	var eventPayload string
+	if err := tx.QueryRowContext(ctx, `SELECT payload_json FROM events WHERE id=? AND run_id=?`, p.CreatedFromEventID, p.RunID).Scan(&eventPayload); err != nil {
+		return fmt.Errorf("storage: rerun checks source event: %w", err)
+	}
+	var source struct {
+		GateEvaluationID string `json:"gate_evaluation_id"`
+	}
+	if err := json.Unmarshal([]byte(eventPayload), &source); err != nil || source.GateEvaluationID == "" {
+		return errors.New("storage: rerun checks source evaluation missing")
+	}
+	var predicted, features string
+	if err := tx.QueryRowContext(ctx, `SELECT predicted_decision,features_json FROM calibration_entries WHERE gate_evaluation_id=? ORDER BY predicted_at_ms,id LIMIT 1`, source.GateEvaluationID).Scan(&predicted, &features); err != nil {
+		return fmt.Errorf("storage: rerun checks calibration: %w", err)
+	}
+	calibrationID := newID()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO calibration_entries (id,run_id,gate_evaluation_id,predicted_decision,features_json,gate_sample_entry_id,predicted_at_ms) VALUES (?,?,?,?,?,NULL,?)`, calibrationID, p.RunID, source.GateEvaluationID, predicted, features, nowMS); err != nil {
+		return err
+	}
+	var runVersion int64
+	var changeID, headSHA string
+	if err := tx.QueryRowContext(ctx, `SELECT version,change_id,change_head_sha FROM runs WHERE id=?`, p.RunID).Scan(&runVersion, &changeID, &headSHA); err != nil {
+		return err
+	}
+	if changeID != p.ChangeID || headSHA != p.HeadSHA {
+		return errors.New("storage: rerun checks conflict identity drift")
+	}
+	var attemptNo, generation int
+	if err := tx.QueryRowContext(ctx, `SELECT attempt_no,generation FROM attempts WHERE run_id=? ORDER BY attempt_no DESC LIMIT 1`, p.RunID).Scan(&attemptNo, &generation); err != nil {
+		return err
+	}
+	facts := map[string]string{
+		"failure_class":        "checks_rerun_ambiguous",
+		"failure_evidence_ref": "sift://event/" + p.CreatedFromEventID,
+		"recommended_action":   "retry",
+	}
+	factsJSON, err := canonicalJSON(facts)
+	if err != nil {
+		return err
+	}
+	cfg := d.gateReEvalInterruptEmission()
+	if cfg.AttentionDailyQuota == nil {
+		return errors.New("storage: rerun checks interrupt emission not configured")
+	}
+	cmd := EmitInterruptCmd{
+		RunID: p.RunID, ExpectedRunVersion: runVersion, AttemptNo: &attemptNo,
+		Reason: InterruptFailureReview, FailureReviewVariant: FailureReviewAttempt,
+		FailureReviewRetryKind: FailureReviewGateRecheck, Facts: facts,
+		Generation: InterruptGeneration{AttemptNo: attemptNo, Generation: generation, ChangeID: p.ChangeID, HeadSHA: p.HeadSHA, FailureDigest: sha256Hex(factsJSON)},
+		GatePhase:  GateReview, GuardrailLevel: GuardrailNone,
+		AttentionDailyQuota: cfg.AttentionDailyQuota, DayTimezone: cfg.DayTimezone,
+		DailySummaryAt: cfg.DailySummaryAt, MaxEscalations: cfg.MaxEscalations,
+		CriticalWindowMS: cfg.CriticalWindowMS, CriticalTotalLimit: cfg.CriticalTotalLimit,
+		CriticalPerRunLimit: cfg.CriticalPerRunLimit, Channels: cfg.Channels,
+		CalibrationID: calibrationID, Source: SourceSystem, NowMS: nowMS,
+	}
+	_, err = d.emitInterruptInExistingTx(ctx, tx, cmd, false)
+	return err
+}
+
 func (d *DB) CompleteOutboxAttempt(ctx context.Context, claim ClaimedOperation, outcome CompleteOutcome) error {
 	if outcome.NowMS <= 0 || !terminalOrRetry(outcome.State) {
 		return errors.New("storage: invalid outbox completion")
@@ -522,6 +684,19 @@ func (d *DB) CompleteOutboxAttempt(ctx context.Context, claim ClaimedOperation, 
 			return ErrRejectedStaleWorker
 		}
 		return err
+	}
+	rerunStarted := false
+	if claim.Kind == OperationRerunChecks {
+		rerunStarted, err = rerunRequestStartedTx(ctx, tx, claim.AttemptID)
+		if err != nil {
+			return err
+		}
+		if rerunStarted && outcome.State != OperationSucceeded && outcome.State != OperationConflict {
+			return errors.New("storage: started rerun checks attempt must complete success or conflict")
+		}
+		if !rerunStarted && outcome.State == OperationSucceeded {
+			return errors.New("storage: rerun checks success requires request start")
+		}
 	}
 	// A retryable completion at the frozen attempt limit is terminal. Decide
 	// this before writing its immutable result and Channel projections so they
@@ -546,6 +721,11 @@ func (d *DB) CompleteOutboxAttempt(ctx context.Context, claim ClaimedOperation, 
 	}
 	if claim.Kind == OperationChannelPublish {
 		if err := applyChannelOutcomeTx(ctx, tx, claim, outcome, false); err != nil {
+			return err
+		}
+	}
+	if claim.Kind == OperationRerunChecks && rerunStarted && outcome.State == OperationConflict {
+		if err := d.applyRerunChecksConflictTx(ctx, tx, claim, outcome.NowMS); err != nil {
 			return err
 		}
 	}

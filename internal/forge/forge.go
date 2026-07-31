@@ -139,6 +139,7 @@ type Client interface {
 	GetChangeDiff(context.Context, ProjectRef, string) (string, error)
 	ListChangeComments(context.Context, ProjectRef, string, Cursor) ([]Comment, Cursor, error)
 	GetChecks(context.Context, ProjectRef, string) (CheckSuite, error)
+	RerunCheck(context.Context, ProjectRef, string, string) error
 	MergeChange(context.Context, ProjectRef, string, string, string) (Change, error)
 }
 

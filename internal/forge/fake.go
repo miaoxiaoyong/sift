@@ -230,6 +230,7 @@ func (f *Fake) GetChangeDiff(_ context.Context, p ProjectRef, id string) (string
 func (f *Fake) GetChecks(context.Context, ProjectRef, string) (CheckSuite, error) {
 	return CheckSuite{Conclusion: "unknown"}, nil
 }
+func (f *Fake) RerunCheck(context.Context, ProjectRef, string, string) error { return nil }
 func (f *Fake) MergeChange(_ context.Context, p ProjectRef, id, expected, method string) (Change, error) {
 	if method != "merge" {
 		return Change{}, &ClassifiedError{Class: ErrContractViolation, Summary: "only merge supported"}

@@ -667,6 +667,30 @@ func TestCompleteGateReEvaluationSucceededRerunChecks(t *testing.T) {
 	if c.Key != rerunKey {
 		t.Fatalf("claimed key = %s, want %s", c.Key, rerunKey)
 	}
+	// Once request-start is durable, an expired lease is terminal conflict:
+	// no replacement attempt is created and a unique failure_review is emitted
+	// in the same reclaim transaction.
+	if err := db.MarkOutboxAttemptRequestStarted(ctx, *c, testNow+41); err != nil {
+		t.Fatalf("mark request start: %v", err)
+	}
+	if err := db.MarkOutboxAttemptRequestStarted(ctx, *c, testNow+42); err != nil {
+		t.Fatalf("idempotent request start: %v", err)
+	}
+	if next, err := db.ClaimOutboxOperationKind(ctx, "replacement", OperationRerunChecks, c.LeaseExpiresAtMS+1, 60_000); err != nil || next != nil {
+		t.Fatalf("post-start reclaim = %v err=%v, want terminal conflict", next, err)
+	}
+	var state string
+	var attempts int
+	if err := db.db.QueryRow(`SELECT state,attempt_count FROM outbox_operations WHERE id=?`, c.ID).Scan(&state, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if state != "conflict" || attempts != 1 {
+		t.Fatalf("rerun state=%s attempts=%d, want conflict/1", state, attempts)
+	}
+	var failureReviews int
+	if err := db.db.QueryRow(`SELECT count(*) FROM interrupts WHERE run_id=? AND reason='failure_review'`, cmdRun).Scan(&failureReviews); err != nil || failureReviews != 1 {
+		t.Fatalf("failure_review count=%d err=%v", failureReviews, err)
+	}
 }
 
 // TestCompleteGateReEvaluationRerunChecksContractRejections covers the
@@ -734,10 +758,10 @@ func TestCompleteGateReEvaluationConflict(t *testing.T) {
 	})
 	replHash := SHA256Hex([]byte(replInput))
 	result := canonicalResult(t, "conflict", map[string]any{
-		"replacement_head_sha":      replHead,
-		"replacement_input_json":    replInput,
-		"replacement_input_hash":    replHash,
-		"replacement_gate_version":  "gate/v1",
+		"replacement_head_sha":     replHead,
+		"replacement_input_json":   replInput,
+		"replacement_input_hash":   replHash,
+		"replacement_gate_version": "gate/v1",
 	})
 	var runVersionBefore int64
 	if err := db.db.QueryRow(`SELECT version FROM runs WHERE id=?`, cmdRun).Scan(&runVersionBefore); err != nil {

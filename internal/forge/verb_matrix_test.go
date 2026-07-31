@@ -52,6 +52,9 @@ func TestV3AllVerbsDualPlatformMatrix(t *testing.T) {
 			if got, err := a.GetChecks(ctx, project, "head-7"); err != nil || got.Conclusion != "success" {
 				t.Fatalf("GetChecks: %#v %v", got, err)
 			}
+			if err := a.RerunCheck(ctx, project, "7", "head-7"); err != nil {
+				t.Fatalf("RerunCheck: %v", err)
+			}
 			if proven, evidence := a.ProbeAutoMergeCapability(ctx, project); !proven {
 				t.Fatalf("ProbeAutoMergeCapability: %s", evidence)
 			}
@@ -185,11 +188,23 @@ func matrixRunner(kind Kind) Runner {
 		if strings.Contains(path, "/status") {
 			return []byte(`{"state":"success","statuses":[{"state":"success"}]}`), nil, nil
 		}
+		if strings.HasSuffix(path, "/check-runs/7/rerequest") {
+			return []byte(`{}`), nil, nil
+		}
+		if strings.HasSuffix(path, "/check-runs/7") {
+			return []byte(`{"id":7,"head_sha":"head-7"}`), nil, nil
+		}
 		if strings.Contains(path, "/check-runs") {
 			return []byte(`{"check_runs":[{"name":"unit","conclusion":"success","html_url":"https://ci/unit"}]}`), nil, nil
 		}
 		if strings.Contains(path, "/pipelines?") {
 			return []byte(`[{"id":1,"web_url":"https://ci/pipeline","status":"success"}]`), nil, nil
+		}
+		if strings.HasSuffix(path, "/jobs/7/retry") {
+			return []byte(`{"id":8,"pipeline":{"sha":"head-7"}}`), nil, nil
+		}
+		if strings.HasSuffix(path, "/jobs/7") {
+			return []byte(`{"id":7,"pipeline":{"sha":"head-7"}}`), nil, nil
 		}
 		if strings.HasSuffix(path, "/jobs") {
 			return []byte(`[{"name":"unit","web_url":"https://ci/job","status":"success"}]`), nil, nil
