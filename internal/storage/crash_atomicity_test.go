@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -96,6 +97,42 @@ func TestV2CurrentWritePortsCrashAtomicity(t *testing.T) {
 			t.Fatalf("completion leaked state=%s", state)
 		}
 		assertCount(t, db, "outbox_attempt_results", 0)
+	})
+
+	t.Run("startup stall probe success", func(t *testing.T) {
+		db, _ := openTestDB(t)
+		ctx := context.Background()
+		seedCommandRun(t, db, ctx)
+		interruptID, nonce := emitStartupStallInterrupt(t, db, ctx)
+		env := commentEnv(t, "project", "v2-retry", "/sift retry "+cmdRun+" "+nonce)
+		if _, err := db.ApplyCommandEvent(ctx, ApplyCommandEventCmd{Envelope: env, Allowlist: []string{"alice"}, NowMS: testNow + 5}); err != nil {
+			t.Fatal(err)
+		}
+		var probeID string
+		if err := db.db.QueryRow(`SELECT id FROM attempt_probes WHERE interrupt_id=?`, interruptID).Scan(&probeID); err != nil {
+			t.Fatal(err)
+		}
+		mustExec(t, db, `CREATE TRIGGER fail_retry_claim BEFORE INSERT ON attempt_claims WHEN NEW.attempt_no=2 BEGIN SELECT RAISE(ABORT, 'injected crash'); END`)
+		_, err := db.ApplyRetryProbeResult(ctx, RetryProbeResultCmd{InterruptID: interruptID, ProbeID: probeID, Succeeded: true, AbsenceEvidenceJSON: json.RawMessage(`{"absent":true}`), NowMS: testNow + 10})
+		if err == nil || !strings.Contains(err.Error(), "injected crash") {
+			t.Fatalf("ApplyRetryProbeResult error=%v", err)
+		}
+		assertCount(t, db, "attempt_probes WHERE id='"+probeID+"' AND state='pending'", 1)
+		assertCount(t, db, "attempts WHERE run_id='"+cmdRun+"'", 1)
+		assertCount(t, db, "attempts WHERE run_id='"+cmdRun+"' AND attempt_resolution IS NOT NULL", 0)
+		assertCount(t, db, "interrupts WHERE id='"+interruptID+"' AND status='open'", 1)
+		assertCount(t, db, "command_event_outcomes WHERE state='pending'", 1)
+		assertCount(t, db, "outbox_operations WHERE kind IN ('launch_agent','command_ack')", 0)
+		if status := runStatus(t, db); status != "waiting_human" {
+			t.Fatalf("run status=%s after rollback", status)
+		}
+		mustExec(t, db, `DROP TRIGGER fail_retry_claim`)
+		if _, err := db.ApplyRetryProbeResult(ctx, RetryProbeResultCmd{InterruptID: interruptID, ProbeID: probeID, Succeeded: true, AbsenceEvidenceJSON: json.RawMessage(`{"absent":true}`), NowMS: testNow + 10}); err != nil {
+			t.Fatal(err)
+		}
+		assertCount(t, db, "attempts WHERE run_id='"+cmdRun+"' AND attempt_no=2", 1)
+		assertCount(t, db, "attempt_claims WHERE run_id='"+cmdRun+"' AND attempt_no=2", 1)
+		assertCount(t, db, "outbox_operations WHERE kind='launch_agent' AND attempt_no=2", 1)
 	})
 }
 

@@ -137,8 +137,8 @@ type GateReEvaluationPayload struct {
 // gateReEvalAttemptRow is the source Interrupt/Run context read inside the
 // precondition transaction.
 type gateReEvalAttemptRow struct {
-	op        GateReEvaluationPayload
-	projectID string
+	op                  GateReEvaluationPayload
+	projectID, taskKind string
 }
 
 func assertGateReEvalPreconditionsTx(ctx context.Context, tx *sql.Tx, claim ClaimedOperation, nowMS int64) (gateReEvalAttemptRow, error) {
@@ -161,10 +161,10 @@ func assertGateReEvalPreconditionsTx(ctx context.Context, tx *sql.Tx, claim Clai
 		return gateReEvalAttemptRow{}, fmt.Errorf("%w: operation key mismatch", ErrGateReEvaluationContract)
 	}
 	// Run assertion: (id=run_id, status=waiting_human, version=source_run_version).
-	var runStatus string
+	var runStatus, taskKind string
 	var runVersion int64
 	var projectID sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT status, version, project_id FROM runs WHERE id=?`, op.RunID).Scan(&runStatus, &runVersion, &projectID); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT status,version,project_id,COALESCE(kind,'') FROM runs WHERE id=?`, op.RunID).Scan(&runStatus, &runVersion, &projectID, &taskKind); err != nil {
 		return gateReEvalAttemptRow{}, fmt.Errorf("%w: source run missing: %v", ErrGateReEvaluationAssertion, err)
 	}
 	if RunStatus(runStatus) != RunWaitingHuman || runVersion != op.SourceRunVersion {
@@ -191,7 +191,7 @@ func assertGateReEvalPreconditionsTx(ctx context.Context, tx *sql.Tx, claim Clai
 	if bindingDigest != op.EffectBindingDigest {
 		return gateReEvalAttemptRow{}, fmt.Errorf("%w: effect binding digest mismatch", ErrGateReEvaluationAssertion)
 	}
-	return gateReEvalAttemptRow{op: op, projectID: projectID.String}, nil
+	return gateReEvalAttemptRow{op: op, projectID: projectID.String, taskKind: taskKind}, nil
 }
 
 // decodeGateReEvalResult canonicalizes the result bytes and extracts the kind
@@ -234,11 +234,13 @@ type gateReEvalSucceededPayload struct {
 }
 
 type gateReEvalVerdictProjection struct {
-	Kind       string `json:"kind"`
-	Code       string `json:"code"`
-	HeadSHA    string `json:"head_sha"`
-	CheckRunID string `json:"check_run_id"`
-	RetryNo    int    `json:"retry_no"`
+	Kind            string `json:"kind"`
+	Code            string `json:"code"`
+	HeadSHA         string `json:"head_sha"`
+	ChangeID        string `json:"change_id"`
+	ExpectedHeadSHA string `json:"expected_head_sha"`
+	CheckRunID      string `json:"check_run_id"`
+	RetryNo         int    `json:"retry_no"`
 }
 
 // gateReEvalVerdictFields carries the closed HITL verdict payload fields
@@ -272,9 +274,6 @@ func (d *DB) completeGateReEvalSucceededTx(ctx context.Context, tx *sql.Tx, clai
 	if sha256Hex([]byte(p.GateInputJSON)) != p.GateInputHash {
 		return fmt.Errorf("%w: gate_input_hash mismatch", ErrGateReEvaluationContract)
 	}
-	if p.GateInputHash != row.op.GateInputHash {
-		return fmt.Errorf("%w: succeeded input hash differs from operation", ErrGateReEvaluationContract)
-	}
 	if p.GateVersion != row.op.GateVersion {
 		return fmt.Errorf("%w: gate_version differs from operation", ErrGateReEvaluationContract)
 	}
@@ -288,6 +287,9 @@ func (d *DB) completeGateReEvalSucceededTx(ctx context.Context, tx *sql.Tx, clai
 	}
 	if v.HeadSHA != row.op.HeadSHA {
 		return fmt.Errorf("%w: verdict head differs from operation", ErrGateReEvaluationContract)
+	}
+	if v.Kind == "ready" && v.Code == "merge" && (v.ChangeID != row.op.ChangeID || v.ExpectedHeadSHA != row.op.HeadSHA) {
+		return fmt.Errorf("%w: merge verdict identity differs from operation", ErrGateReEvaluationContract)
 	}
 	if v.Kind == "hitl" {
 		if err := json.Unmarshal([]byte(p.VerdictJSON), &vf); err != nil {
@@ -316,16 +318,13 @@ func (d *DB) completeGateReEvalSucceededTx(ctx context.Context, tx *sql.Tx, clai
 	// Record the evaluation inside this transaction: insert-or-return snapshot
 	// and cache, allocate one evaluation (E), calibration and gate_sample. The
 	// recorder derives every field from the decoded canonical input.
-	rec, err := gateReEvalRecord(row.op, p, nowMS)
+	rec, err := gateReEvalRecord(row, p, nowMS)
 	if err != nil {
 		return err
 	}
 	recorded, err := recordGateEvaluationTxWithIDs(ctx, tx, rec, RecordedGateEvaluation{})
 	if err != nil {
 		return err
-	}
-	if recorded.SnapshotID != row.op.GateInputSnapshotID {
-		return fmt.Errorf("%w: reused snapshot id drift", ErrGateReEvaluationContract)
 	}
 	R := sha256Hex(resultCanon)
 	// Run CAS per verdict matrix (storage.md §8.1).
@@ -382,7 +381,8 @@ func (d *DB) completeGateReEvalSucceededTx(ctx context.Context, tx *sql.Tx, clai
 // gateReEvalRecord builds the GateEvaluationRecord from the decoded canonical
 // input and verdict, deriving shadow decision, features and brain-input links
 // without importing the gate package (which would form an import cycle).
-func gateReEvalRecord(op GateReEvaluationPayload, p gateReEvalSucceededPayload, nowMS int64) (GateEvaluationRecord, error) {
+func gateReEvalRecord(row gateReEvalAttemptRow, p gateReEvalSucceededPayload, nowMS int64) (GateEvaluationRecord, error) {
+	op := row.op
 	var proj struct {
 		SchemaVersion        int    `json:"schema_version"`
 		EffectivePolicyHash  string `json:"effective_policy_hash"`
@@ -412,6 +412,9 @@ func gateReEvalRecord(op GateReEvaluationPayload, p gateReEvalSucceededPayload, 
 	}
 	if proj.SchemaVersion < 1 || proj.Change.HeadSHA == "" || proj.EffectivePolicyHash == "" || proj.CertificationVersion == "" {
 		return GateEvaluationRecord{}, fmt.Errorf("%w: gate input missing projected fields", ErrGateReEvaluationContract)
+	}
+	if proj.Identity.RunID != op.RunID || proj.Identity.ProjectID != row.projectID || proj.Identity.TaskKind != row.taskKind || proj.Identity.ChangeID != op.ChangeID || proj.Change.HeadSHA != op.HeadSHA {
+		return GateEvaluationRecord{}, fmt.Errorf("%w: gate input identity differs from operation", ErrGateReEvaluationContract)
 	}
 	riskVersion := proj.Risk.Source.Version
 	if riskVersion == "" {

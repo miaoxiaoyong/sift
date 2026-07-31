@@ -10,6 +10,9 @@ import (
 
 func interruptCommand(c storage.GateCandidate, in Input, v Verdict, attention config.Attention, channels []storage.InterruptChannel, nowMS int64) (storage.EmitInterruptCmd, error) {
 	cmd := storage.EmitInterruptCmd{RunID: c.RunID, ExpectedRunVersion: c.Version, Generation: storage.InterruptGeneration{ChangeID: in.Identity.ChangeID, HeadSHA: in.Change.HeadSHA, PolicySnapshotID: in.EffectivePolicyHash}, GatePhase: storage.GateReview, GuardrailLevel: storage.GuardrailNone, AttentionDailyQuota: map[storage.InterruptSeverity]int{storage.SeverityLow: attention.DailyQuota.Low, storage.SeverityNormal: attention.DailyQuota.Normal, storage.SeverityHigh: attention.DailyQuota.High}, DayTimezone: attention.DayTimezone, MaxEscalations: attention.MaxEscalations, Source: storage.SourceSystem, NowMS: nowMS, DailySummaryAt: attention.DailySummaryAt, CriticalWindowMS: attention.CriticalFuse.Window.Milliseconds(), CriticalTotalLimit: attention.CriticalFuse.TotalLimit, CriticalPerRunLimit: attention.CriticalFuse.PerRunLimit, Channels: channels}
+	if c.AttemptNo > 0 {
+		cmd.AttemptNo = &c.AttemptNo
+	}
 	if batchAt, ok := storage.NextDailySummaryAt(nowMS, attention.DayTimezone, attention.DailySummaryAt); ok {
 		cmd.BatchAtMS = &batchAt
 	}

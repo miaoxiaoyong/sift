@@ -150,11 +150,22 @@ func (r *Reconciler) input(ctx context.Context, c storage.GateCandidate, change 
 	if err != nil {
 		return Input{}, err
 	}
+	effects, err := r.DB.GateCommandEffectsForInput(ctx, c.RunID, change.ID, change.HeadSHA, hash)
+	if err != nil {
+		return Input{}, err
+	}
+	exemptions := make([]Exemption, len(effects.Exemptions))
+	for i, exemption := range effects.Exemptions {
+		exemptions[i] = Exemption{RunID: exemption.RunID, HeadSHA: exemption.HeadSHA, RuleID: exemption.RuleID, MatchedPathsDigest: exemption.MatchedPathsDigest}
+	}
+	if effects.ReviewApproved {
+		change.ReviewState = forge.Approved
+	}
 	rules, err := config.CertificationRulesVersion(r.Certification)
 	if err != nil {
 		return Input{}, err
 	}
-	return Input{SchemaVersion: 1, Identity: Identity{RunID: c.RunID, ProjectID: c.ProjectID, TaskKind: c.TaskKind, ChangeID: change.ID}, Change: Change{State: string(change.State), HeadSHA: change.HeadSHA, BaseRef: c.BaseRef, HeadRef: c.HeadRef, IsDraft: change.IsDraft, Mergeability: string(change.Mergeability), ReviewState: string(change.ReviewState), PathsComplete: true, ChangedPaths: paths, FilesChanged: len(paths)}, Checks: checks, EffectivePolicy: effective, EffectivePolicyHash: hash, CertificationRulesVersion: rules, CertificationVersion: certVersion, Risk: risk}, nil
+	return Input{SchemaVersion: 1, Identity: Identity{RunID: c.RunID, ProjectID: c.ProjectID, TaskKind: c.TaskKind, ChangeID: change.ID}, Change: Change{State: string(change.State), HeadSHA: change.HeadSHA, BaseRef: c.BaseRef, HeadRef: c.HeadRef, IsDraft: change.IsDraft, Mergeability: string(change.Mergeability), ReviewState: string(change.ReviewState), PathsComplete: true, ChangedPaths: paths, FilesChanged: len(paths)}, Checks: checks, EffectivePolicy: effective, EffectivePolicyHash: hash, CertificationRulesVersion: rules, CertificationVersion: certVersion, Risk: risk, OneTimeExemptions: exemptions}, nil
 }
 
 func (r *Reconciler) t3(ctx context.Context, c storage.GateCandidate, change forge.Change, diff string) (Risk, error) {

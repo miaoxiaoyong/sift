@@ -456,7 +456,9 @@ func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, l
 		query += ` AND json_extract(payload_json, '$.purpose')=?`
 		args = append(args, purpose)
 	}
-	query += ` ORDER BY next_attempt_at_ms, id LIMIT 1`
+	// Rotate across Run identities before considering another operation from a
+	// hot Run. Operations without a Run are their own fairness identity.
+	query += ` ORDER BY COALESCE((SELECT MAX(a.rowid) FROM outbox_attempts a JOIN outbox_operations prior ON prior.id=a.operation_id WHERE (outbox_operations.run_id IS NOT NULL AND prior.run_id=outbox_operations.run_id) OR (outbox_operations.run_id IS NULL AND prior.id=outbox_operations.id)),0),next_attempt_at_ms,id LIMIT 1`
 	row := tx.QueryRowContext(ctx, query, args...)
 	var c ClaimedOperation
 	var kind, payload, state string

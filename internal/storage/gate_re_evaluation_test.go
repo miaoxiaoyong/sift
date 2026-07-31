@@ -76,6 +76,7 @@ func seedClaimedGateReEval(t *testing.T, db *DB, ctx context.Context, reason Int
 	if err := db.SeedForgeRunForTest(ctx, cmdRun, "project", "cfg", "42", testNow); err != nil {
 		t.Fatal(err)
 	}
+	mustExec(t, db, `UPDATE runs SET kind='bug' WHERE id=?`, cmdRun)
 	insertTaskSpec(t, db, "task-01", cmdRun, 1)
 	insertAttempt(t, db, cmdRun, 1, "task-01")
 	head := "0123456789012345678901234567890123456789"
@@ -370,6 +371,33 @@ func TestCompleteGateReEvaluationSucceededReady(t *testing.T) {
 	}
 }
 
+func TestCompleteGateReEvaluationRejectsChangedInputIdentity(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	head := "0123456789012345678901234567890123456789"
+	sourceInput := mustCanon(t, map[string]any{
+		"schema_version": 1, "effective_policy_hash": strings.Repeat("c", 64), "certification_version": strings.Repeat("d", 64),
+		"change":   map[string]any{"head_sha": head},
+		"identity": map[string]any{"change_id": "change-01", "run_id": cmdRun, "project_id": "project", "task_kind": "bug"},
+		"risk":     map[string]any{"source": map[string]any{"version": "T3/fallback/v1"}},
+	})
+	claim, _ := seedClaimedGateReEval(t, db, ctx, InterruptGuardrailViolation, sourceInput, SHA256Hex([]byte(sourceInput)), "", "")
+	changed := mustCanon(t, map[string]any{
+		"schema_version": 1, "effective_policy_hash": strings.Repeat("c", 64), "certification_version": strings.Repeat("d", 64),
+		"change":   map[string]any{"head_sha": head},
+		"identity": map[string]any{"change_id": "change-01", "run_id": cmdRun, "project_id": "other-project", "task_kind": "bug"},
+		"risk":     map[string]any{"source": map[string]any{"version": "T3/fallback/v1"}},
+	})
+	verdict := mustCanon(t, map[string]any{"schema_version": 1, "kind": "ready", "code": "no_auto_merge", "head_sha": head})
+	result := canonicalResult(t, "succeeded", map[string]any{
+		"gate_input_json": changed, "gate_input_hash": SHA256Hex([]byte(changed)), "gate_version": "gate/v1",
+		"verdict_json": verdict, "verdict_digest": SHA256Hex([]byte(verdict)),
+	})
+	if err := db.CompleteGateReEvaluation(ctx, claim, result, testNow+20); !errors.Is(err, ErrGateReEvaluationContract) {
+		t.Fatalf("changed identity error=%v", err)
+	}
+}
+
 // TestCompleteGateReEvaluationSucceededReadyMerge verifies the ready/merge arm
 // (storage.md §8.1): Run -> running(gate_merge_requested), one terminal event,
 // and exactly one merge_change successor enqueued in the same transaction with
@@ -391,7 +419,7 @@ func TestCompleteGateReEvaluationSucceededReadyMerge(t *testing.T) {
 		},
 	})
 	inputHash := SHA256Hex([]byte(inputJSON))
-	verdictJSON := mustCanon(t, map[string]any{"schema_version": 1, "kind": "ready", "code": "merge", "head_sha": head})
+	verdictJSON := mustCanon(t, map[string]any{"schema_version": 1, "kind": "ready", "code": "merge", "head_sha": head, "change_id": "change-01", "expected_head_sha": head})
 	verdictDigest := SHA256Hex([]byte(verdictJSON))
 	claim, _ := seedClaimedGateReEval(t, db, ctx, InterruptGuardrailViolation, inputJSON, inputHash, "", "")
 

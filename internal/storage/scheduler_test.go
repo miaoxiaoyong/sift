@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -93,6 +95,42 @@ func TestOutboxWakeupConvergesConcurrentCommits(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("claimed %d/%d operations after concurrent wakeups", i, total)
 		}
+	}
+}
+
+func TestV8OutboxFairnessUnderHotRun(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	insertConfigSnapshot(t, db, "cfg-v8")
+	insertProject(t, db, "project-v8", "cfg-v8")
+	for _, runID := range []string{"hot", "peer-b", "peer-c"} {
+		insertManualRun(t, db, runID, "project-v8", "cfg-v8")
+	}
+	for i := 0; i < 12; i++ {
+		if _, err := db.EnqueueOperation(ctx, Operation{Key: fmt.Sprintf("v8:hot:%02d", i), Kind: OperationForgeAlert, RunID: "hot", Payload: []byte(`{}`)}, testNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, runID := range []string{"peer-b", "peer-c"} {
+		for n := 0; n < 2; n++ {
+			if _, err := db.EnqueueOperation(ctx, Operation{Key: fmt.Sprintf("v8:%s:%d", runID, n), Kind: OperationForgeAlert, RunID: runID, Payload: []byte(`{}`)}, testNow+int64(i)+1); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var first []string
+	for i := 0; i < 6; i++ {
+		claim, err := db.ClaimOutboxOperationKind(ctx, fmt.Sprintf("v8-worker-%d", i), OperationForgeAlert, testNow+10, 100)
+		if err != nil || claim == nil {
+			t.Fatalf("claim %d=%v err=%v", i, claim, err)
+		}
+		first = append(first, claim.RunID)
+		if err := db.CompleteOutboxAttempt(ctx, *claim, CompleteOutcome{State: OperationSucceeded, NowMS: testNow + 10}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Join(first, ",") != "hot,peer-b,peer-c,hot,peer-b,peer-c" {
+		t.Fatalf("first fairness rounds=%v", first)
 	}
 }
 

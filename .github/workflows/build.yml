@@ -87,6 +87,25 @@ jobs:
       # its PASS line is present, so the Linux success is reviewable in the log
       # instead of only a package-level "ok". No assertion is weakened: the
       # grep fails the build if the named test did not run and pass.
+      - name: M5 consolidated named vectors
+        run: |
+          set -o pipefail
+          go test -v -count=3 ./internal/storage -run 'Test(V2CurrentWritePortsCrashAtomicity|V4HumanStateInterleavings|ApplyRetryProbeResult|ApplyCommandStartupStall|AdvanceInterruptStartupStallAtLimit|V8OutboxFairnessUnderHotRun|CriticalFuse|AttentionQuotaConcurrentNoBorrowing|V11GateBypass|Metrics)' | tee m5-storage.log
+          grep -q -- '--- PASS: TestV2CurrentWritePortsCrashAtomicity' m5-storage.log
+          grep -q -- '--- PASS: TestV4HumanStateInterleavings' m5-storage.log
+          grep -q -- '--- PASS: TestV8OutboxFairnessUnderHotRun' m5-storage.log
+          grep -q -- '--- PASS: TestCriticalFuseConcurrentAdmissionSerializes' m5-storage.log
+          grep -q -- '--- PASS: TestV11GateBypassExcludedFromFalseRelease' m5-storage.log
+          go test -v -count=3 ./internal/brain ./internal/gate -run 'Test(EmitInterruptT4|EmitInterruptT6|T7|A7|V9FullFake)' | tee m5-brain-gate.log
+          grep -q -- '--- PASS: TestT7SchedulerGlobalProjectConcreteAllAndOnce' m5-brain-gate.log
+          grep -q -- '--- PASS: TestV9FullFakeGateInterruptCommandMergeChain' m5-brain-gate.log
+          go test -v -count=3 ./internal/controlplane ./internal/command -run 'Test(V10a|ReportSubmit|OpsMetricsCoversNineSeries|CompileStartupStall)' | tee m5-endpoints.log
+          grep -q -- '--- PASS: TestV10aEndpointCapabilitiesAndSockets' m5-endpoints.log
+          grep -q -- '--- PASS: TestReportSubmitRunningAccepted' m5-endpoints.log
+          grep -q -- '--- PASS: TestOpsMetricsCoversNineSeries' m5-endpoints.log
+          go test -v -race -count=3 ./internal/storage ./internal/brain ./internal/gate -run 'Test(V2CurrentWritePortsCrashAtomicity|V4HumanStateInterleavings|V8OutboxFairnessUnderHotRun|CriticalFuseConcurrentAdmissionSerializes|AttentionQuotaConcurrentNoBorrowing|EmitInterruptT4|EmitInterruptT6|T7Scheduler|A7|V9FullFake)' | tee m5-race.log
+          grep -q -- '--- PASS: TestV4HumanStateInterleavings' m5-race.log
+          grep -q -- '--- PASS: TestV9FullFakeGateInterruptCommandMergeChain' m5-race.log
       - name: V10 zero-listener evidence (linux)
         run: |
           CGO_ENABLED=0 go test -v -run TestV10ZeroNetworkListeners ./internal/controlplane/ | tee v10.log

@@ -727,6 +727,48 @@ func insertCommandEffectTx(ctx context.Context, tx *sql.Tx, interruptID, eventID
 	return err
 }
 
+type GateCommandExemption struct {
+	RunID, HeadSHA, RuleID, MatchedPathsDigest string
+}
+
+type GateCommandEffects struct {
+	Exemptions     []GateCommandExemption
+	ReviewApproved bool
+}
+
+// GateCommandEffectsForInput returns only immutable effects bound to the exact
+// Gate identity being assembled. Historical heads and policy snapshots cannot
+// satisfy the next Gate.
+func (d *DB) GateCommandEffectsForInput(ctx context.Context, runID, changeID, headSHA, reviewPolicySnapshotDigest string) (GateCommandEffects, error) {
+	if runID == "" || changeID == "" || headSHA == "" || reviewPolicySnapshotDigest == "" {
+		return GateCommandEffects{}, errors.New("storage: incomplete Gate command-effect identity")
+	}
+	rows, err := d.db.QueryContext(ctx, `SELECT run_id,head_sha,rule_id,matched_paths_digest FROM command_effects
+		WHERE effect_kind='one_time_exemption' AND run_id=? AND head_sha=? ORDER BY rule_id,matched_paths_digest,id`, runID, headSHA)
+	if err != nil {
+		return GateCommandEffects{}, err
+	}
+	defer rows.Close()
+	var out GateCommandEffects
+	for rows.Next() {
+		var exemption GateCommandExemption
+		if err := rows.Scan(&exemption.RunID, &exemption.HeadSHA, &exemption.RuleID, &exemption.MatchedPathsDigest); err != nil {
+			return GateCommandEffects{}, err
+		}
+		out.Exemptions = append(out.Exemptions, exemption)
+	}
+	if err := rows.Err(); err != nil {
+		return GateCommandEffects{}, err
+	}
+	var approved int
+	err = d.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM command_effects WHERE effect_kind='human_review_approval' AND run_id=? AND change_id=? AND head_sha=? AND review_policy_snapshot_digest=?)`, runID, changeID, headSHA, reviewPolicySnapshotDigest).Scan(&approved)
+	if err != nil {
+		return GateCommandEffects{}, err
+	}
+	out.ReviewApproved = approved != 0
+	return out, nil
+}
+
 // startupStallRetryRequestTx is the startup_stall retry request (§5). It does
 // not close the Interrupt, create an attempt, release isolation, write a
 // resolution or ack. It CAS-rotates the nonce, writes the initial retry event
@@ -942,9 +984,9 @@ func (d *DB) ApplyRetryProbeResult(ctx context.Context, cmd RetryProbeResultCmd)
 func (d *DB) applyRetryProbeResultTx(ctx context.Context, tx *sql.Tx, cmd RetryProbeResultCmd) (ApplyCommandEventResult, error) {
 	var runID, reason, status, nonce string
 	var version, runVersion int64
-	var attemptNo, escalation, maxEscalations int
-	err := tx.QueryRowContext(ctx, `SELECT i.run_id,i.reason,i.status,i.nonce,i.version,r.version,i.attempt_no,i.escalation_count,i.max_escalations FROM interrupts i JOIN runs r ON r.id=i.run_id WHERE i.id=?`, cmd.InterruptID).
-		Scan(&runID, &reason, &status, &nonce, &version, &runVersion, &attemptNo, &escalation, &maxEscalations)
+	var attemptNo, generation, escalation, maxEscalations int
+	err := tx.QueryRowContext(ctx, `SELECT i.run_id,i.reason,i.status,i.nonce,i.version,r.version,i.attempt_no,a.generation,i.escalation_count,i.max_escalations FROM interrupts i JOIN runs r ON r.id=i.run_id JOIN attempts a ON a.run_id=i.run_id AND a.attempt_no=i.attempt_no WHERE i.id=?`, cmd.InterruptID).
+		Scan(&runID, &reason, &status, &nonce, &version, &runVersion, &attemptNo, &generation, &escalation, &maxEscalations)
 	if err != nil {
 		return ApplyCommandEventResult{}, err
 	}
@@ -964,16 +1006,15 @@ func (d *DB) applyRetryProbeResultTx(ctx context.Context, tx *sql.Tx, cmd RetryP
 	}
 
 	if cmd.Succeeded {
-		return d.probeSucceededTx(ctx, tx, cmd, runID, runVersion, nonce, version, attemptNo, eventKey, initialEventID)
+		return d.probeSucceededTx(ctx, tx, cmd, runID, runVersion, nonce, version, attemptNo, generation, eventKey, initialEventID)
 	}
 	return d.probeFailedTx(ctx, tx, cmd, nonce, version, escalation, maxEscalations, eventKey, initialEventID)
 }
 
 // probeSucceededTx runs the ADR-013 single CAS (specs/command.md §5). Evidence,
 // retry_after_absence, isolation release, close/responded, waiting_human ->
-// queued, final outcome + ack are all-or-nothing. The next attempt/claim/
-// launch is driven by the queued Run through the existing launch path.
-func (d *DB) probeSucceededTx(ctx context.Context, tx *sql.Tx, cmd RetryProbeResultCmd, runID string, runVersion int64, nonce string, version int64, attemptNo int, eventKey, initialEventID string) (ApplyCommandEventResult, error) {
+// queued, next attempt/claim/launch, final outcome + ack are all-or-nothing.
+func (d *DB) probeSucceededTx(ctx context.Context, tx *sql.Tx, cmd RetryProbeResultCmd, runID string, runVersion int64, nonce string, version int64, attemptNo, generation int, eventKey, initialEventID string) (ApplyCommandEventResult, error) {
 	// 1. Probe -> succeeded (one-time CAS) with the absence evidence.
 	res, err := tx.ExecContext(ctx, `UPDATE attempt_probes SET state='succeeded',absence_evidence_json=?,absence_evidence_digest=?,finished_at_ms=? WHERE id=? AND state IN ('pending','running')`, string(cmd.AbsenceEvidenceJSON), digestJSON(cmd.AbsenceEvidenceJSON), cmd.NowMS, cmd.ProbeID)
 	if err != nil {
@@ -1005,7 +1046,11 @@ func (d *DB) probeSucceededTx(ctx context.Context, tx *sql.Tx, cmd RetryProbeRes
 	if _, err := tx.ExecContext(ctx, `UPDATE attempts SET isolation_state='none',isolation_released_at_ms=?,isolation_release_event_id=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND isolation_state='frozen'`, cmd.NowMS, finalID, cmd.NowMS, runID, attemptNo); err != nil {
 		return ApplyCommandEventResult{}, err
 	}
-	// 7. Ack operation.
+	// 7. Create exactly one pending successor attempt, claim and launch.
+	if _, err := d.spawnNextAttemptTx(ctx, tx, runID, attemptNo, generation, cmd.NowMS, ""); err != nil {
+		return ApplyCommandEventResult{}, err
+	}
+	// 8. Ack operation.
 	ackKey := command.AckOperationKey(eventKey)
 	if err := writeProbeAckOpTx(ctx, tx, eventKey, command.OutcomeApplied, finalID, cmd.InterruptID, runID, ackKey, cmd.NowMS); err != nil {
 		return ApplyCommandEventResult{}, err

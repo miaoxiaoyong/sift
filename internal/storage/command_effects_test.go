@@ -142,6 +142,10 @@ func TestApplyCommandGuardrailApproveEnqueuesGateReEval(t *testing.T) {
 	if cid != "" {
 		t.Fatalf("exemption must not carry change_id, got %q", cid)
 	}
+	effects, err := db.GateCommandEffectsForInput(ctx, cmdRun, f.changeID, f.headSHA, f.policyHash)
+	if err != nil || len(effects.Exemptions) != 1 || effects.Exemptions[0].RuleID != f.ruleID {
+		t.Fatalf("Gate exemption effects=%+v err=%v", effects, err)
+	}
 	// Interrupt closed responded; Run stays waiting_human behind the re-eval.
 	var closeReason, status string
 	db.db.QueryRow(`SELECT close_reason FROM interrupts WHERE id=?`, f.interruptID).Scan(&closeReason)
@@ -195,6 +199,18 @@ func TestApplyCommandCodeReviewApproveInsertsReviewApproval(t *testing.T) {
 	db.db.QueryRow(`SELECT change_id,head_sha,review_policy_snapshot_digest FROM command_effects WHERE effect_kind='human_review_approval'`).Scan(&cid, &hs, &psd)
 	if cid != f.changeID || hs != f.headSHA || psd != f.policyHash {
 		t.Fatalf("review approval binding = %s/%s/%s", cid, hs, psd)
+	}
+	effects, err := db.GateCommandEffectsForInput(ctx, cmdRun, f.changeID, f.headSHA, f.policyHash)
+	if err != nil || !effects.ReviewApproved {
+		t.Fatalf("exact Gate command effects=%+v err=%v", effects, err)
+	}
+	effects, err = db.GateCommandEffectsForInput(ctx, cmdRun, f.changeID, strings.Repeat("b", 40), f.policyHash)
+	if err != nil || effects.ReviewApproved {
+		t.Fatalf("cross-head Gate command effects=%+v err=%v", effects, err)
+	}
+	effects, err = db.GateCommandEffectsForInput(ctx, cmdRun, f.changeID, f.headSHA, strings.Repeat("e", 64))
+	if err != nil || effects.ReviewApproved {
+		t.Fatalf("cross-policy Gate command effects=%+v err=%v", effects, err)
 	}
 	if c := gateReEvalOpCount(t, db); c != 1 {
 		t.Fatalf("gate_re_evaluation ops = %d, want 1", c)

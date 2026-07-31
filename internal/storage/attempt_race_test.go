@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -21,6 +22,56 @@ func freezeAttemptForRace(t *testing.T) (*DB, context.Context, int64) {
 		t.Fatal(err)
 	}
 	return db, ctx, run.Version
+}
+
+func TestV4HumanStateInterleavings(t *testing.T) {
+	agent := AgentIdentity{PID: 101, StartedAtMS: testNow + 1, Executable: "/agent"}
+	t.Run("interrupt_commits_before_started", func(t *testing.T) {
+		db, ctx, version := freezeAttemptForRace(t)
+		got, err := db.ResolveAttemptRace(ctx, AttemptRaceCommand{RunID: "run", AttemptNo: 1, ExpectedGeneration: 1, ExpectedRunVersion: version, FactKey: "v4-after-interrupt", NowMS: testNow + 1, Agent: &agent})
+		if err != nil || got != AttemptRaceSupersededByFact {
+			t.Fatalf("disposition=%s err=%v", got, err)
+		}
+	})
+	t.Run("started_commits_before_interrupt", func(t *testing.T) {
+		db, ctx := seedTerminationAttempt(t)
+		mustExec(t, db, `UPDATE attempts SET phase='spawning' WHERE run_id='run' AND attempt_no=1`)
+		got, err := db.ResolveAttemptRace(ctx, AttemptRaceCommand{RunID: "run", AttemptNo: 1, ExpectedGeneration: 1, ExpectedRunVersion: 1, FactKey: "v4-before-interrupt", NowMS: testNow + 1, Agent: &agent})
+		if err != nil || got != AttemptRaceRunning {
+			t.Fatalf("disposition=%s err=%v", got, err)
+		}
+		_, err = db.RecordTerminationObservation(ctx, RecordTerminationObservationCmd{RunID: "run", AttemptNo: 1, ExpectedRunVersion: 1, ExpectedGeneration: 1, Source: TerminationRecovery, DiagnosticCause: "termination_unconfirmed", AttentionDailyQuota: interruptQuota(), NowMS: testNow + 2})
+		if !errors.Is(err, ErrRejectedStale) {
+			t.Fatalf("late interrupt transaction error=%v", err)
+		}
+		assertCount(t, db, "interrupts WHERE run_id='run'", 0)
+	})
+	t.Run("decision_commits_before_started", func(t *testing.T) {
+		db, ctx, version := freezeAttemptForRace(t)
+		got, err := db.ResolveAttemptRace(ctx, AttemptRaceCommand{RunID: "run", AttemptNo: 1, ExpectedGeneration: 1, ExpectedRunVersion: version, FactKey: "v4-decision-first", NowMS: testNow + 1, Reject: true})
+		if err != nil || got != AttemptRaceDecisionApplied {
+			t.Fatalf("decision=%s err=%v", got, err)
+		}
+		got, err = db.ResolveAttemptRace(ctx, AttemptRaceCommand{RunID: "run", AttemptNo: 1, ExpectedGeneration: 1, FactKey: "v4-late-started", NowMS: testNow + 2, Agent: &agent})
+		if err != nil || got != AttemptRaceSupersededByDecision {
+			t.Fatalf("late fact=%s err=%v", got, err)
+		}
+	})
+	t.Run("started_commits_before_decision", func(t *testing.T) {
+		db, ctx, version := freezeAttemptForRace(t)
+		got, err := db.ResolveAttemptRace(ctx, AttemptRaceCommand{RunID: "run", AttemptNo: 1, ExpectedGeneration: 1, ExpectedRunVersion: version, FactKey: "v4-fact-first", NowMS: testNow + 1, Agent: &agent})
+		if err != nil || got != AttemptRaceSupersededByFact {
+			t.Fatalf("fact=%s err=%v", got, err)
+		}
+		run, err := db.Run(ctx, "run")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err = db.ResolveAttemptRace(ctx, AttemptRaceCommand{RunID: "run", AttemptNo: 1, ExpectedGeneration: 1, ExpectedRunVersion: run.Version, FactKey: "v4-late-decision", NowMS: testNow + 2, Reject: true})
+		if err != nil || got != AttemptRaceDecisionApplied {
+			t.Fatalf("late decision=%s err=%v", got, err)
+		}
+	})
 }
 
 func TestResolveAttemptRaceFactWinsWhileFrozen(t *testing.T) {

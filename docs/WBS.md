@@ -529,12 +529,14 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### M5 门禁
 
-- [ ] V2 retry 成功原子事务段、V4 人工态交错段通过
-- [ ] T4/T6 各自兜底、T7 两类只读提案及 A7 防火墙测试通过（T7 两类只读提案与 A7 防火墙的测试证据已由 [#733 PASS](reviews/2026-07-30-m5-t7-a7-firewall-rereview-733-pi-deepseek-v4-pro.md) 闭合；本项仍随 M5 整体门禁未过保持未勾）
-- [ ] V8、V10a Command/Report 段、V13 通过
-- [ ] `startup_stall` approve/auto_reject 均被拒；retry 两段式与迟到事实仲裁通过
-- [ ] 九项指标可查询，V11 指标段闭合：`gate_bypassed` 不进入误放行率分母且进入门禁绕过率
-- [ ] 全 fake 端到端链（含 Gate、Interrupt、Command、merge）成为 V9 的自动化完整段
+> [#835 独立复审 PASS WITH NOTES](reviews/2026-07-31-m5-phase-gate-835-claude-sonnet.md)：M5 自动化阶段门通过，允许进入 M6。综合门禁将此前分片证据与本轮新增 `TestV9FullFakeGateInterruptCommandMergeChain`、V2 retry-success 崩溃回滚、V4 四交错、V8 hot-Run 公平轮转及 CI 命名/race 门禁合取；full-fake V9 从已验证 Agent 结果出发，必须经过 `SuccessReconciler → create_change worker → Gate/Interrupt → ApplyCommandEvent → gate_re_evaluation → merge_change worker → Forge merge fact`，未 seed Change/Gate。非阻断注记仅为 NULL-run outbox 公平查询未来可进一步优化、更多 CI sentinel 可加密；不影响 M5。真实双平台/Agent/手机端与发布机证据仍按权威表留 M7/M8，不得把 M5 自动化门读作完整 PoC 发布通过。
+
+- [x] V2 retry 成功原子事务段、V4 人工态交错段通过
+- [x] T4/T6 各自兜底、T7 两类只读提案及 A7 防火墙测试通过（T7 两类只读提案与 A7 防火墙由 [#733 PASS](reviews/2026-07-30-m5-t7-a7-firewall-rereview-733-pi-deepseek-v4-pro.md) 闭合，生产 aggregate scheduler 由 #834 接线，本轮 #835 合取复验）
+- [x] V8、V10a Command/Report 段、V13 通过
+- [x] `startup_stall` approve/auto_reject 均被拒；retry 两段式与迟到事实仲裁通过
+- [x] 九项指标可查询，V11 指标段闭合：`gate_bypassed` 不进入误放行率分母且进入门禁绕过率
+- [x] 全 fake 端到端链（含 Gate、Interrupt、Command、merge）成为 V9 的自动化完整段
 
 ---
 
@@ -542,7 +544,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### 前置
 
-- [ ] M5 门禁通过
+- [x] M5 门禁通过
 
 ### 任务与门禁
 

@@ -469,6 +469,9 @@ func TestApplyRetryProbeResultSuccessClosesAndQueues(t *testing.T) {
 	assertCount(t, db, "command_event_outcomes WHERE state='pending'", 0)
 	assertCount(t, db, "command_event_outcomes WHERE state='final'", 1)
 	assertCount(t, db, "outbox_operations WHERE kind='command_ack'", 1)
+	assertCount(t, db, "attempts WHERE run_id='"+cmdRun+"' AND attempt_no=2 AND phase='pending'", 1)
+	assertCount(t, db, "attempt_claims WHERE run_id='"+cmdRun+"' AND attempt_no=2", 1)
+	assertCount(t, db, "outbox_operations WHERE kind='launch_agent' AND run_id='"+cmdRun+"' AND attempt_no=2", 1)
 }
 
 func TestApplyRetryProbeResultFailureAbsenceUnconfirmed(t *testing.T) {

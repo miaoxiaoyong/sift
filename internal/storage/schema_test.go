@@ -320,7 +320,7 @@ func TestSchemaInventory(t *testing.T) {
 		"events_run_seq", "events_project_seq", "outbox_operations_state_next",
 		"outbox_operations_lease_expiry", "budget_entries_kind_created_run",
 		"forge_cursors_next_poll", "forge_reply_state_updated", "brain_calls_run_attempt_touchpoint",
-		"intake_items_state_updated", "gate_evaluations_run_created", "ledger_entries_run_created", "proposal_drafts_aggregate_created", "report_quota_exhaustions_run_bucket", "t7_replay_evidence_window",
+		"intake_items_state_updated", "gate_evaluations_run_created", "ledger_entries_run_created", "proposal_drafts_aggregate_created", "report_quota_exhaustions_run_bucket", "t7_replay_evidence_window", "outbox_operations_run_fairness",
 	}
 	assertObjectsExist(t, db, "index", wantIndexes)
 
