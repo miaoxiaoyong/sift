@@ -16,7 +16,9 @@ type RecoveryAttempt struct {
 	AttemptNo                int
 	Generation               int
 	Phase                    string
+	Backend                  string
 	AgentID                  string
+	DispatchID               string
 	TopologyQualificationKey string
 	WrapperPID               int
 	WrapperStartedAtMS       int64
@@ -145,7 +147,7 @@ func (d *DB) ApplyStartupRecoveryAction(ctx context.Context, cmd StartupRecovery
 		}
 		key = fmt.Sprintf("operation:%s", cmd.OperationID)
 		var safeRedispatch int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM attempts a JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.run_id=(SELECT run_id FROM outbox_operations WHERE id=?) AND a.attempt_no=(SELECT attempt_no FROM outbox_operations WHERE id=?) AND a.phase='pending' AND a.isolation_state='none' AND c.generation=a.generation AND c.launch_operation_key=?`, cmd.OperationID, cmd.OperationID, operationKey).Scan(&safeRedispatch); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM attempts a LEFT JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.run_id=(SELECT run_id FROM outbox_operations WHERE id=?) AND a.attempt_no=(SELECT attempt_no FROM outbox_operations WHERE id=?) AND a.phase='pending' AND a.isolation_state='none' AND c.generation=a.generation AND c.launch_operation_key=?`, cmd.OperationID, cmd.OperationID, operationKey).Scan(&safeRedispatch); err != nil {
 			return err
 		}
 		if safeRedispatch == 0 {
@@ -189,18 +191,18 @@ func (d *DB) StartupRecoveryPending(ctx context.Context, bootID string) ([]Recov
 	return attempts, operations, nil
 }
 
-const recoveryAttemptColumns = `a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id,
-	COALESCE(a.topology_qualification_key,''),COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
+const recoveryAttemptColumns = `a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.backend,a.agent_id,
+	COALESCE(c.dispatch_id,''),COALESCE(a.topology_qualification_key,''),COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
 	COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state`
 
 func scanRecoveryAttempt(rows *sql.Rows) (RecoveryAttempt, error) {
 	var a RecoveryAttempt
-	err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.TopologyQualificationKey, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState)
+	err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.Backend, &a.AgentID, &a.DispatchID, &a.TopologyQualificationKey, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState)
 	return a, err
 }
 
 func (d *DB) recoveryAttempts(ctx context.Context, bootID string) ([]RecoveryAttempt, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.phase NOT IN ('finished','orphaned') AND NOT EXISTS (SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=? AND s.candidate_key='attempt:' || a.run_id || ':' || a.attempt_no) ORDER BY a.run_id,a.attempt_no`, bootID)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id LEFT JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.phase NOT IN ('finished','orphaned') AND NOT EXISTS (SELECT 1 FROM startup_recovery_actions s WHERE s.boot_id=? AND s.candidate_key='attempt:' || a.run_id || ':' || a.attempt_no) ORDER BY a.run_id,a.attempt_no`, bootID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list recovery attempts: %w", err)
 	}
@@ -236,7 +238,7 @@ func (d *DB) recoveryLaunchOperations(ctx context.Context, bootID string) ([]Rec
 }
 
 func (d *DB) RecoveryAttempts(ctx context.Context) ([]RecoveryAttempt, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.phase NOT IN ('finished','orphaned') ORDER BY a.run_id,a.attempt_no`)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id LEFT JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.phase NOT IN ('finished','orphaned') ORDER BY a.run_id,a.attempt_no`)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list recovery attempts: %w", err)
 	}
@@ -253,7 +255,7 @@ func (d *DB) RecoveryAttempts(ctx context.Context) ([]RecoveryAttempt, error) {
 }
 
 func (d *DB) StaleHeartbeatAttempts(ctx context.Context, cutoffMS int64) ([]RecoveryAttempt, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.phase='running' AND (a.heartbeat_at_ms IS NULL OR a.heartbeat_at_ms < ?) ORDER BY a.run_id,a.attempt_no`, cutoffMS)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id LEFT JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.phase='running' AND (a.heartbeat_at_ms IS NULL OR a.heartbeat_at_ms < ?) ORDER BY a.run_id,a.attempt_no`, cutoffMS)
 	if err != nil {
 		return nil, fmt.Errorf("storage: list stale heartbeats: %w", err)
 	}
@@ -270,7 +272,7 @@ func (d *DB) StaleHeartbeatAttempts(ctx context.Context, cutoffMS int64) ([]Reco
 }
 
 func (d *DB) RecoveryAttemptForRun(ctx context.Context, runID string) (RecoveryAttempt, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.run_id=? AND a.phase NOT IN ('finished','orphaned') ORDER BY a.attempt_no DESC LIMIT 1`, runID)
+	rows, err := d.db.QueryContext(ctx, `SELECT `+recoveryAttemptColumns+` FROM attempts a JOIN runs r ON r.id=a.run_id LEFT JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no WHERE a.run_id=? AND a.phase NOT IN ('finished','orphaned') ORDER BY a.attempt_no DESC LIMIT 1`, runID)
 	if err != nil {
 		return RecoveryAttempt{}, err
 	}

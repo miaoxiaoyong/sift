@@ -32,6 +32,30 @@ type Qualification struct {
 
 func sha256Hex(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
 
+// QualificationKey returns the canonical exact key for a frozen topology
+// projection. Storage uses it again before accepting evidence, so callers
+// cannot authorize a different executable under a supplied digest.
+func QualificationKey(q Qualification) (string, error) {
+	if q.MethodVersion != TopologyMethodVersion || q.AgentID == "" || q.AgentDefinitionHash == "" || q.ExecutablePath == "" || q.ExecutableSHA256 == "" || q.VersionOutputDigest == "" || q.GOOS == "" || q.GOARCH == "" {
+		return "", errors.New("runtime: incomplete qualification projection")
+	}
+	keyJSON, err := json.Marshal(struct {
+		SchemaVersion       int    `json:"schema_version"`
+		MethodVersion       string `json:"method_version"`
+		AgentID             string `json:"agent_id"`
+		AgentDefinitionHash string `json:"agent_definition_hash"`
+		ExecutablePath      string `json:"executable_path"`
+		ExecutableSHA256    string `json:"executable_sha256"`
+		VersionOutputDigest string `json:"version_output_digest"`
+		GOOS                string `json:"goos"`
+		GOARCH              string `json:"goarch"`
+	}{1, q.MethodVersion, q.AgentID, q.AgentDefinitionHash, q.ExecutablePath, q.ExecutableSHA256, q.VersionOutputDigest, q.GOOS, q.GOARCH})
+	if err != nil {
+		return "", err
+	}
+	return sha256Hex(keyJSON), nil
+}
+
 // BuildQualification derives the exact identity used by the process-group gate.
 // It performs no topology claim: a successful command probe is not evidence of
 // process-group qualification.
@@ -77,18 +101,10 @@ func BuildQualification(in QualificationInput) (Qualification, error) {
 	if q.GOARCH == "" {
 		q.GOARCH = runtime.GOARCH
 	}
-	keyJSON, _ := json.Marshal(struct {
-		SchemaVersion       int    `json:"schema_version"`
-		MethodVersion       string `json:"method_version"`
-		AgentID             string `json:"agent_id"`
-		AgentDefinitionHash string `json:"agent_definition_hash"`
-		ExecutablePath      string `json:"executable_path"`
-		ExecutableSHA256    string `json:"executable_sha256"`
-		VersionOutputDigest string `json:"version_output_digest"`
-		GOOS                string `json:"goos"`
-		GOARCH              string `json:"goarch"`
-	}{1, q.MethodVersion, q.AgentID, q.AgentDefinitionHash, q.ExecutablePath, q.ExecutableSHA256, q.VersionOutputDigest, q.GOOS, q.GOARCH})
-	q.Key = sha256Hex(keyJSON)
+	q.Key, err = QualificationKey(q)
+	if err != nil {
+		return Qualification{}, err
+	}
 	return q, nil
 }
 

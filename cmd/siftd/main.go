@@ -61,6 +61,7 @@ func main() {
 	termination := &daemon.TerminationCoordinator{
 		DB: db, Terminator: runtime.Terminator{Inspector: runtime.PlatformProcessInspector{}, Signaler: runtime.UnixProcessSignaler{}}, Runtime: snapshot.Config.Runtime,
 		ControlRoot: home.Path,
+		TmuxPath:    tmuxDiagnostics.TmuxPath, TmuxSocketPath: runtime.TmuxSocketPath(filepath.Join(home.Path, "tmux.sock")),
 		ProcessGroupQualified: func(key string) bool {
 			ok, err := db.ProcessGroupQualified(ctx, key)
 			return err == nil && ok
@@ -114,7 +115,7 @@ func main() {
 	workers.SetLaunchWorker(&launchworker.Worker{
 		DB: db, BootID: bootID, WorkerID: "siftd:launch_agent", Root: home.Path,
 		Lease: snapshot.Config.Runtime.SpawnOperationLeaseTTL, Now: time.Now,
-		Backends: backends, Agents: snapshot.Config.Agents,
+		Backends: backends, Agents: snapshot.Config.Agents, FrozenAgentsRequired: true,
 	})
 	s, err := controlplane.Start(home, db)
 	if err != nil {

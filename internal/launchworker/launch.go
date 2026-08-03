@@ -93,7 +93,11 @@ type Worker struct {
 	Backend  Backend
 	Backends BackendRouter
 	Agents   []config.Agent
-	hooks    workerHooks
+	// FrozenAgentsRequired is enabled by production wiring. Legacy fixtures may
+	// omit agent definitions from synthetic config snapshots, but production
+	// must never fall back to the daemon's current configuration.
+	FrozenAgentsRequired bool
+	hooks                workerHooks
 }
 
 type workerHooks struct {
@@ -119,7 +123,29 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	if err != nil || claim == nil {
 		return err
 	}
-	dispatch, err := w.DB.PrepareLaunchDispatch(ctx, *claim, randomID(), randomSecret(), randomSecret(), now().UnixMilli())
+	agent, err := w.DB.FrozenLaunchAgent(ctx, *claim, now().UnixMilli())
+	if err != nil {
+		if w.FrozenAgentsRequired {
+			return err
+		}
+		// Compatibility for old test-only database seeds which predate frozen
+		// agent definitions. Production sets FrozenAgentsRequired and cannot
+		// take this branch.
+		agentID, idErr := w.DB.LaunchAgentID(ctx, *claim, now().UnixMilli())
+		if idErr != nil {
+			return err
+		}
+		var ok bool
+		agent, ok = w.agent(agentID)
+		if !ok {
+			return err
+		}
+	}
+	qualification, err := runtime.BuildQualification(runtime.QualificationInput{AgentID: agent.ID, Args: agent.Args, TaskTransport: string(agent.TaskTransport), VersionArgs: agent.VersionArgs, Executable: agent.Executable})
+	if err != nil {
+		return fmt.Errorf("launch worker: build topology qualification: %w", err)
+	}
+	dispatch, err := w.DB.PrepareLaunchDispatchWithQualification(ctx, *claim, randomID(), randomSecret(), randomSecret(), qualification.Key, now().UnixMilli())
 	resumed := errors.Is(err, storage.ErrLaunchDispatchPrepared)
 	if err != nil && !resumed {
 		return err
@@ -146,14 +172,12 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		agent, ok := w.agent(dispatch.AgentID)
-		if !ok || !matchesDispatch(bootstrap, dispatch, agent, filepath.Dir(path)) {
+		if dispatch.AgentID != agent.ID || !matchesDispatch(bootstrap, dispatch, agent, filepath.Dir(path)) {
 			return errors.New("launch worker: prepared bootstrap does not match dispatch")
 		}
 	} else {
-		agent, ok := w.agent(dispatch.AgentID)
-		if !ok {
-			return fmt.Errorf("launch worker: configured agent %q not found", dispatch.AgentID)
+		if dispatch.AgentID != agent.ID {
+			return errors.New("launch worker: prepared dispatch agent changed")
 		}
 		runDir := filepath.Join(w.Root, "runs", dispatch.RunID, "attempts", fmt.Sprintf("%d", dispatch.AttemptNo))
 		if err := os.MkdirAll(runDir, 0700); err != nil {

@@ -37,6 +37,8 @@ type TerminationCoordinator struct {
 	CriticalPerRunLimit   int
 	Channels              []storage.InterruptChannel
 	ControlRoot           string
+	TmuxPath              string
+	TmuxSocketPath        string
 }
 
 func (c *TerminationCoordinator) Recover(ctx context.Context) error {
@@ -164,6 +166,9 @@ func (c *TerminationCoordinator) recoverAttempt(ctx context.Context, attempt sto
 	if err != nil {
 		return "", err
 	}
+	if err := c.recordBackendSessionDiagnostic(ctx, attempt, live); err != nil {
+		return "", err
+	}
 	if live && (attempt.Phase == "starting" || attempt.Phase == "spawning" || (attempt.Phase == "running" && !c.heartbeatStale(attempt))) {
 		return "owner_live", nil
 	}
@@ -256,6 +261,45 @@ func (c *TerminationCoordinator) ownerIsLive(ctx context.Context, attempt storag
 	return got.PID == want.PID && got.StartedAtMS == want.StartedAtMS && got.Executable == want.Executable && got.PGID == want.PGID && got.ControlNonceHash == want.ControlNonceHash, nil
 }
 
+// recordBackendSessionDiagnostic observes tmux only after deriving the exact
+// durable binding. It appends explanatory evidence and deliberately has no
+// attempt/claim/owner/replacement write path.
+func (c *TerminationCoordinator) recordBackendSessionDiagnostic(ctx context.Context, attempt storage.RecoveryAttempt, wrapperLive bool) error {
+	if attempt.Backend != "tmux" || attempt.DispatchID == "" || c.TmuxPath == "" || c.TmuxSocketPath == "" {
+		return nil
+	}
+	name, err := runtimepkg.TmuxSessionName(attempt.RunID, attempt.AttemptNo, attempt.Generation, attempt.DispatchID)
+	if err != nil {
+		return nil
+	}
+	observation := runtimepkg.ObserveBackendSession(ctx, c.TmuxPath, c.TmuxSocketPath, name, name[len("sift-"):])
+	code := ""
+	switch {
+	case observation.State == runtimepkg.SessionPresent && !wrapperLive:
+		code = "backend_session_present_wrapper_absent"
+	case observation.State == runtimepkg.SessionAbsent && wrapperLive:
+		code = "backend_session_lost"
+	default:
+		return nil
+	}
+	payload, _ := json.Marshal(struct {
+		Backend        string `json:"backend"`
+		State          string `json:"state"`
+		DiagnosticCode string `json:"diagnostic_code"`
+		BindingDigest  string `json:"binding_digest"`
+	}{observation.Backend, string(observation.State), code, observation.BindingDigest})
+	attemptNo := attempt.AttemptNo
+	_, err = c.DB.AppendEvent(ctx, storage.EventCmd{RunID: attempt.RunID, AttemptNo: &attemptNo, Type: "backend.session_diagnostic", Source: storage.SourceRecovery, PayloadJSON: payload, IdempotencyKey: fmt.Sprintf("backend-session:%s:%d:%d:%s", attempt.RunID, attempt.AttemptNo, attempt.Generation, code), OccurredAtMS: c.nowMS(), RecordedAtMS: c.nowMS()})
+	return err
+}
+
+func (c *TerminationCoordinator) processGroupQualified(attempt storage.RecoveryAttempt) bool {
+	if c.ProcessGroupQualified != nil && attempt.TopologyQualificationKey != "" {
+		return c.ProcessGroupQualified(attempt.TopologyQualificationKey)
+	}
+	return c.ProcessGroupVerified != nil && c.ProcessGroupVerified(attempt.AgentID)
+}
+
 func (c *TerminationCoordinator) controlPath(attempt storage.RecoveryAttempt) string {
 	if c.ControlRoot == "" {
 		return ""
@@ -345,7 +389,14 @@ func (c *TerminationCoordinator) terminate(ctx context.Context, attempt storage.
 	cmd := storage.RecordTerminationObservationCmd{RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedRunVersion: expectedVersion, ExpectedGeneration: attempt.Generation, Source: source, NowMS: now().UnixMilli(), AttentionDailyQuota: c.AttentionDailyQuota, DayTimezone: c.DayTimezone, DailySummaryAt: c.DailySummaryAt, CriticalWindowMS: c.CriticalWindowMS, CriticalTotalLimit: c.CriticalTotalLimit, CriticalPerRunLimit: c.CriticalPerRunLimit, Channels: c.Channels}
 	identity := runtimepkg.ProcessIdentity{PID: attempt.WrapperPID, StartedAtMS: attempt.WrapperStartedAtMS, Executable: attempt.WrapperExecutable, PGID: attempt.WrapperPGID, ControlNonceHash: attempt.ControlNonceHash, ControlPath: c.controlPath(attempt)}
 	if identity.PID <= 0 || identity.StartedAtMS <= 0 || identity.Executable == "" || identity.PGID <= 0 || identity.ControlNonceHash == "" {
-		cmd.DiagnosticCause = "process_identity_unknown"
+		// A missing wrapper identity is not absence proof. When this attempt has
+		// an exact but unverified topology, name that stronger fail-closed cause
+		// so detached descendants cannot be retried through an identity fallback.
+		if attempt.TopologyQualificationKey != "" && !c.processGroupQualified(attempt) {
+			cmd.DiagnosticCause = "process_group_unverified"
+		} else {
+			cmd.DiagnosticCause = "process_identity_unknown"
+		}
 		_, err := c.DB.RecordTerminationObservation(ctx, cmd)
 		return err
 	}
@@ -353,12 +404,7 @@ func (c *TerminationCoordinator) terminate(ctx context.Context, attempt storage.
 	if err != nil {
 		return fmt.Errorf("controlled termination: %w", err)
 	}
-	qualified := false
-	if c.ProcessGroupQualified != nil && attempt.TopologyQualificationKey != "" {
-		qualified = c.ProcessGroupQualified(attempt.TopologyQualificationKey)
-	} else if c.ProcessGroupVerified != nil {
-		qualified = c.ProcessGroupVerified(attempt.AgentID)
-	}
+	qualified := c.processGroupQualified(attempt)
 	if result.Absent && qualified {
 		cmd.Absent, cmd.Evidence = true, "verified process group absent"
 	} else if result.Cause == runtimepkg.TerminationIdentityUnknown {

@@ -167,7 +167,7 @@ func TestProductionBackendFreezeRoutingAndInherit(t *testing.T) {
 			createFrozenRoutingRun(t, ctx, db, "prepared", frozenSnapshotID, nowMS+11)
 			// resume it with a new worker. Resume must retain the frozen route.
 			prepareHost := &recordingBackend{}
-			first := &Worker{DB: db, BootID: boot, WorkerID: "prepare", Root: root, Lease: time.Millisecond, Now: func() time.Time { return time.UnixMilli(nowMS + 20) }, Backends: BackendRouter{config.BackendProcess: prepareHost, config.BackendTmux: prepareHost}, Agents: drift.Config.Agents}
+			first := &Worker{DB: db, BootID: boot, WorkerID: "prepare", Root: root, Lease: time.Millisecond, Now: func() time.Time { return time.UnixMilli(nowMS + 20) }, Backends: BackendRouter{config.BackendProcess: prepareHost, config.BackendTmux: prepareHost}, Agents: drift.Config.Agents, FrozenAgentsRequired: true}
 			first.hooks.afterBootstrapDigest = func() error { return errors.New("crash after production bootstrap digest") }
 			if err := first.RunOnce(ctx); err == nil {
 				t.Fatal("prepared dispatch unexpectedly reached backend")
@@ -235,7 +235,7 @@ func createFrozenRoutingRun(t *testing.T, ctx context.Context, db *storage.DB, r
 func assertFrozenRoute(t *testing.T, db *storage.DB, boot, root string, agents []config.Agent, want config.Backend, nowMS int64) {
 	t.Helper()
 	processHost, tmuxHost := &recordingBackend{}, &recordingBackend{}
-	worker := &Worker{DB: db, BootID: boot, WorkerID: fmt.Sprintf("route-%d", nowMS), Root: root, Lease: time.Minute, Now: func() time.Time { return time.UnixMilli(nowMS) }, Backends: BackendRouter{config.BackendProcess: processHost, config.BackendTmux: tmuxHost}, Agents: agents}
+	worker := &Worker{DB: db, BootID: boot, WorkerID: fmt.Sprintf("route-%d", nowMS), Root: root, Lease: time.Minute, Now: func() time.Time { return time.UnixMilli(nowMS) }, Backends: BackendRouter{config.BackendProcess: processHost, config.BackendTmux: tmuxHost}, Agents: agents, FrozenAgentsRequired: true}
 	if err := worker.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}

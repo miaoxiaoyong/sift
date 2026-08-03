@@ -3,7 +3,10 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+
+	"github.com/miaoxiaoyong/sift/internal/config"
 )
 
 // RevalidateLaunchLease fences every external launch-worker step. A lease that
@@ -85,6 +88,7 @@ type LaunchDispatch struct {
 	AttemptNo, Generation                       int
 	Backend                                     string
 	AgentID, TaskSpecID, WorktreePath           string
+	TopologyQualificationKey                    string
 	TaskSpec                                    []byte
 }
 
@@ -92,7 +96,14 @@ type LaunchDispatch struct {
 // exact outbox lease before making the dispatch visible; callers may write a
 // bootstrap file only after this method succeeds.
 func (d *DB) PrepareLaunchDispatch(ctx context.Context, claim ClaimedOperation, dispatchID, bootstrapNonce, runToken string, nowMS int64) (LaunchDispatch, error) {
-	if claim.Kind != OperationLaunchAgent || claim.ID == "" || claim.LeaseOwner == "" || claim.LeaseExpiresAtMS <= 0 || dispatchID == "" || !validHandoffSecret(bootstrapNonce) || !validHandoffSecret(runToken) || nowMS <= 0 {
+	return d.PrepareLaunchDispatchWithQualification(ctx, claim, dispatchID, bootstrapNonce, runToken, "", nowMS)
+}
+
+// PrepareLaunchDispatchWithQualification atomically binds the current dispatch
+// to the exact executable/version qualification key. A replay cannot replace a
+// key, while each new attempt can bind a newly measured binary/version.
+func (d *DB) PrepareLaunchDispatchWithQualification(ctx context.Context, claim ClaimedOperation, dispatchID, bootstrapNonce, runToken, qualificationKey string, nowMS int64) (LaunchDispatch, error) {
+	if claim.Kind != OperationLaunchAgent || claim.ID == "" || claim.LeaseOwner == "" || claim.LeaseExpiresAtMS <= 0 || dispatchID == "" || !validHandoffSecret(bootstrapNonce) || !validHandoffSecret(runToken) || (qualificationKey != "" && !isLowerHex(qualificationKey)) || nowMS <= 0 {
 		return LaunchDispatch{}, ErrRejectedStaleWorker
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -102,12 +113,12 @@ func (d *DB) PrepareLaunchDispatch(ctx context.Context, claim ClaimedOperation, 
 	defer tx.Rollback()
 	var out LaunchDispatch
 	var operationKey string
-	err = tx.QueryRowContext(ctx, `SELECT o.operation_key,a.run_id,a.attempt_no,a.generation,a.backend,a.agent_id,a.task_spec_snapshot_id,a.worktree_path,t.canonical_json,COALESCE(c.dispatch_id,'')
+	err = tx.QueryRowContext(ctx, `SELECT o.operation_key,a.run_id,a.attempt_no,a.generation,a.backend,a.agent_id,a.task_spec_snapshot_id,a.worktree_path,t.canonical_json,COALESCE(c.dispatch_id,''),COALESCE(a.topology_qualification_key,'')
 		FROM outbox_operations o JOIN attempts a ON a.run_id=o.run_id AND a.attempt_no=o.attempt_no
 		JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no
 		JOIN task_spec_snapshots t ON t.run_id=a.run_id AND t.id=a.task_spec_snapshot_id
 		WHERE o.id=? AND o.kind='launch_agent' AND o.state='executing' AND o.lease_owner=? AND o.lease_expires_at_ms=?`, claim.ID, claim.LeaseOwner, claim.LeaseExpiresAtMS).
-		Scan(&operationKey, &out.RunID, &out.AttemptNo, &out.Generation, &out.Backend, &out.AgentID, &out.TaskSpecID, &out.WorktreePath, &out.TaskSpec, &out.DispatchID)
+		Scan(&operationKey, &out.RunID, &out.AttemptNo, &out.Generation, &out.Backend, &out.AgentID, &out.TaskSpecID, &out.WorktreePath, &out.TaskSpec, &out.DispatchID, &out.TopologyQualificationKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LaunchDispatch{}, ErrRejectedStaleWorker
 	}
@@ -121,6 +132,15 @@ func (d *DB) PrepareLaunchDispatch(ctx context.Context, claim ClaimedOperation, 
 		return LaunchDispatch{}, ErrLaunchDispatchPrepared
 	}
 	out.DispatchID, out.BootstrapNonce, out.RunToken = dispatchID, bootstrapNonce, runToken
+	if qualificationKey != "" {
+		if out.TopologyQualificationKey != "" && out.TopologyQualificationKey != qualificationKey {
+			return LaunchDispatch{}, ErrRejectedStaleWorker
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE attempts SET topology_qualification_key=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND (topology_qualification_key IS NULL OR topology_qualification_key=?)`, qualificationKey, nowMS, out.RunID, out.AttemptNo, qualificationKey); err != nil {
+			return LaunchDispatch{}, err
+		}
+		out.TopologyQualificationKey = qualificationKey
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE attempt_claims SET dispatch_id=?,bootstrap_nonce_hash=?,run_token_hash=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND dispatch_id IS NULL`, dispatchID, handoffHash(bootstrapNonce), handoffHash(runToken), nowMS, out.RunID, out.AttemptNo); err != nil {
 		return LaunchDispatch{}, err
 	}
@@ -130,10 +150,46 @@ func (d *DB) PrepareLaunchDispatch(ctx context.Context, claim ClaimedOperation, 
 	return out, nil
 }
 
+// FrozenLaunchAgent returns the Agent definition from the Run's immutable
+// config snapshot, never the daemon's current configuration. It is only a
+// preflight for qualification measurement; PrepareLaunchDispatchWithQualification
+// repeats the lease fence in its binding transaction.
+func (d *DB) FrozenLaunchAgent(ctx context.Context, claim ClaimedOperation, nowMS int64) (config.Agent, error) {
+	if err := d.RevalidateLaunchLease(ctx, claim, nowMS); err != nil {
+		return config.Agent{}, err
+	}
+	var agentID, canonical string
+	err := d.db.QueryRowContext(ctx, `SELECT a.agent_id,s.canonical_json FROM outbox_operations o JOIN attempts a ON a.run_id=o.run_id AND a.attempt_no=o.attempt_no JOIN runs r ON r.id=a.run_id JOIN config_snapshots s ON s.id=r.config_snapshot_id WHERE o.id=? AND o.kind='launch_agent'`, claim.ID).Scan(&agentID, &canonical)
+	if err != nil {
+		return config.Agent{}, ErrRejectedStaleWorker
+	}
+	var frozen config.Config
+	if json.Unmarshal([]byte(canonical), &frozen) != nil {
+		return config.Agent{}, errors.New("storage: invalid frozen launch configuration")
+	}
+	for _, agent := range frozen.Agents {
+		if agent.ID == agentID {
+			return agent, nil
+		}
+	}
+	return config.Agent{}, errors.New("storage: frozen launch agent is unavailable")
+}
+
+// LaunchAgentID is retained solely for legacy synthetic test seeds. Production
+// callers use FrozenLaunchAgent and reject a missing frozen definition.
+func (d *DB) LaunchAgentID(ctx context.Context, claim ClaimedOperation, nowMS int64) (string, error) {
+	if err := d.RevalidateLaunchLease(ctx, claim, nowMS); err != nil {
+		return "", err
+	}
+	var agentID string
+	if err := d.db.QueryRowContext(ctx, `SELECT a.agent_id FROM outbox_operations o JOIN attempts a ON a.run_id=o.run_id AND a.attempt_no=o.attempt_no WHERE o.id=? AND o.kind='launch_agent'`, claim.ID).Scan(&agentID); err != nil {
+		return "", ErrRejectedStaleWorker
+	}
+	return agentID, nil
+}
+
 // ValidatePreparedBootstrap verifies that an on-disk bootstrap belongs to the
-// current pending claim. A recorded digest is required when one exists; a
-// crash between rename and digest recording is recovered by checking the
-// dispatch secrets against their durable hashes.
+// current pending claim without reconstructing its capabilities.
 func (d *DB) ValidatePreparedBootstrap(ctx context.Context, runID string, attemptNo, generation int, dispatchID, bootstrapNonce, runToken, digest string) error {
 	var storedDigest, nonceHash, tokenHash string
 	err := d.db.QueryRowContext(ctx, `SELECT COALESCE(bootstrap_digest,''),COALESCE(bootstrap_nonce_hash,''),COALESCE(run_token_hash,'')
@@ -152,12 +208,12 @@ func (d *DB) ResumeLaunchDispatch(ctx context.Context, claim ClaimedOperation, d
 		return LaunchDispatch{}, err
 	}
 	var out LaunchDispatch
-	err := d.db.QueryRowContext(ctx, `SELECT a.run_id,a.attempt_no,a.generation,a.backend,a.agent_id,a.task_spec_snapshot_id,a.worktree_path,t.canonical_json
+	err := d.db.QueryRowContext(ctx, `SELECT a.run_id,a.attempt_no,a.generation,a.backend,a.agent_id,a.task_spec_snapshot_id,a.worktree_path,t.canonical_json,COALESCE(a.topology_qualification_key,'')
 		FROM outbox_operations o JOIN attempts a ON a.run_id=o.run_id AND a.attempt_no=o.attempt_no
 		JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no
 		JOIN task_spec_snapshots t ON t.run_id=a.run_id AND t.id=a.task_spec_snapshot_id
 		WHERE o.id=? AND o.kind='launch_agent' AND o.state='executing' AND c.dispatch_id=?`, claim.ID, dispatchID).
-		Scan(&out.RunID, &out.AttemptNo, &out.Generation, &out.Backend, &out.AgentID, &out.TaskSpecID, &out.WorktreePath, &out.TaskSpec)
+		Scan(&out.RunID, &out.AttemptNo, &out.Generation, &out.Backend, &out.AgentID, &out.TaskSpecID, &out.WorktreePath, &out.TaskSpec, &out.TopologyQualificationKey)
 	if err != nil {
 		return LaunchDispatch{}, ErrRejectedStaleWorker
 	}

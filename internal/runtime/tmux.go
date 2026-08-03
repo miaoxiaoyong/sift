@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // LaunchIdentity is the immutable identity from which a tmux session is
@@ -226,13 +227,32 @@ func ObserveBackendSession(ctx context.Context, tmuxPath, socketPath, name, dige
 	if tmuxPath == "" {
 		return BackendSessionObservation{Backend: "tmux", State: SessionUnknown, DiagnosticCode: "tmux_unavailable"}
 	}
-	if err := exec.CommandContext(ctx, tmuxPath, "-f", "/dev/null", "-S", socketPath, "has-session", "-t", "="+name).Run(); err != nil {
-		return BackendSessionObservation{Backend: "tmux", State: SessionAbsent, BindingDigest: digest, DiagnosticCode: "session_absent"}
+	cmd := exec.CommandContext(ctx, tmuxPath, "-f", "/dev/null", "-S", socketPath, "has-session", "-t", "="+name)
+	cmd.Env = TmuxClientEnvironment()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if tmuxHasSessionAbsent(err, out) {
+			return BackendSessionObservation{Backend: "tmux", State: SessionAbsent, BindingDigest: digest, DiagnosticCode: "session_absent"}
+		}
+		return BackendSessionObservation{Backend: "tmux", State: SessionUnknown, BindingDigest: digest, DiagnosticCode: "session_unavailable"}
 	}
 	if err := ObserveTmuxSession(ctx, tmuxPath, socketPath, name, digest); err != nil {
 		return BackendSessionObservation{Backend: "tmux", State: SessionUnknown, BindingDigest: digest, DiagnosticCode: "session_binding_mismatch"}
 	}
 	return BackendSessionObservation{Backend: "tmux", State: SessionPresent, BindingDigest: digest, DiagnosticCode: "session_present"}
+}
+
+// tmux documents has-session's clean status-1 result as the session-absent
+// answer. A server, protocol, permission, or timeout error is not absence and
+// must remain unknown. Real tmux prints no diagnostic for this one expected
+// condition; test doubles may use its explicit "can't find session" wording.
+func tmuxHasSessionAbsent(err error, output []byte) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		return false
+	}
+	text := strings.TrimSpace(string(output))
+	return text == "" || strings.Contains(text, "can't find session")
 }
 
 // ObserveTmuxSession proves that an exact, durably-derived session is live and
