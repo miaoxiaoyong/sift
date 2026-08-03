@@ -43,6 +43,8 @@ type Server struct {
 	db              *storage.DB
 	operations      func(context.Context, string, string, int64) error
 	configuredQuota map[string]int
+	tmuxPath        string
+	tmuxSocketPath  string
 }
 
 // Start obtains the process-lifetime mutex, creates the capability token when
@@ -246,6 +248,11 @@ func (s *Server) SetOperatorAction(action func(context.Context, string, string, 
 	s.operations = action
 }
 
+// SetTmuxObserver configures the read-only tmux observer used by ops.attach.
+func (s *Server) SetTmuxObserver(tmuxPath, socketPath string) {
+	s.tmuxPath, s.tmuxSocketPath = tmuxPath, socketPath
+}
+
 // SetAttentionQuota installs the live per-severity daily attention ceilings the
 // daemon resolved from config; ops.ps reports remaining = ceiling − persisted
 // consumption. Without it the server reports only persisted ceilings.
@@ -270,6 +277,8 @@ func (s *Server) operatorRequest(req Request) Response {
 			return failure(req.RequestID, "invalid_request", "invalid params", false)
 		}
 		return failure(req.RequestID, "not_found", "run not found", false)
+	case "ops.attach":
+		return s.handleOpsAttach(req)
 	case "ops.metrics":
 		return s.handleOpsMetrics(req)
 	case "ops.timeline":

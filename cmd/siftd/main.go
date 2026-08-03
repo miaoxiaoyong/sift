@@ -121,6 +121,9 @@ func main() {
 		return termination.Operator(ctx, runID, version, method == "ops.retry")
 	})
 	s.SetAttentionQuota(attentionQuotaStrings(snapshot.Config.Attention.DailyQuota))
+	if usesTmux(snapshot.Config) {
+		s.SetTmuxObserver(tmuxDiagnostics.TmuxPath, runtime.TmuxSocketPath(filepath.Join(home.Path, "tmux.sock")))
+	}
 	if err := startSchedulers(ctx, db, workers, termination, probeCheck, snapshot.Config.Scheduler); err != nil {
 		fatal(err)
 	}

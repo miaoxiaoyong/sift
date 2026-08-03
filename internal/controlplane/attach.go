@@ -1,0 +1,53 @@
+package controlplane
+
+import (
+	"context"
+	"errors"
+
+	"github.com/miaoxiaoyong/sift/internal/runtime"
+	"github.com/miaoxiaoyong/sift/internal/storage"
+)
+
+type attachParams struct {
+	RunID string `json:"run_id"`
+}
+
+type attachResult struct {
+	RunID       string `json:"run_id"`
+	AttemptNo   int    `json:"attempt_no"`
+	Generation  int    `json:"generation"`
+	Backend     string `json:"backend"`
+	SessionName string `json:"session_name"`
+}
+
+func (s *Server) handleOpsAttach(req Request) Response {
+	if !onlyKeys(req.Params, "run_id") {
+		return failure(req.RequestID, "invalid_request", "invalid params", false)
+	}
+	var p attachParams
+	if !decodeParams(req.Params, &p) || p.RunID == "" {
+		return failure(req.RequestID, "invalid_request", "invalid params", false)
+	}
+	if s.db == nil {
+		return failure(req.RequestID, "unavailable", "runtime observation is unavailable", true)
+	}
+	target, err := s.db.AttachTargetForRun(context.Background(), p.RunID)
+	if errors.Is(err, storage.ErrAttachRunNotFound) {
+		return failure(req.RequestID, "not_found", "run not found", false)
+	}
+	if err != nil {
+		return failure(req.RequestID, "conflict", "run cannot be attached", false)
+	}
+	if target.Backend != "tmux" || s.tmuxPath == "" || s.tmuxSocketPath == "" {
+		return failure(req.RequestID, "conflict", "run is not attachable", false)
+	}
+	name, err := runtime.TmuxSessionName(target.RunID, target.AttemptNo, target.Generation, target.DispatchID)
+	if err != nil {
+		return failure(req.RequestID, "conflict", "run launch identity is incomplete", false)
+	}
+	digest := name[len("sift-"):]
+	if err := runtime.ObserveTmuxSession(context.Background(), s.tmuxPath, s.tmuxSocketPath, name, digest); err != nil {
+		return failure(req.RequestID, "conflict", "tmux session is not attachable", false)
+	}
+	return success(req.RequestID, attachResult{RunID: target.RunID, AttemptNo: target.AttemptNo, Generation: target.Generation, Backend: target.Backend, SessionName: name})
+}

@@ -118,12 +118,11 @@ func NewTmuxBackend(tmuxPath, wrapperPath, socketPath string, verifier ...Durabl
 	if !filepath.IsAbs(tmuxPath) || !filepath.IsAbs(wrapperPath) || !filepath.IsAbs(socketPath) {
 		return nil, errors.New("runtime: tmux, wrapper, and tmux socket paths must be absolute")
 	}
-	sum := sha256.Sum256([]byte(socketPath))
 	var verify DurableBindingVerifier
 	if len(verifier) > 0 {
 		verify = verifier[0]
 	}
-	return &TmuxBackend{tmuxPath: tmuxPath, wrapper: wrapperPath, socketPath: filepath.Join(os.TempDir(), "sift-tmux-"+hex.EncodeToString(sum[:12])+".sock"), verifyBinding: verify}, nil
+	return &TmuxBackend{tmuxPath: tmuxPath, wrapper: wrapperPath, socketPath: TmuxSocketPath(socketPath), verifyBinding: verify}, nil
 }
 
 func (b *TmuxBackend) WrapperPath() string { return b.wrapper }
@@ -197,4 +196,37 @@ func (b *TmuxBackend) command(ctx context.Context, args ...string) *exec.Cmd {
 
 func (b *TmuxBackend) sessionExists(ctx context.Context, name string) bool {
 	return b.command(ctx, "has-session", "-t", "="+name).Run() == nil
+}
+
+// TmuxSocketPath derives the private server socket used by a configured home.
+func TmuxSocketPath(identity string) string {
+	sum := sha256.Sum256([]byte(identity))
+	return filepath.Join(os.TempDir(), "sift-tmux-"+hex.EncodeToString(sum[:12])+".sock")
+}
+
+// ObserveTmuxSession proves that an exact, durably-derived session is live and
+// bound to the expected launch. It never attaches, adopts, or changes tmux.
+func ObserveTmuxSession(ctx context.Context, tmuxPath, socketPath, name, digest string) error {
+	command := func(args ...string) *exec.Cmd {
+		all := append([]string{"-f", "/dev/null", "-S", socketPath}, args...)
+		cmd := exec.CommandContext(ctx, tmuxPath, all...)
+		cmd.Env = TmuxClientEnvironment()
+		return cmd
+	}
+	if err := command("has-session", "-t", "="+name).Run(); err != nil {
+		return errors.New("tmux session is absent or unavailable")
+	}
+	binding, err := command("show-environment", "-t", "="+name, "SIFT_TMUX_BINDING").Output()
+	if err != nil || string(binding) != "SIFT_TMUX_BINDING="+digest+"\n" {
+		return errors.New("tmux session binding does not match current launch")
+	}
+	panes, err := command("list-panes", "-t", "="+name, "-s", "-F", "#{pane_dead}").Output()
+	if err != nil || string(panes) != "0\n" {
+		return errors.New("tmux session does not have exactly one live pane")
+	}
+	remain, err := command("show-options", "-A", "-v", "-t", "="+name+":0.0", "remain-on-exit").Output()
+	if err != nil || string(remain) != "off\n" {
+		return errors.New("tmux session has remain-on-exit enabled or unknown")
+	}
+	return nil
 }

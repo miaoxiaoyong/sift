@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
 func main() {
@@ -50,6 +52,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		report(stderr, fmt.Errorf("daemon unavailable: %w", err))
 		return 1
+	}
+	if command == "attach" {
+		return runAttach(response, stdout, stderr)
 	}
 	if err := printJSON(stdout, response); err != nil {
 		report(stderr, err)
@@ -110,6 +115,11 @@ func request(command string, args []string) (string, map[string]any, error) {
 			return "", nil, fmt.Errorf("usage: sift logs <run-id>")
 		}
 		return "ops.logs", map[string]any{"run_id": args[0], "attempt_no": nil, "offset": 0, "limit": 262144}, nil
+	case "attach":
+		if len(args) != 1 || args[0] == "" {
+			return "", nil, fmt.Errorf("usage: sift attach <run-id>")
+		}
+		return "ops.attach", map[string]any{"run_id": args[0]}, nil
 	case "worktree":
 		if len(args) != 1 {
 			return "", nil, fmt.Errorf("usage: sift worktree <run-id>")
@@ -155,6 +165,46 @@ func request(command string, args []string) (string, map[string]any, error) {
 		return "", nil, fmt.Errorf("unknown command %q", command)
 	}
 }
+
+type attachResponse struct {
+	RunID       string `json:"run_id"`
+	AttemptNo   int    `json:"attempt_no"`
+	Generation  int    `json:"generation"`
+	Backend     string `json:"backend"`
+	SessionName string `json:"session_name"`
+}
+
+func runAttach(response controlplane.Response, stdout, stderr io.Writer) int {
+	if response.ProtocolMajor != controlplane.ProtocolMajor || response.ProtocolMinor > controlplane.ProtocolMinor || response.ServerVersion == "" {
+		report(stderr, fmt.Errorf("invalid daemon response for attach"))
+		return 1
+	}
+	body, err := json.Marshal(response.Result)
+	if err != nil {
+		report(stderr, fmt.Errorf("invalid attach result: %w", err))
+		return 1
+	}
+	var result attachResponse
+	if err := schema.Decode(body, &result, schema.Closed); err != nil || result.RunID == "" || result.AttemptNo < 1 || result.Generation < 1 || result.Backend != "tmux" || result.SessionName == "" {
+		report(stderr, fmt.Errorf("invalid daemon attach result"))
+		return 1
+	}
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		report(stderr, fmt.Errorf("tmux unavailable: %w", err))
+		return 1
+	}
+	cmd := exec.Command(tmux, "attach-session", "-r", "-t", "="+result.SessionName)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, stdout, stderr
+	if err := cmd.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			return exit.ExitCode()
+		}
+		return 1
+	}
+	return 0
+}
+
 func printJSON(w io.Writer, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -165,7 +215,7 @@ func printJSON(w io.Writer, v any) error {
 }
 func report(w io.Writer, err error) { fmt.Fprintln(w, "sift:", err) }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sift ps|logs|worktree|metrics|timeline|doctor [--offline]|kill|retry|report <kind> --key KEY --payload JSON")
+	fmt.Fprintln(w, "usage: sift ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|kill|retry|report <kind> --key KEY --payload JSON")
 }
 
 // nullableStringCLI emits nil for an empty string so the RPC param set stays
