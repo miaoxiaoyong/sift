@@ -20,6 +20,7 @@ import (
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -567,9 +568,11 @@ type countingBackend struct {
 	spawns  int
 }
 
-func (b *countingBackend) Spawn(ctx context.Context, bootstrap string) (*os.Process, error) {
+func (b *countingBackend) WrapperPath() string { return b.backend.WrapperPath() }
+
+func (b *countingBackend) Spawn(ctx context.Context, launch runtimepkg.HostLaunch) (*os.Process, error) {
 	b.spawns++
-	return b.backend.Spawn(ctx, bootstrap)
+	return b.backend.Spawn(ctx, launch)
 }
 
 func (b *countingBackend) cleanup() { b.backend.cleanup() }
@@ -582,8 +585,10 @@ type execWrapperBackend struct {
 	spawnLog string
 }
 
-func (b *execWrapperBackend) Spawn(ctx context.Context, bootstrap string) (*os.Process, error) {
-	cmd := osexec.CommandContext(ctx, b.path, bootstrap)
+func (b *execWrapperBackend) WrapperPath() string { return b.path }
+
+func (b *execWrapperBackend) Spawn(ctx context.Context, launch runtimepkg.HostLaunch) (*os.Process, error) {
+	cmd := osexec.CommandContext(ctx, b.path, launch.BootstrapPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if b.pgid {

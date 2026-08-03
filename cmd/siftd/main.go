@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -16,7 +17,6 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/launchworker"
 	"github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/storage"
-	"path/filepath"
 )
 
 func main() {
@@ -98,7 +98,7 @@ func main() {
 	if usesTmux(snapshot.Config) {
 		// This is the process-level tmux startup probe. Process-only
 		// configurations intentionally never resolve or require tmux.
-		tmux, backendErr := runtime.NewTmuxBackend(tmuxDiagnostics.TmuxPath, backend.WrapperPath())
+		tmux, backendErr := runtime.NewTmuxBackend(tmuxDiagnostics.TmuxPath, backend.WrapperPath(), filepath.Join(home.Path, "tmux.sock"))
 		if backendErr != nil {
 			fatal(backendErr)
 		}

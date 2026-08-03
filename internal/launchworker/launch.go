@@ -24,26 +24,41 @@ import (
 // started; completion, ownership, and Agent observation remain in the
 // existing handoff/result paths.
 type Backend interface {
-	Spawn(context.Context, string) (*os.Process, error)
+	WrapperPath() string
+	Spawn(context.Context, runtime.HostLaunch) (*os.Process, error)
 }
 
 // BackendRouter selects a wrapper host using the backend frozen on the
 // attempt. It deliberately has no observer or lifecycle methods.
 type BackendRouter map[config.Backend]Backend
 
-func (r BackendRouter) Spawn(ctx context.Context, backend config.Backend, bootstrap string) (*os.Process, error) {
+func (r BackendRouter) Spawn(ctx context.Context, launch runtime.HostLaunch) (*os.Process, error) {
+	backend := config.Backend(launch.Backend)
 	host, ok := r[backend]
 	if !ok || host == nil {
 		return nil, fmt.Errorf("launch worker: backend %q is unavailable", backend)
 	}
-	return host.Spawn(ctx, bootstrap)
+	return host.Spawn(ctx, launch)
 }
 
 // ProcessBackend adapts runtime.ProcessBackend without exposing exec.Cmd.
 type ProcessBackend struct{ Backend *runtime.ProcessBackend }
 
-func (b ProcessBackend) Spawn(ctx context.Context, path string) (*os.Process, error) {
-	c, err := b.Backend.Spawn(ctx, path)
+func (b ProcessBackend) WrapperPath() string {
+	if b.Backend == nil {
+		return ""
+	}
+	return b.Backend.WrapperPath()
+}
+
+func (b ProcessBackend) Spawn(ctx context.Context, launch runtime.HostLaunch) (*os.Process, error) {
+	if b.Backend == nil {
+		return nil, errors.New("launch worker: invalid frozen process launch")
+	}
+	if err := launch.ValidateFor(string(config.BackendProcess), b.Backend.WrapperPath()); err != nil {
+		return nil, fmt.Errorf("launch worker: invalid frozen process launch: %w", err)
+	}
+	c, err := b.Backend.Spawn(ctx, launch.BootstrapPath)
 	if err != nil {
 		return nil, err
 	}
@@ -54,8 +69,18 @@ func (b ProcessBackend) Spawn(ctx context.Context, path string) (*os.Process, er
 // process to the launch worker.
 type TmuxBackend struct{ Backend *runtime.TmuxBackend }
 
-func (b TmuxBackend) Spawn(ctx context.Context, path string) (*os.Process, error) {
-	return b.Backend.Spawn(ctx, path)
+func (b TmuxBackend) WrapperPath() string {
+	if b.Backend == nil {
+		return ""
+	}
+	return b.Backend.WrapperPath()
+}
+
+func (b TmuxBackend) Spawn(ctx context.Context, launch runtime.HostLaunch) (*os.Process, error) {
+	if b.Backend == nil {
+		return nil, errors.New("launch worker: tmux backend is not initialized")
+	}
+	return b.Backend.Spawn(ctx, launch)
 }
 
 type Worker struct {
@@ -178,21 +203,32 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 			backend = agent.Backend
 		}
 	}
-	var spawn func(context.Context, string) (*os.Process, error)
+	launch := runtime.HostLaunch{
+		Backend: string(backend), RunID: dispatch.RunID, AttemptNo: dispatch.AttemptNo,
+		Generation: dispatch.Generation, DispatchID: dispatch.DispatchID, BootstrapPath: path,
+	}
 	if w.Backends != nil {
-		spawn = func(ctx context.Context, bootstrap string) (*os.Process, error) {
-			return w.Backends.Spawn(ctx, backend, bootstrap)
+		host, ok := w.Backends[backend]
+		if !ok || host == nil {
+			return fmt.Errorf("launch worker: backend %q is unavailable", backend)
+		}
+		launch.WrapperPath = host.WrapperPath()
+		if _, err := host.Spawn(ctx, launch); err != nil {
+			return fmt.Errorf("launch worker: spawn wrapper: %w", err)
 		}
 	} else if w.Backend != nil {
-		spawn = w.Backend.Spawn
+		// The legacy single-host seam remains process-only for pre-router tests.
+		launch.Backend = string(config.BackendProcess)
+		launch.WrapperPath = w.Backend.WrapperPath()
+		if _, err := w.Backend.Spawn(ctx, launch); err != nil {
+			return fmt.Errorf("launch worker: spawn wrapper: %w", err)
+		}
 	} else {
 		return errors.New("launch worker: no backend host configured")
 	}
-	if _, err := spawn(ctx, path); err != nil {
-		return fmt.Errorf("launch worker: spawn wrapper: %w", err)
-	}
 	return nil
 }
+
 func (w *Worker) agent(id string) (config.Agent, bool) {
 	for _, a := range w.Agents {
 		if a.ID == id {

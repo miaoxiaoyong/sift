@@ -80,6 +80,11 @@ func TestLaunchDispatchBackendRouting(t *testing.T) {
 				},
 				Agents: []config.Agent{agent},
 			}
+			if tc.backend == config.BackendTmux {
+				worker.hooks.afterBootstrapDigest = func() error {
+					return runtime.WriteControlFile(filepath.Join(root, "runs", "run-1", "attempts", "1", "bootstrap.json"), []byte(`{"run_id":"replaced","attempt_no":9,"generation":9,"dispatch_id":"replaced"}`))
+				}
+			}
 			if err := worker.RunOnce(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -96,6 +101,14 @@ func TestLaunchDispatchBackendRouting(t *testing.T) {
 			}
 			if tc.backend == config.BackendProcess {
 				assertBaselineProcessBootstrap(t, selected.calls[0], root, agent)
+			} else {
+				call := selected.calls[0]
+				if call.launch.Backend != string(config.BackendTmux) || call.launch.RunID != "run-1" || call.launch.AttemptNo != 1 || call.launch.Generation != 1 || call.launch.DispatchID == "" || call.launch.WrapperPath != tmuxHost.WrapperPath() {
+					t.Fatalf("tmux frozen launch = %#v, want durable dispatch identity", call.launch)
+				}
+				if !strings.Contains(string(call.contents), `"replaced"`) {
+					t.Fatalf("test did not replace bootstrap after digest: %q", call.contents)
+				}
 			}
 		})
 	}
@@ -197,13 +210,16 @@ type recordingBackend struct {
 type recordingBackendCall struct {
 	path     string
 	contents []byte
+	launch   runtime.HostLaunch
 }
 
-func (b *recordingBackend) Spawn(_ context.Context, bootstrap string) (*os.Process, error) {
-	contents, err := os.ReadFile(bootstrap)
+func (b *recordingBackend) WrapperPath() string { return "/test/sift-agent-wrapper" }
+
+func (b *recordingBackend) Spawn(_ context.Context, launch runtime.HostLaunch) (*os.Process, error) {
+	contents, err := os.ReadFile(launch.BootstrapPath)
 	if err != nil {
 		return nil, err
 	}
-	b.calls = append(b.calls, recordingBackendCall{path: bootstrap, contents: contents})
+	b.calls = append(b.calls, recordingBackendCall{path: launch.BootstrapPath, contents: contents, launch: launch})
 	return nil, nil
 }

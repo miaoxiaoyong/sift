@@ -155,8 +155,10 @@ type pausedRecoveryBackend struct {
 	count                      int
 }
 
-func (b *pausedRecoveryBackend) Spawn(ctx context.Context, bootstrap string) (*os.Process, error) {
-	cmd := osexec.CommandContext(ctx, b.path, bootstrap)
+func (b *pausedRecoveryBackend) WrapperPath() string { return b.path }
+
+func (b *pausedRecoveryBackend) Spawn(ctx context.Context, launch runtimepkg.HostLaunch) (*os.Process, error) {
+	cmd := osexec.CommandContext(ctx, b.path, launch.BootstrapPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append(os.Environ(), "SIFT_WRAPPER_TEST_PAUSE="+b.point, "SIFT_WRAPPER_TEST_READY="+b.ready)
 	if err := cmd.Start(); err != nil {

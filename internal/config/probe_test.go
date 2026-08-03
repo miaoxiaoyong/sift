@@ -3,7 +3,9 @@ package config
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -83,6 +85,69 @@ func TestTmuxProbeOnlyWhenUsed(t *testing.T) {
 		}
 	} else if err != nil {
 		t.Fatalf("tmux selected and present must resolve: %v", err)
+	}
+}
+
+func TestTmuxProbeDoesNotInvokeTmuxForProcessOnly(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "called")
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte("#!/bin/sh\n: > "+marker+"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	cfg := mustCfg(t, "version: 1\nagents:\n  - id: a\n    executable: echo\n    backend: process\n")
+	if err := TmuxProbe(cfg, NewDiagnostics()).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("process-only configuration invoked tmux: %v", err)
+	}
+}
+
+func TestTmuxProbeRejectsOldAndIncompatibleTmux(t *testing.T) {
+	cfg := mustCfg(t, "version: 1\nagents:\n  - id: a\n    executable: echo\n    backend: tmux\n")
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{name: "old", script: "#!/bin/sh\nif [ \"$1\" = -V ]; then echo 'tmux 3.1'; exit 0; fi\nexit 0\n"},
+		{name: "incompatible", script: "#!/bin/sh\nif [ \"$1\" = -V ]; then echo 'tmux 3.6'; exit 0; fi\nexit 1\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(tc.script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			if err := TmuxProbe(cfg, NewDiagnostics()).Run(context.Background()); err == nil {
+				t.Fatal("old or incompatible tmux unexpectedly passed startup probe")
+			}
+		})
+	}
+}
+
+func TestTmuxProbeFreezesResolvedRealpath(t *testing.T) {
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("real tmux is not installed")
+	}
+	cfg := mustCfg(t, "version: 1\nagents:\n  - id: a\n    executable: echo\n    backend: tmux\n")
+	dir := t.TempDir()
+	link := filepath.Join(dir, "tmux")
+	if err := os.Symlink(realTmux, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	diag := NewDiagnostics()
+	if err := TmuxProbe(cfg, diag).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(realTmux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diag.TmuxPath != want {
+		t.Fatalf("frozen tmux path = %q, want resolved realpath %q", diag.TmuxPath, want)
 	}
 }
 

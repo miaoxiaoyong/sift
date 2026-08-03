@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/miaoxiaoyong/sift/internal/runtime"
 )
 
 // DriftStatus is the outcome of a single drift check.
@@ -355,10 +359,60 @@ func TmuxProbe(cfg *Config, diag *Diagnostics) Probe {
 			if err != nil {
 				return fmt.Errorf("tmux backend selected but tmux not found on PATH: %w", err)
 			}
+			p, err = filepath.EvalSymlinks(p)
+			if err != nil {
+				return fmt.Errorf("resolve tmux executable: %w", err)
+			}
+			p, err = filepath.Abs(p)
+			if err != nil {
+				return fmt.Errorf("make tmux executable absolute: %w", err)
+			}
+			if err := probeTmuxCapabilities(ctx, p); err != nil {
+				return fmt.Errorf("tmux backend capability probe: %w", err)
+			}
 			diag.TmuxPath = p
 			return nil
 		},
 	}
+}
+
+// probeTmuxCapabilities verifies the exact invocation contract used by the
+// runtime host. It starts a short-lived isolated server with the same scrubbed
+// environment as production, rather than trusting a version string alone.
+func probeTmuxCapabilities(ctx context.Context, tmuxPath string) error {
+	version := exec.CommandContext(ctx, tmuxPath, "-V")
+	version.Env = runtime.TmuxClientEnvironment()
+	out, err := version.Output()
+	if err != nil {
+		return fmt.Errorf("read version: %w", err)
+	}
+	var major, minor int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "tmux %d.%d", &major, &minor); err != nil || major < 3 || major == 3 && minor < 2 {
+		return fmt.Errorf("need tmux >= 3.2 with new-session -e and multi-argv shell-command, got %q", strings.TrimSpace(string(out)))
+	}
+	dir, err := os.MkdirTemp("", "sift-tmux-probe-")
+	if err != nil {
+		return fmt.Errorf("create probe directory: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(os.TempDir(), "sift-tmux-probe-"+filepath.Base(dir)+".sock")
+	defer os.Remove(socket)
+	const session = "sift-capability-probe"
+	command := func(args ...string) *exec.Cmd {
+		args = append([]string{"-f", "/dev/null", "-S", socket}, args...)
+		cmd := exec.CommandContext(ctx, tmuxPath, args...)
+		cmd.Env = runtime.TmuxClientEnvironment()
+		return cmd
+	}
+	defer command("kill-server").Run()
+	if out, err := command("new-session", "-d", "-s", session, "-e", "SIFT_TMUX_PROBE=1", "--", "/bin/sleep", "5").CombinedOutput(); err != nil {
+		return fmt.Errorf("new-session -e multi-argv: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	out, err = command("show-environment", "-t", "="+session, "SIFT_TMUX_PROBE").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "SIFT_TMUX_PROBE=1" {
+		return fmt.Errorf("verify new-session -e: %w: %q", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func usesTmux(cfg *Config) bool {
