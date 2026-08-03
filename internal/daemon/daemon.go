@@ -65,6 +65,61 @@ func AssembleWithRunner(db *storage.DB, cfg *config.Config, now func() time.Time
 	return assemble(db, cfg, now, runner, forge.NewProductionAdapter)
 }
 
+// CaptureHookBaselines is deliberately audit-only: an unreadable hooks path
+// records a diagnostic but never blocks activation or a future launch gate.
+func CaptureHookBaselines(ctx context.Context, db *storage.DB, cfg *config.Config, now func() time.Time) {
+	if db == nil || cfg == nil {
+		return
+	}
+	if now == nil {
+		now = time.Now
+	}
+	for _, p := range cfg.Projects {
+		if !p.Enabled || p.Repo == "" {
+			continue
+		}
+		snapshot, err := hooks.Capture(ctx, p.Repo)
+		if err != nil {
+			_ = db.RecordHookDiagnostic(ctx, p.ID, "", 0, "hooks_capture_failed", err.Error(), now().UnixMilli())
+			continue
+		}
+		if err := db.RecordHookBaseline(ctx, storage.RecordHookBaselineCmd{ProjectID: p.ID, Snapshot: storage.HookBaselineSnapshot{GitConfigDigest: snapshot.GitConfigDigest, CoreHooksPathValue: snapshot.CoreHooksPathValue, EffectiveHooksPath: snapshot.EffectiveHooksPath, HooksDirectoryDigest: snapshot.DirectoryDigest, Digest: snapshot.Digest}, CapturedAtMS: now().UnixMilli()}); err != nil {
+			_ = db.RecordHookDiagnostic(ctx, p.ID, "", 0, "hooks_baseline_record_failed", err.Error(), now().UnixMilli())
+		}
+	}
+}
+
+// HookRechecker captures only after a terminal receipt exists. Every outcome
+// completes that receipt, so bad local hook configuration remains visible but
+// cannot stall attempt lifecycle or retry the Agent.
+func HookRechecker(db *storage.DB, now func() time.Time) func(context.Context, string, int) error {
+	return func(ctx context.Context, runID string, attemptNo int) error {
+		if db == nil {
+			return nil
+		}
+		at := time.Now
+		if now != nil {
+			at = now
+		}
+		projectID, repo, err := db.HookProjectForRun(ctx, runID)
+		if err != nil {
+			return nil
+		}
+		observed, err := hooks.Capture(ctx, repo)
+		if err != nil {
+			_ = db.RecordHookDiagnostic(ctx, projectID, runID, attemptNo, "hooks_capture_failed", err.Error(), at().UnixMilli())
+			_ = db.CompleteHookRecheck(ctx, runID, attemptNo, at().UnixMilli())
+			return nil
+		}
+		source := attemptNo
+		if err := db.RecordHookBaseline(ctx, storage.RecordHookBaselineCmd{ProjectID: projectID, Snapshot: storage.HookBaselineSnapshot{GitConfigDigest: observed.GitConfigDigest, CoreHooksPathValue: observed.CoreHooksPathValue, EffectiveHooksPath: observed.EffectiveHooksPath, HooksDirectoryDigest: observed.DirectoryDigest, Digest: observed.Digest}, SourceRunID: runID, SourceAttemptNo: &source, CapturedAtMS: at().UnixMilli()}); err != nil {
+			_ = db.RecordHookDiagnostic(ctx, projectID, runID, attemptNo, "hooks_baseline_record_failed", err.Error(), at().UnixMilli())
+		}
+		_ = db.CompleteHookRecheck(ctx, runID, attemptNo, at().UnixMilli())
+		return nil
+	}
+}
+
 func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner forge.Runner, newAdapter func(forge.Kind, string, forge.Runner, forge.Charger) (*forge.Adapter, error)) (*Daemon, error) {
 	if db == nil || cfg == nil {
 		return nil, errors.New("daemon: database and config are required")
@@ -73,21 +128,6 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 		now = time.Now
 	}
 	d := &Daemon{DB: db, Now: now}
-	// Capture at daemon activation, before any Agent can run. Reopening with
-	// the same trusted digest only refreshes its timestamp; it never adopts
-	// Agent-modified state.
-	for _, p := range cfg.Projects {
-		if !p.Enabled || p.Repo == "" {
-			continue
-		}
-		snapshot, err := hooks.Capture(context.Background(), p.Repo)
-		if err != nil {
-			return nil, fmt.Errorf("project %s: capture hook baseline: %w", p.ID, err)
-		}
-		if err := db.RecordHookBaseline(context.Background(), storage.RecordHookBaselineCmd{ProjectID: p.ID, Snapshot: storage.HookBaselineSnapshot{GitConfigDigest: snapshot.GitConfigDigest, CoreHooksPathValue: snapshot.CoreHooksPathValue, EffectiveHooksPath: snapshot.EffectiveHooksPath, HooksDirectoryDigest: snapshot.DirectoryDigest, Digest: snapshot.Digest}, CapturedAtMS: now().UnixMilli()}); err != nil {
-			return nil, fmt.Errorf("project %s: persist hook baseline: %w", p.ID, err)
-		}
-	}
 	// One per-project adapter map is shared by the cross-project consumers
 	// (forge_alert and command_ack): their payloads do not carry project
 	// routing, so each worker resolves the frozen target and selects the

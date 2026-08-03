@@ -295,7 +295,7 @@ func TestSchemaInventory(t *testing.T) {
 
 	wantTables := []string{
 		"schema_migrations",
-		"config_snapshots", "daemon_boots", "projects", "project_hook_baselines",
+		"config_snapshots", "daemon_boots", "projects", "project_hook_baselines", "hook_recheck_receipts",
 		"task_spec_snapshots", "runs", "attempts", "attempt_claims", "attempt_probes",
 		"interrupts", "interrupt_deliveries",
 		"events", "forge_cursors", "forge_reply_state", "forge_event_receipts", "report_receipts", "report_quota_exhaustions", "report_emission_diagnostics", "interrupt_command_effect_bindings",
@@ -315,7 +315,7 @@ func TestSchemaInventory(t *testing.T) {
 		"projects_enabled_repo_path", "runs_intake_idempotency",
 		"attempts_single_live_phase", "attempt_probes_one_live_per_interrupt",
 		"task_spec_snapshots_run_version", "runs_status_updated", "runs_project_status",
-		"runs_change_id", "project_hook_baselines_updated", "attempts_phase_updated",
+		"runs_change_id", "project_hook_baselines_updated", "hook_recheck_receipts_pending", "attempts_phase_updated",
 		"attempts_run_attempt_desc", "interrupts_status_expires", "interrupts_run_status",
 		"events_run_seq", "events_project_seq", "outbox_operations_state_next",
 		"outbox_operations_lease_expiry", "budget_entries_kind_created_run",

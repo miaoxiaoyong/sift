@@ -55,6 +55,24 @@ func (c *TerminationCoordinator) Recover(ctx context.Context) error {
 			return err
 		}
 	}
+	return c.RecheckHooks(ctx)
+}
+
+// RecheckHooks drains terminal receipts left by every result commit. It runs
+// on every supervisor pass as well as after result consumption, making the
+// completion-to-audit crash boundary replayable. Hook inspection is audit-only
+// and never turns a capture failure into a lifecycle failure.
+func (c *TerminationCoordinator) RecheckHooks(ctx context.Context) error {
+	if c.HookRecheck == nil {
+		return nil
+	}
+	receipts, err := c.DB.PendingHookRechecks(ctx)
+	if err != nil {
+		return err
+	}
+	for _, receipt := range receipts {
+		_ = c.HookRecheck(ctx, receipt.RunID, receipt.AttemptNo)
+	}
 	return nil
 }
 
@@ -387,9 +405,9 @@ func (c *TerminationCoordinator) resolveLateFact(ctx context.Context, a storage.
 		Result: &storage.AttemptResult{Agent: storage.AgentIdentity{PID: int64(result.Agent.PID), StartedAtMS: result.Agent.StartedAtMS, Executable: result.Agent.Executable}, ExitCode: exit, Signal: result.Signal, FailureReason: result.FailureReason, FinalHeadSHA: result.FinalHeadSHA, Digest: result.Digest, FinishedAtMS: result.FinishedAt.UnixMilli()},
 	})
 	if err == nil && c.HookRecheck != nil {
-		if hookErr := c.HookRecheck(ctx, a.RunID, a.AttemptNo); hookErr != nil {
-			return disposition, hookErr
-		}
+		// Hooks are audit evidence only. A bad path must not reclassify a
+		// completed attempt or fail the daemon's recovery loop.
+		_ = c.HookRecheck(ctx, a.RunID, a.AttemptNo)
 	}
 	return disposition, err
 }

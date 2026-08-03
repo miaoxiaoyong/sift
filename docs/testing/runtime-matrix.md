@@ -28,7 +28,7 @@ summary: M6 V2/V4 逐行证据清单
 | V2-12 | Interrupt 五件事：Run、Interrupt、charge、event、publication 全有或全无 | `TestEmitInterruptBindingFailureRollsBackFiveThings`、`TestEmitInterruptWritesFiveThingsAndDeduplicates` 证明拒绝/成功；尚无逐写点 crash table | planned #849 | backend-neutral，一次；不得用双 backend 重复代替逐写点 |
 | V2-13 | `startup_stall` retry success：absence、旧 attempt/resolution/isolation、Interrupt、Run、新 attempt/claim/launch/ack/event 全有或全无 | `TestV2CurrentWritePortsCrashAtomicity/startup_stall_probe_success` 只注入 successor claim 边界；`TestApplyRetryProbeResultSuccessClosesAndQueues` 验 happy path | planned #849：逐写点 crash table | backend-neutral，一次 |
 | V2-14 | 人工态 started/result 与决定的单事务仲裁 | `TestV4HumanStateInterleavings`、`TestResolveAttemptRace*` | partial → #851 | 两 backend 交错调用图 |
-| V2-15 | hooks baseline/recheck 与诊断写入崩溃重放 | 无生产 writer | planned #848 | backend-neutral |
+| V2-15 | hooks baseline/recheck 与诊断写入崩溃重放 | `TestHookCrashReplayRecordsOneStableDrift`、`TestHookRecheckCrashReplayReceiptIsAtomicWithTerminalResult` | existing #848 | backend-neutral |
 
 ## 2. DESIGN §10.1 恢复矩阵逐行
 

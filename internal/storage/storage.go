@@ -439,6 +439,57 @@ type RecordHookBaselineCmd struct {
 	CapturedAtMS    int64
 }
 
+type HookRecheckReceipt struct {
+	RunID     string
+	AttemptNo int
+	ProjectID string
+}
+
+// PendingHookRechecks returns terminal attempts whose audit receipt survived
+// completion but has not yet been inspected.
+func (d *DB) PendingHookRechecks(ctx context.Context) ([]HookRecheckReceipt, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT run_id,attempt_no,project_id FROM hook_recheck_receipts WHERE state='pending' ORDER BY created_at_ms,run_id,attempt_no`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HookRecheckReceipt
+	for rows.Next() {
+		var receipt HookRecheckReceipt
+		if err := rows.Scan(&receipt.RunID, &receipt.AttemptNo, &receipt.ProjectID); err != nil {
+			return nil, err
+		}
+		out = append(out, receipt)
+	}
+	return out, rows.Err()
+}
+
+// CompleteHookRecheck makes an audit result durable. It is idempotent so a
+// replay after an already-recorded diagnostic never creates a second result.
+func (d *DB) CompleteHookRecheck(ctx context.Context, runID string, attemptNo int, nowMS int64) error {
+	if runID == "" || attemptNo < 1 || nowMS <= 0 {
+		return errors.New("storage: invalid hook recheck receipt")
+	}
+	_, err := d.db.ExecContext(ctx, `UPDATE hook_recheck_receipts SET state='completed',completed_at_ms=COALESCE(completed_at_ms,?) WHERE run_id=? AND attempt_no=?`, nowMS, runID, attemptNo)
+	return err
+}
+
+// RecordHookDiagnostic is the audit-only failure path for capture/persist
+// observations. Its stable receipt key makes crash replay byte-stable.
+func (d *DB) RecordHookDiagnostic(ctx context.Context, projectID, runID string, attemptNo int, kind, detail string, nowMS int64) error {
+	if projectID == "" || kind == "" || nowMS <= 0 || (runID == "") != (attemptNo == 0) {
+		return errors.New("storage: invalid hook diagnostic")
+	}
+	payload, _ := json.Marshal(map[string]any{"project_id": projectID, "run_id": runID, "attempt_no": attemptNo, "detail": detail})
+	var attempt any
+	if attemptNo != 0 {
+		attempt = attemptNo
+	}
+	_, err := d.db.ExecContext(ctx, `INSERT INTO events(id,project_id,run_id,attempt_no,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms)
+		VALUES(?,?,?,?,?,'system',1,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, newID(), projectID, nullable(runID), attempt, kind, string(payload), "hook-diagnostic:"+kind+":"+projectID+":"+runID+":"+strconv.Itoa(attemptNo), nowMS, nowMS)
+	return err
+}
+
 // HookProjectForRun resolves the immutable project/repository identity used
 // by completion-time hook rechecks.
 func (d *DB) HookProjectForRun(ctx context.Context, runID string) (string, string, error) {
@@ -482,6 +533,20 @@ func (d *DB) RecordHookBaseline(ctx context.Context, cmd RecordHookBaselineCmd) 
 			return err
 		}
 		return tx.Commit()
+	}
+	if !exists {
+		var completed int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM attempts a JOIN runs r ON r.id=a.run_id WHERE r.project_id=?`, cmd.ProjectID).Scan(&completed); err != nil {
+			return err
+		}
+		if completed != 0 {
+			payload, _ := json.Marshal(map[string]any{"project_id": cmd.ProjectID, "observed_digest": cmd.Snapshot.Digest})
+			_, err = tx.ExecContext(ctx, `INSERT INTO events(id,project_id,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES(?,?, 'hooks_baseline_activation_missing','system',1,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, newID(), cmd.ProjectID, string(payload), "hooks-baseline-activation-missing:"+cmd.ProjectID, cmd.CapturedAtMS, cmd.CapturedAtMS)
+			if err != nil {
+				return err
+			}
+			return tx.Commit()
+		}
 	}
 	if exists {
 		if old != cmd.Snapshot.Digest {

@@ -367,6 +367,15 @@ func (d *DB) ResolveAttemptRace(ctx context.Context, cmd AttemptRaceCommand) (st
 				return "", err
 			}
 		}
+		// The recheck receipt is part of the terminal result transaction. A
+		// crash after this commit is therefore replayed by the supervisor rather
+		// than losing the audit behind the terminal-attempt recovery filter.
+		if _, err = tx.ExecContext(ctx, `INSERT INTO hook_recheck_receipts(run_id,attempt_no,project_id,state,created_at_ms)
+			SELECT a.run_id,a.attempt_no,r.project_id,'pending',? FROM attempts a JOIN runs r ON r.id=a.run_id
+			WHERE a.run_id=? AND a.attempt_no=? AND a.phase='finished'
+			ON CONFLICT(run_id,attempt_no) DO NOTHING`, cmd.NowMS, cmd.RunID, cmd.AttemptNo); err != nil {
+			return "", err
+		}
 	}
 	payload, _ := json.Marshal(map[string]string{"disposition": disposition, "fact_key": cmd.FactKey})
 	if _, err = tx.ExecContext(ctx, `INSERT INTO events(id,run_id,attempt_no,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES (?, ?, ?, 'attempt.race_resolved', 'agent', 1, ?, ?, ?, ?)`, newID(), cmd.RunID, cmd.AttemptNo, string(payload), "attempt-race:"+cmd.FactKey, cmd.NowMS, cmd.NowMS); err != nil {
