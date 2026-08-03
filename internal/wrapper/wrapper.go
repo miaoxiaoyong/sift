@@ -219,16 +219,20 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 		relayFinished = true
 		relayConsumed = true
 		if relayErr != nil {
-			return errors.Join(relayErr, terminateProcessGroup(b.RunDir))
+			return relayFailure(relayErr, b, instance, ai, digest)
 		}
-		waitErr = <-waited
+		select {
+		case waitErr = <-waited:
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), terminateProcessGroup(b.RunDir))
+		}
 	case <-ctx.Done():
 		return errors.Join(ctx.Err(), terminateProcessGroup(b.RunDir))
 	}
 	if !relayFinished {
 		if err := waitForPTYRelay(relayDone, pty.Master); err != nil {
 			relayConsumed = true
-			return errors.Join(err, terminateProcessGroup(b.RunDir))
+			return relayFailure(err, b, instance, ai, digest)
 		}
 		relayConsumed = true
 	}
@@ -500,13 +504,36 @@ func heartbeat(b runtime.Bootstrap, instance string, stop <-chan struct{}) {
 		}
 	}
 }
+
+const agentLogRelayFailure = "agent_log_relay_failed"
+
+type relayError struct {
+	code string
+	err  error
+}
+
+func (e *relayError) Error() string { return e.err.Error() }
+func (e *relayError) Unwrap() error { return e.err }
+
+func relayFailure(err error, b runtime.Bootstrap, instance string, ai map[string]any, controlDigest string) error {
+	var relayErr *relayError
+	if errors.As(err, &relayErr) && relayErr.code == agentLogRelayFailure {
+		exitCode := 1
+		result := map[string]any{"schema_version": 1, "run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "agent_identity": ai, "exit_code": exitCode, "signal": nil, "failure_reason": agentLogRelayFailure, "finished_at_ms": time.Now().UnixMilli(), "final_head_sha": headSHA(b.WorktreePath), "control_digest": controlDigest}
+		if _, writeErr := writeJSON(filepath.Join(b.RunDir, "result.json"), result); writeErr != nil {
+			err = errors.Join(err, fmt.Errorf("wrapper: record agent log relay failure: %w", writeErr))
+		}
+	}
+	return errors.Join(err, terminateProcessGroup(b.RunDir))
+}
+
 func relayPTY(master *os.File, log io.Writer, host io.Writer) error {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := master.Read(buf)
 		if n > 0 {
 			if writeErr := writeAll(log, buf[:n]); writeErr != nil {
-				return fmt.Errorf("wrapper: write agent log: %w", writeErr)
+				return &relayError{code: agentLogRelayFailure, err: fmt.Errorf("wrapper: write agent log: %w", writeErr)}
 			}
 			// The durable log is authoritative. A closed host stream or pane is
 			// observational only and must not alter the Agent result.

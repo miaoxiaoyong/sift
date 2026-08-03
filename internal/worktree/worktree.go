@@ -146,6 +146,7 @@ func ReadResult(path string) (attempt.Result, error) {
 		Signal            *string          `json:"signal"`
 		FinalHeadSHA      string           `json:"final_head_sha"`
 		ControlDigest     string           `json:"control_digest"`
+		FailureReason     string           `json:"failure_reason"`
 		Digest            string           `json:"digest"`
 		FinishedAt        string           `json:"finished_at"`
 		FinishedAtMS      int64            `json:"finished_at_ms"`
