@@ -50,7 +50,16 @@ func newSegmentChain(t *testing.T) (*Chain, *forge.Fake, *brain.FakeProvider, *a
 	t.Helper()
 	db := openSegDB(t)
 	ctx := context.Background()
-	if err := db.SeedProjectForTest(ctx, segConfig, segProject, segBase); err != nil {
+	seedConfig := segConfig + "-seed"
+	if err := db.SeedProjectForTest(ctx, seedConfig, segProject, segBase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecForTest(ctx, `INSERT INTO config_snapshots
+		(id, config_hash, schema_version, canonical_json, source_present, loaded_at_ms, binary_version)
+		VALUES (?, ?, 1, ?, 1, ?, 'test')`, segConfig, "hash-"+segConfig, `{"agents":[{"id":"fake-agent","backend":"process"}]}`, segBase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecForTest(ctx, `UPDATE projects SET config_snapshot_id=? WHERE id=?`, segConfig, segProject); err != nil {
 		t.Fatal(err)
 	}
 

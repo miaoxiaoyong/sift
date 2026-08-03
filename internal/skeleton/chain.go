@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/attempt"
@@ -239,6 +240,7 @@ func (c *Chain) Drive(ctx context.Context, runID string, issue forge.Issue, trig
 	if err != nil {
 		return out, fmt.Errorf("skeleton: assemble task spec: %w", err)
 	}
+	worktree := filepath.Join("/tmp", "sift-skeleton-"+runID)
 	if _, err := c.db.SetInitialTaskSpec(ctx, storage.SetInitialTaskSpecCmd{
 		RunID:           runID,
 		ExpectedVersion: created.Version,
@@ -248,7 +250,13 @@ func (c *Chain) Drive(ctx context.Context, runID string, issue forge.Issue, trig
 		Kind:            string(*t2out.Kind),
 		AgentID:         *t2out.Agent,
 		HITLBeforeStart: hitl,
-		OccurredAtMS:    c.clock.NowMS(),
+		InitialAttempt: &storage.InitialAttemptSpec{
+			WorktreePath: worktree,
+			BranchName:   "sift/" + runID,
+			BaseRef:      "main",
+			BaseSHA:      "base",
+		},
+		OccurredAtMS: c.clock.NowMS(),
 	}); err != nil {
 		return out, fmt.Errorf("skeleton: set initial task spec: %w", err)
 	}
@@ -268,7 +276,7 @@ func (c *Chain) Drive(ctx context.Context, runID string, issue forge.Issue, trig
 	c.clock.Advance(c.config.LaunchLatency)
 	if _, err := c.agent.Launch(ctx, attempt.Launch{
 		RunID: runID, AttemptNo: 1, AgentID: agentID,
-		Worktree: "", BranchName: "sift/" + runID, BaseRef: "main", BaseSHA: "base",
+		Worktree: worktree, BranchName: "sift/" + runID, BaseRef: "main", BaseSHA: "base",
 	}); err != nil {
 		return out, fmt.Errorf("skeleton: launch agent: %w", err)
 	}
