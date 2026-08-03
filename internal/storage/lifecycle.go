@@ -30,11 +30,16 @@ type SetInitialTaskSpecCmd struct {
 	Kind            string // feature|bug|chore|docs|refactor
 	AgentID         string
 	HITLBeforeStart bool
-	SourceEventID   string // optional provenance event
-	OccurredAtMS    int64
+	// InitialAttempt admits the first launch in the same transaction as the
+	// assignment. It is nil for assignments that must wait for a later command
+	// (for example HITL design approval).
+	InitialAttempt *InitialAttemptSpec
+	SourceEventID  string // optional provenance event
+	OccurredAtMS   int64
 }
 
-// SetInitialTaskSpec commits the initial Task Spec and Run assignment. It is
+// SetInitialTaskSpec commits the initial Task Spec and Run assignment. When
+// InitialAttempt is supplied, it also atomically admits the first launch. It is
 // idempotent on (run_id, version=1): re-applying the same snapshot is a no-op.
 func (d *DB) SetInitialTaskSpec(ctx context.Context, cmd SetInitialTaskSpecCmd) (Run, error) {
 	if cmd.RunID == "" || cmd.ExpectedVersion < 1 {
@@ -49,6 +54,9 @@ func (d *DB) SetInitialTaskSpec(ctx context.Context, cmd SetInitialTaskSpecCmd) 
 	if cmd.OccurredAtMS <= 0 {
 		return Run{}, errors.New("storage: set initial task spec requires occurred_at_ms")
 	}
+	if err := cmd.InitialAttempt.validate(); err != nil {
+		return Run{}, err
+	}
 
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -59,7 +67,9 @@ func (d *DB) SetInitialTaskSpec(ctx context.Context, cmd SetInitialTaskSpecCmd) 
 	var status string
 	var version int64
 	var forcedHITL int
-	if err := tx.QueryRowContext(ctx, `SELECT status, version, hitl_before_start FROM runs WHERE id=?`, cmd.RunID).Scan(&status, &version, &forcedHITL); err != nil {
+	var snapshotJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT r.status, r.version, r.hitl_before_start, s.canonical_json
+		FROM runs r JOIN config_snapshots s ON s.id=r.config_snapshot_id WHERE r.id=?`, cmd.RunID).Scan(&status, &version, &forcedHITL, &snapshotJSON); err != nil {
 		return Run{}, err
 	}
 	if version != cmd.ExpectedVersion {
@@ -109,9 +119,20 @@ func (d *DB) SetInitialTaskSpec(ctx context.Context, cmd SetInitialTaskSpecCmd) 
 		newID(), cmd.RunID, string(payload), cmd.OccurredAtMS, cmd.OccurredAtMS); err != nil {
 		return Run{}, fmt.Errorf("storage: insert assignment event: %w", err)
 	}
+	if cmd.InitialAttempt != nil {
+		if hitlBeforeStart {
+			return Run{}, fmt.Errorf("%w: HITL assignment cannot launch initial attempt", ErrIllegalTransition)
+		}
+		if err := insertInitialAttemptTx(ctx, tx, cmd.RunID, cmd.AgentID, cmd.TaskSpecID, snapshotJSON, cmd.InitialAttempt, cmd.OccurredAtMS); err != nil {
+			return Run{}, err
+		}
+	}
 
 	if err := tx.Commit(); err != nil {
 		return Run{}, fmt.Errorf("storage: commit set initial task spec: %w", err)
+	}
+	if cmd.InitialAttempt != nil {
+		d.wakeOutbox()
 	}
 	return d.Run(ctx, cmd.RunID)
 }

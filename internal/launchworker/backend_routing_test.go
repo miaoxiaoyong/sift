@@ -124,8 +124,10 @@ func TestProductionBackendFreezeRoutingAndInherit(t *testing.T) {
 		name, frozenRuntime, frozenAgent, driftRuntime, driftAgent string
 		want                                                       config.Backend
 	}{
-		{name: "runtime_tmux_agent_process", frozenRuntime: "tmux", frozenAgent: "process", driftRuntime: "process", driftAgent: "tmux", want: config.BackendProcess},
-		{name: "runtime_process_agent_tmux", frozenRuntime: "process", frozenAgent: "tmux", driftRuntime: "tmux", driftAgent: "process", want: config.BackendTmux},
+		{name: "runtime_tmux_agent_default", frozenRuntime: "tmux", frozenAgent: "", driftRuntime: "process", driftAgent: "process", want: config.BackendTmux},
+		{name: "runtime_process_agent_override_tmux", frozenRuntime: "process", frozenAgent: "tmux", driftRuntime: "tmux", driftAgent: "process", want: config.BackendTmux},
+		{name: "runtime_tmux_agent_override_process", frozenRuntime: "tmux", frozenAgent: "process", driftRuntime: "process", driftAgent: "tmux", want: config.BackendProcess},
+		{name: "runtime_process_agent_default", frozenRuntime: "process", frozenAgent: "", driftRuntime: "tmux", driftAgent: "tmux", want: config.BackendProcess},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -196,7 +198,11 @@ func loadRoutingConfig(t *testing.T, root, runtimeBackend, agentBackend string) 
 	if err := os.MkdirAll(repo, 0700); err != nil {
 		t.Fatal(err)
 	}
-	yaml := "version: 1\nruntime:\n  backend: " + runtimeBackend + "\nagents:\n  - id: agent\n    executable: /bin/echo\n    backend: " + agentBackend + "\nprojects:\n  - id: project\n    repo: " + repo + "\n    forge:\n      kind: github\n      project: org/repo\n"
+	agent := "  - id: agent\n    executable: /bin/echo\n"
+	if agentBackend != "" {
+		agent += "    backend: " + agentBackend + "\n"
+	}
+	yaml := "version: 1\nruntime:\n  backend: " + runtimeBackend + "\nagents:\n" + agent + "projects:\n  - id: project\n    repo: " + repo + "\n    forge:\n      kind: github\n      project: org/repo\n"
 	if err := os.WriteFile(config.ConfigPath(home), []byte(yaml), config.ConfigFileMode); err != nil {
 		t.Fatal(err)
 	}
@@ -213,11 +219,15 @@ func createFrozenRoutingRun(t *testing.T, ctx context.Context, db *storage.DB, r
 	if err != nil {
 		t.Fatal(err)
 	}
-	assigned, err := db.SetInitialTaskSpec(ctx, storage.SetInitialTaskSpecCmd{RunID: runID, ExpectedVersion: created.Version, TaskSpecID: "task-" + runID, CanonicalJSON: []byte(`{"title":"routing"}`), ContentDigest: "digest-" + runID, Kind: "bug", AgentID: "agent", OccurredAtMS: nowMS})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.CreateInitialAttempt(ctx, storage.CreateInitialAttemptCmd{RunID: runID, ExpectedRunVersion: assigned.Version, WorktreePath: filepath.Join("/tmp", "sift-routing-"+runID), BranchName: "sift/" + runID, BaseRef: "main", BaseSHA: "base", NowMS: nowMS}); err != nil {
+	if _, err := db.SetInitialTaskSpec(ctx, storage.SetInitialTaskSpecCmd{
+		RunID: runID, ExpectedVersion: created.Version, TaskSpecID: "task-" + runID,
+		CanonicalJSON: []byte(`{"title":"routing"}`), ContentDigest: "digest-" + runID,
+		Kind: "bug", AgentID: "agent", OccurredAtMS: nowMS,
+		InitialAttempt: &storage.InitialAttemptSpec{
+			WorktreePath: filepath.Join("/tmp", "sift-routing-"+runID), BranchName: "sift/" + runID,
+			BaseRef: "main", BaseSHA: "base",
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

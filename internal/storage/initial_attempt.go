@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,67 +11,56 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/config"
 )
 
-// CreateInitialAttemptCmd contains the immutable execution-site facts for the
-// first attempt. Backend selection is deliberately absent: it is recovered
-// only from the Run's frozen config snapshot.
-type CreateInitialAttemptCmd struct {
-	RunID, WorktreePath, BranchName, BaseRef, BaseSHA string
-	ExpectedRunVersion                                int64
-	NowMS                                             int64
+// InitialAttemptSpec carries the immutable execution-site facts needed when a
+// T2 assignment also admits its first launch. The assignment write port owns
+// the transaction; callers cannot supply or override the effective backend.
+type InitialAttemptSpec struct {
+	WorktreePath string
+	BranchName   string
+	BaseRef      string
+	BaseSHA      string
 }
 
-// CreateInitialAttempt creates the initial pending attempt, its claim, and its
-// launch operation in one transaction. It reads the assigned Agent's concrete
-// backend from the Run's immutable config snapshot, never current config.
-func (d *DB) CreateInitialAttempt(ctx context.Context, cmd CreateInitialAttemptCmd) error {
-	if cmd.RunID == "" || cmd.ExpectedRunVersion < 1 || cmd.NowMS <= 0 ||
-		!filepath.IsAbs(cmd.WorktreePath) || cmd.BranchName == "" || cmd.BaseRef == "" || cmd.BaseSHA == "" {
+func (s *InitialAttemptSpec) validate() error {
+	if s == nil {
+		return nil
+	}
+	if !filepath.IsAbs(s.WorktreePath) || s.BranchName == "" || s.BaseRef == "" || s.BaseSHA == "" {
 		return errors.New("storage: invalid initial attempt")
 	}
+	return nil
+}
 
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
+// insertInitialAttemptTx is called by the production assignment write port.
+// Assignment, effective-backend resolution, attempt, claim, and launch
+// operation are one transaction, so a queued Run can never expose an attempt
+// whose backend was selected from current configuration.
+func insertInitialAttemptTx(ctx context.Context, tx *sql.Tx, runID, agentID, taskSpecID, snapshotJSON string, spec *InitialAttemptSpec, nowMS int64) error {
+	if spec == nil {
+		return nil
+	}
+	if err := spec.validate(); err != nil {
 		return err
-	}
-	defer tx.Rollback()
-
-	var version int64
-	var status, agentID, taskSpecID, snapshotJSON string
-	if err := tx.QueryRowContext(ctx, `SELECT r.version,r.status,COALESCE(r.agent_id,''),COALESCE(r.current_task_spec_id,''),s.canonical_json
-		FROM runs r JOIN config_snapshots s ON s.id=r.config_snapshot_id WHERE r.id=?`, cmd.RunID).
-		Scan(&version, &status, &agentID, &taskSpecID, &snapshotJSON); err != nil {
-		return err
-	}
-	if version != cmd.ExpectedRunVersion {
-		return ErrRejectedStale
-	}
-	if status != string(RunQueued) || agentID == "" || taskSpecID == "" {
-		return fmt.Errorf("%w: initial attempt requires assigned queued Run", ErrIllegalTransition)
 	}
 	backend, err := frozenAgentBackend([]byte(snapshotJSON), agentID)
 	if err != nil {
 		return err
 	}
-
-	key := LaunchOperationKey(cmd.RunID, 1, 1)
+	key := LaunchOperationKey(runID, 1, 1)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO attempts
 		(run_id,attempt_no,phase,generation,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,isolation_state,created_at_ms,updated_at_ms)
 		VALUES (?,1,'pending',1,?,?,?,?,?,?,?,'none',?,?)`,
-		cmd.RunID, backend, agentID, taskSpecID, cmd.WorktreePath, cmd.BranchName, cmd.BaseRef, cmd.BaseSHA, cmd.NowMS, cmd.NowMS); err != nil {
+		runID, backend, agentID, taskSpecID, spec.WorktreePath, spec.BranchName, spec.BaseRef, spec.BaseSHA, nowMS, nowMS); err != nil {
 		return fmt.Errorf("storage: create initial attempt: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_claims
 		(run_id,attempt_no,generation,launch_operation_key,created_at_ms,updated_at_ms) VALUES (?,1,1,?,?,?)`,
-		cmd.RunID, key, cmd.NowMS, cmd.NowMS); err != nil {
+		runID, key, nowMS, nowMS); err != nil {
 		return fmt.Errorf("storage: create initial attempt claim: %w", err)
 	}
-	if err := insertOperation(ctx, tx, Operation{Key: key, Kind: OperationLaunchAgent, RunID: cmd.RunID, AttemptNo: intPtr(1), Payload: []byte(`{"schema_version":1}`)}, cmd.RunID, "", cmd.NowMS); err != nil {
+	if err := insertOperation(ctx, tx, Operation{Key: key, Kind: OperationLaunchAgent, RunID: runID, AttemptNo: intPtr(1), Payload: []byte(`{"schema_version":1}`)}, runID, "", nowMS); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	d.wakeOutbox()
 	return nil
 }
 
