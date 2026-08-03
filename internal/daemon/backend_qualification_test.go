@@ -122,7 +122,7 @@ func TestQualificationRecoveryVerifiedAbsenceConfirmed(t *testing.T) {
 	}
 }
 
-func TestQualificationInvalidationMarkerBlocksVerifiedRecovery(t *testing.T) {
+func TestQualificationBinaryReplacementBetweenMeasurementAndAgentExecFailsClosed(t *testing.T) {
 	db, raw, _, now := seedRecoveryCoordinator(t, "running", 0)
 	q := detachedQualification(t, runtimepkg.QualificationEvidence{Status: runtimepkg.ProcessGroupUnverified, Reason: "detached_descendant"})
 	q.ID, q.Status, q.Reason = "verified", "process-group-verified", "qualified"

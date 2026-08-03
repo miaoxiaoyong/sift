@@ -3,9 +3,12 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -67,6 +70,42 @@ func TestDirectLauncherOnlyInjectsRunDirectory(t *testing.T) {
 	}
 	if got, want := stdout.String(), runDir+"|unset"; got != want {
 		t.Fatalf("environment = %q, want %q", got, want)
+	}
+}
+
+func TestQualificationBinaryReplacementBetweenMeasurementAndAgentExecFailsClosed(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("sealed executable images require a Unix executable image")
+	}
+	agent := filepath.Join(t.TempDir(), "agent")
+	old := []byte("#!/bin/sh\nprintf old\n")
+	if err := os.WriteFile(agent, old, 0700); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(old)
+	image, err := MaterializeQualifiedExecutable(Qualification{ExecutablePath: agent, ExecutableSHA256: hex.EncodeToString(digest[:])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ReleaseExecutableImage(image)
+
+	replacement := filepath.Join(t.TempDir(), "replacement")
+	if err := os.WriteFile(replacement, []byte("#!/bin/sh\nprintf replacement\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, agent); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	cmd, err := (DirectLauncher{}).Start(context.Background(), AgentLaunch{Executable: agent, ExecutableImage: image, Worktree: t.TempDir(), RunDir: t.TempDir(), Stdout: &stdout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); got != "old" {
+		t.Fatalf("agent bytes after path replacement = %q, want old verified image", got)
 	}
 }
 

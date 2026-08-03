@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,10 @@ import (
 )
 
 const TopologyMethodVersion = "runtime-topology/v1"
+
+// ErrImmutableSystemExecutable means Darwin's sealed system volume already
+// supplies an immutable execution image, so no private hard link is possible.
+var ErrImmutableSystemExecutable = errors.New("runtime: immutable system executable")
 
 // QualificationProbeTimeout bounds execution of an untrusted Agent's version
 // command. Version probes receive no inherited daemon environment.
@@ -142,8 +147,84 @@ func ProbeVersion(parent context.Context, executable string, args []string, time
 	return stdout.Bytes(), stderr.Bytes(), nil
 }
 
+// MaterializeQualifiedExecutable verifies the path's current bytes through a
+// single open descriptor, then returns an executable image separate from
+// ExecutablePath. Linux uses an unlinked read-only copy; Darwin uses a private
+// hard link. It must be released by its caller after Launcher.Start has
+// inherited it.
+func MaterializeQualifiedExecutable(q Qualification) (*os.File, error) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return nil, errors.New("runtime: sealed executable images are unsupported on this platform")
+	}
+	if q.ExecutablePath == "" || q.ExecutableSHA256 == "" {
+		return nil, errors.New("runtime: incomplete executable qualification")
+	}
+	source, err := os.Open(q.ExecutablePath)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: open qualified executable: %w", err)
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("runtime: qualified executable is unavailable")
+	}
+	data, err := io.ReadAll(source)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: read qualified executable: %w", err)
+	}
+	if sha256Hex(data) != q.ExecutableSHA256 {
+		return nil, errors.New("runtime: qualified executable changed")
+	}
+
+	dir, err := os.MkdirTemp("", "sift-agent-image-")
+	if err != nil {
+		return nil, fmt.Errorf("runtime: create executable image directory: %w", err)
+	}
+	name := filepath.Join(dir, "agent")
+	if runtime.GOOS == "darwin" {
+		// The link and its post-link hash bind exec to one inode. A later rename
+		// of ExecutablePath cannot change the private link.
+		if err := os.Link(q.ExecutablePath, name); err != nil {
+			_ = os.RemoveAll(dir)
+			if darwinSystemExecutable(q.ExecutablePath) {
+				return nil, fmt.Errorf("%w: %v", ErrImmutableSystemExecutable, err)
+			}
+			return nil, fmt.Errorf("runtime: link executable image: %w", err)
+		}
+		linked, err := os.ReadFile(name)
+		if err != nil || sha256Hex(linked) != q.ExecutableSHA256 {
+			_ = os.RemoveAll(dir)
+			return nil, errors.New("runtime: qualified executable changed")
+		}
+		image, err := os.Open(name)
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, fmt.Errorf("runtime: open executable image: %w", err)
+		}
+		return image, nil
+	}
+	image, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0500)
+	if err != nil {
+		_ = os.Remove(dir)
+		return nil, fmt.Errorf("runtime: create executable image: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	if _, err := image.Write(data); err != nil {
+		ReleaseExecutableImage(image)
+		return nil, fmt.Errorf("runtime: write executable image: %w", err)
+	}
+	if err := image.Close(); err != nil {
+		return nil, fmt.Errorf("runtime: seal executable image: %w", err)
+	}
+	image, err = os.Open(name)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: reopen executable image: %w", err)
+	}
+	return image, nil
+}
+
 // ValidateQualificationExecutable closes the measurement-to-exec boundary.
-// The wrapper repeats this check immediately before its sole Launcher call.
+// The launch worker repeats this check before handing off to the wrapper.
 func ValidateQualificationExecutable(q Qualification) error {
 	if q.ExecutablePath == "" || q.ExecutableSHA256 == "" {
 		return errors.New("runtime: incomplete executable qualification")

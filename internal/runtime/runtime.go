@@ -105,12 +105,16 @@ func (b *ProcessBackend) Spawn(ctx context.Context, bootstrapPath string) (*exec
 // a shell.
 type AgentLaunch struct {
 	Executable string
-	Args       []string
-	Worktree   string
-	RunDir     string
-	Stdin      io.Reader
-	Stdout     io.Writer
-	Stderr     io.Writer
+	// ExecutableImage, when present, is an already verified image of
+	// Executable. DirectLauncher executes it rather than resolving Executable
+	// again by path.
+	ExecutableImage *os.File
+	Args            []string
+	Worktree        string
+	RunDir          string
+	Stdin           io.Reader
+	Stdout          io.Writer
+	Stderr          io.Writer
 }
 
 // Launcher is the only interface wrapper code may use to start an Agent. V0's
@@ -132,7 +136,15 @@ func (DirectLauncher) Start(ctx context.Context, launch AgentLaunch) (*exec.Cmd,
 	if !filepath.IsAbs(launch.Worktree) || !filepath.IsAbs(launch.RunDir) {
 		return nil, fmt.Errorf("runtime: worktree and run directory must be absolute")
 	}
-	cmd := exec.CommandContext(ctx, launch.Executable, launch.Args...)
+	executable := launch.Executable
+	if launch.ExecutableImage != nil {
+		var err error
+		executable, err = executableImagePath(launch.ExecutableImage)
+		if err != nil {
+			return nil, err
+		}
+	}
+	cmd := exec.CommandContext(ctx, executable, launch.Args...)
 	cmd.Dir = launch.Worktree
 	cmd.Env = []string{"SIFT_RUN_DIR=" + launch.RunDir}
 	cmd.Stdin = launch.Stdin

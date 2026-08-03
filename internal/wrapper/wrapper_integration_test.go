@@ -2,8 +2,11 @@ package wrapper
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -112,6 +115,63 @@ func TestProductionWrapperPTYRelaysRawOutputToLogAndHost(t *testing.T) {
 	}
 	if got, want := readFile(t, filepath.Join(runDir, "agent.log")), "pty-raw\n"; got != want {
 		t.Fatalf("agent.log = %q, want %q", got, want)
+	}
+}
+
+func TestQualificationBinaryReplacementBetweenMeasurementAndAgentExecFailsClosed(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("sealed executable images require a Unix executable image")
+	}
+	root := shortTempDir(t)
+	runDir := filepath.Join(root, "runs", "run-1", "1")
+	if err := os.MkdirAll(runDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	agent := filepath.Join(root, "agent")
+	old := []byte("#!/bin/sh\nprintf old > \"$SIFT_RUN_DIR/executed-bytes\"\n")
+	if err := os.WriteFile(agent, old, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(old)
+	bootstrapData, err := json.Marshal(runtimepkg.Bootstrap{SchemaVersion: 2, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor, DaemonVersion: controlplane.Version, WrapperVersion: controlplane.Version, RunID: "run-1", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", BootstrapNonce: "aaaaaaaaaaaaaaaa", RunToken: "bbbbbbbbbbbbbbbb", RunDir: runDir, WorktreePath: t.TempDir(), Agent: runtimepkg.BootstrapAgent{ID: "agent", Executable: agent, ExecutableSHA256: hex.EncodeToString(sum[:]), TaskTransport: "stdin"}, TaskSpecSnapshotID: "task-1", TaskSpec: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := filepath.Join(runDir, "bootstrap.json")
+	if err := os.WriteFile(bootstrap, bootstrapData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := newWrapperServer(t, root, "")
+	defer server.Close()
+	ready := filepath.Join(root, "qualified-image-ready")
+	release := filepath.Join(root, "qualified-image-release")
+	cmd := osexec.Command(buildWrapperWithTags(t, "sift_test"), bootstrap)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	cmd.Env = append(os.Environ(), "SIFT_WRAPPER_TEST_PAUSE=after-qualified-executable-open", "SIFT_WRAPPER_TEST_READY="+ready, "SIFT_WRAPPER_TEST_RELEASE="+release)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForWrapperFile(t, ready)
+
+	replacement := filepath.Join(root, "replacement")
+	if err := os.WriteFile(replacement, []byte("#!/bin/sh\nprintf replacement > \"$SIFT_RUN_DIR/executed-bytes\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(release, []byte("release"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wrapper failed after executing sealed image: %v\n%s", err, output.String())
+	}
+	if got := readFile(t, filepath.Join(runDir, "executed-bytes")); got != "old" {
+		t.Fatalf("agent bytes after wrapper-check-to-exec replacement = %q, want old verified image", got)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "qualification-invalid")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sealed image unexpectedly invalidated qualification: %v", err)
 	}
 }
 
@@ -608,11 +668,20 @@ func assertAgentTopology(t *testing.T, wrapperPID, agentPID int) {
 }
 
 func buildWrapper(t *testing.T) string {
+	return buildWrapperWithTags(t)
+}
+
+func buildWrapperWithTags(t *testing.T, tags ...string) string {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
 	path := filepath.Join(t.TempDir(), "sift-agent-wrapper")
-	cmd := osexec.Command("go", "build", "-o", path, "./cmd/sift-agent-wrapper")
+	args := []string{"build", "-o", path}
+	if len(tags) > 0 {
+		args = append(args, "-tags", strings.Join(tags, ","))
+	}
+	args = append(args, "./cmd/sift-agent-wrapper")
+	cmd := osexec.Command("go", args...)
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build wrapper: %v\n%s", err, out)
