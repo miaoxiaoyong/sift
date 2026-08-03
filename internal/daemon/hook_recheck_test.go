@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/miaoxiaoyong/sift/internal/hooks"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -109,6 +110,41 @@ func TestHookActivationMissingAfterStartupCompletionDoesNotAdoptDrift(t *testing
 	}
 	if baselines != 0 || diagnostics != 1 {
 		t.Fatalf("baseline/diagnostic = %d/%d, want absent/stable", baselines, diagnostics)
+	}
+}
+
+func TestHookUpgradeBootstrapRequiresExplicitOperatorPath(t *testing.T) {
+	ctx := context.Background()
+	now := time.UnixMilli(10000)
+	db, raw, _, _ := seedRecoveryCoordinator(t, "running", 0)
+	repo := t.TempDir()
+	hookGit(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, ".git", "hooks", "pre-commit"), []byte("operator-confirmed\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecForTest(ctx, `UPDATE projects SET repo_path=? WHERE id='project'`, repo); err != nil {
+		t.Fatal(err)
+	}
+	exit := 0
+	if _, err := db.ResolveAttemptRace(ctx, storage.AttemptRaceCommand{RunID: "run", AttemptNo: 1, ExpectedGeneration: 1, FactKey: "legacy-result", NowMS: now.UnixMilli(), Agent: &storage.AgentIdentity{PID: 11, StartedAtMS: 1001, Executable: "/agent"}, Result: &storage.AttemptResult{Agent: storage.AgentIdentity{PID: 11, StartedAtMS: 1001, Executable: "/agent"}, ExitCode: &exit, Digest: "legacy", FinishedAtMS: now.UnixMilli()}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Projects: []config.Project{{ID: "project", Enabled: true, Repo: repo}}}
+	CaptureHookBaselines(ctx, db, cfg, func() time.Time { return now })
+	var absent int
+	if err := raw.QueryRow(`SELECT count(*) FROM project_hook_baselines WHERE project_id='project'`).Scan(&absent); err != nil || absent != 0 {
+		t.Fatalf("automatic legacy baseline = %d, %v; want absent", absent, err)
+	}
+	if err := BootstrapHookBaseline(ctx, db, cfg, "project", func() time.Time { return now.Add(time.Millisecond) }); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := hooks.Capture(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted string
+	if err := raw.QueryRow(`SELECT baseline_digest FROM project_hook_baselines WHERE project_id='project'`).Scan(&persisted); err != nil || persisted != observed.Digest {
+		t.Fatalf("bootstrapped baseline = %q, %v; want trusted %q", persisted, err, observed.Digest)
 	}
 }
 

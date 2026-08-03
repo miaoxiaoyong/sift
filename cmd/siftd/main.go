@@ -129,6 +129,9 @@ func main() {
 	s.SetOperatorAction(func(ctx context.Context, method, runID string, version int64) error {
 		return termination.Operator(ctx, runID, version, method == "ops.retry")
 	})
+	s.SetHookBootstrap(func(ctx context.Context, projectID string) error {
+		return daemon.BootstrapHookBaseline(ctx, db, snapshot.Config, projectID, time.Now)
+	})
 	s.SetAttentionQuota(attentionQuotaStrings(snapshot.Config.Attention.DailyQuota))
 	if usesTmux(snapshot.Config) {
 		s.SetTmuxObserver(tmuxDiagnostics.TmuxPath, runtime.TmuxSocketPath(filepath.Join(home.Path, "tmux.sock")))

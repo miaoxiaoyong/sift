@@ -255,6 +255,9 @@ func TestQualificationBinaryReplacementSuccessorDispatchAndRecovery(t *testing.T
 	if _, err := db.SetInitialTaskSpec(ctx, storage.SetInitialTaskSpecCmd{RunID: "run", ExpectedVersion: created.Version, TaskSpecID: "task", CanonicalJSON: []byte(`{"title":"qualification"}`), ContentDigest: "task-digest", Kind: "bug", AgentID: agent.ID, OccurredAtMS: now.UnixMilli(), InitialAttempt: &storage.InitialAttemptSpec{WorktreePath: root, BranchName: "branch", BaseRef: "main", BaseSHA: "base"}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.RecordHookBaseline(ctx, storage.RecordHookBaselineCmd{ProjectID: "project", Snapshot: storage.HookBaselineSnapshot{GitConfigDigest: "initial-config", EffectiveHooksPath: "/initial-hooks", HooksDirectoryDigest: "initial-directory", Digest: "initial"}, CapturedAtMS: now.UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
 	boot, err := db.StartDaemonBoot(ctx, "qualification-frozen", "test", 1, 1, now.UnixMilli())
 	if err != nil {
 		t.Fatal(err)

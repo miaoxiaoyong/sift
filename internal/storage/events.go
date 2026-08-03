@@ -448,6 +448,13 @@ func (d *DB) claimOutboxOperation(ctx context.Context, workerID string, nowMS, l
 		query += ` AND kind=?`
 		args = append(args, filterKind)
 	}
+	if filterKind == OperationLaunchAgent {
+		// A pre-baseline project with Agent history is an upgrade boundary: do
+		// not let an Agent run until an authenticated operator has explicitly
+		// bootstrapped the current hooks observation. A fresh pending attempt
+		// remains audit-only, including capture failures.
+		query += ` AND (NOT EXISTS (SELECT 1 FROM attempts historical JOIN runs historical_run ON historical_run.id=historical.run_id WHERE historical_run.project_id=(SELECT project_id FROM runs WHERE id=outbox_operations.run_id) AND historical.phase <> 'pending') OR EXISTS (SELECT 1 FROM project_hook_baselines baseline JOIN runs run ON run.project_id=baseline.project_id WHERE run.id=outbox_operations.run_id))`
+	}
 	if projectID != "" {
 		query += ` AND json_extract(payload_json, '$.project_id')=?`
 		args = append(args, projectID)

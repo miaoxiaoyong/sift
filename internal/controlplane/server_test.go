@@ -96,6 +96,28 @@ func TestOperatorKillAndRetryDelegateToTerminationCoordinator(t *testing.T) {
 	}
 }
 
+func TestHookLegacyBootstrapOperatorEndpointIsClosedAndDelegated(t *testing.T) {
+	home := testHome(t)
+	s, err := Start(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var got string
+	s.SetHookBootstrap(func(_ context.Context, projectID string) error {
+		got = projectID
+		return nil
+	})
+	response := s.operatorRequest(Request{RequestID: "0123456789abcdef0123456789abcdef", Method: "ops.hooks-bootstrap", Auth: Auth{Kind: "operator", Token: s.operatorToken}, Params: map[string]any{"project_id": "project"}})
+	if !response.OK || got != "project" {
+		t.Fatalf("bootstrap response=%#v project=%q", response, got)
+	}
+	response = s.operatorRequest(Request{RequestID: "0123456789abcdef0123456789abcdef", Method: "ops.hooks-bootstrap", Auth: Auth{Kind: "operator", Token: s.operatorToken}, Params: map[string]any{"project_id": "project", "unexpected": true}})
+	if response.OK || response.Error == nil || response.Error.Code != "invalid_request" {
+		t.Fatalf("open bootstrap params = %#v", response)
+	}
+}
+
 func TestV10bUnsafeLocalAttackReproduces(t *testing.T) {
 	home := testHome(t)
 	s, err := Start(home)

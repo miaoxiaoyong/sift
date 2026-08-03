@@ -436,7 +436,11 @@ type RecordHookBaselineCmd struct {
 	ExpectedDigest  string
 	SourceRunID     string
 	SourceAttemptNo *int
-	CapturedAtMS    int64
+	// TrustedBootstrap is set only by the authenticated operator bootstrap
+	// path. It permits a legacy project with terminal history to establish its
+	// first baseline; normal activation must never adopt that observation.
+	TrustedBootstrap bool
+	CapturedAtMS     int64
 }
 
 type HookRecheckReceipt struct {
@@ -508,6 +512,9 @@ func (d *DB) RecordHookBaseline(ctx context.Context, cmd RecordHookBaselineCmd) 
 	if (cmd.SourceRunID == "") != (cmd.SourceAttemptNo == nil) {
 		return errors.New("storage: hook baseline source must be paired")
 	}
+	if cmd.TrustedBootstrap && cmd.SourceRunID != "" {
+		return errors.New("storage: trusted hook bootstrap cannot have an attempt source")
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -536,16 +543,22 @@ func (d *DB) RecordHookBaseline(ctx context.Context, cmd RecordHookBaselineCmd) 
 	}
 	if !exists {
 		var completed int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM attempts a JOIN runs r ON r.id=a.run_id WHERE r.project_id=?`, cmd.ProjectID).Scan(&completed); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM attempts a JOIN runs r ON r.id=a.run_id WHERE r.project_id=? AND a.phase <> 'pending'`, cmd.ProjectID).Scan(&completed); err != nil {
 			return err
 		}
-		if completed != 0 {
+		if completed != 0 && !cmd.TrustedBootstrap {
 			payload, _ := json.Marshal(map[string]any{"project_id": cmd.ProjectID, "observed_digest": cmd.Snapshot.Digest})
 			_, err = tx.ExecContext(ctx, `INSERT INTO events(id,project_id,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES(?,?, 'hooks_baseline_activation_missing','system',1,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, newID(), cmd.ProjectID, string(payload), "hooks-baseline-activation-missing:"+cmd.ProjectID, cmd.CapturedAtMS, cmd.CapturedAtMS)
 			if err != nil {
 				return err
 			}
 			return tx.Commit()
+		}
+		if completed != 0 {
+			payload, _ := json.Marshal(map[string]any{"project_id": cmd.ProjectID, "baseline_digest": cmd.Snapshot.Digest})
+			if _, err = tx.ExecContext(ctx, `INSERT INTO events(id,project_id,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES(?,?, 'hooks_baseline_bootstrapped','operator',1,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, newID(), cmd.ProjectID, string(payload), "hooks-baseline-bootstrap:"+cmd.ProjectID, cmd.CapturedAtMS, cmd.CapturedAtMS); err != nil {
+				return err
+			}
 		}
 	}
 	if exists {

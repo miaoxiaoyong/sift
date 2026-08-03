@@ -168,7 +168,7 @@ Command 字段迁移必须把旧 `forge_event_receipts(project_id,forge_event_id
 | `captured_at_ms` | INTEGER | NOT NULL |
 | `updated_at_ms` | INTEGER | NOT NULL |
 
-接入项目时建立基线；每次 Agent 结束后复核。初始来源两列同为空，attempt 来源两列同为非空。无变化只更新时间；变化时以旧 `baseline_digest` 做 CAS，更新投影并同事务追加 `hooks_drift_detected` 安全事件；按确定性严重度映射需要停 Run/HITL 时，还须同事务执行 Run transition、Interrupt、预算与 outbox，不以新值静默覆盖而不留痕。
+接入项目时建立基线；每次 Agent 结束后复核。初始来源两列同为空，attempt 来源两列同为非空。无变化只更新时间；变化时以旧 `baseline_digest` 做 CAS，更新投影并同事务追加 `hooks_drift_detected` 安全事件；按确定性严重度映射需要停 Run/HITL 时，还须同事务执行 Run transition、Interrupt、预算与 outbox，不以新值静默覆盖而不留痕。升级时若项目已有非 `pending` attempt 而无基线，普通 activation 不得采纳当前 hooks；launch claim fail-closed，只有经 operator capability 的显式 `hooks-bootstrap` 才可写入首个基线，并追加 `hooks_baseline_bootstrapped` 事件。
 
 ## 5. Run 与 attempt
 

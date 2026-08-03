@@ -89,6 +89,34 @@ func CaptureHookBaselines(ctx context.Context, db *storage.DB, cfg *config.Confi
 	}
 }
 
+// BootstrapHookBaseline is the explicit, authenticated upgrade path for a
+// project that has terminal Agent history but predates persisted baselines.
+// Unlike activation capture, it may trust the observed state only because the
+// operator deliberately invoked it; it never runs from an Agent completion.
+func BootstrapHookBaseline(ctx context.Context, db *storage.DB, cfg *config.Config, projectID string, now func() time.Time) error {
+	if db == nil || cfg == nil || projectID == "" {
+		return errors.New("daemon: hook bootstrap requires database, config, and project")
+	}
+	if now == nil {
+		now = time.Now
+	}
+	for _, p := range cfg.Projects {
+		if p.ID != projectID {
+			continue
+		}
+		if !p.Enabled || p.Repo == "" {
+			return errors.New("daemon: hook bootstrap project is unavailable")
+		}
+		snapshot, err := hooks.Capture(ctx, p.Repo)
+		if err != nil {
+			_ = db.RecordHookDiagnostic(ctx, p.ID, "", 0, "hooks_capture_failed", err.Error(), now().UnixMilli())
+			return err
+		}
+		return db.RecordHookBaseline(ctx, storage.RecordHookBaselineCmd{ProjectID: p.ID, Snapshot: storage.HookBaselineSnapshot{GitConfigDigest: snapshot.GitConfigDigest, CoreHooksPathValue: snapshot.CoreHooksPathValue, EffectiveHooksPath: snapshot.EffectiveHooksPath, HooksDirectoryDigest: snapshot.DirectoryDigest, Digest: snapshot.Digest}, TrustedBootstrap: true, CapturedAtMS: now().UnixMilli()})
+	}
+	return errors.New("daemon: hook bootstrap project is unknown")
+}
+
 // HookRechecker captures only after a terminal receipt exists. Every outcome
 // completes that receipt, so bad local hook configuration remains visible but
 // cannot stall attempt lifecycle or retry the Agent.

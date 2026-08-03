@@ -127,6 +127,11 @@ func request(command string, args []string) (string, map[string]any, error) {
 			return "", nil, fmt.Errorf("usage: sift worktree <run-id>")
 		}
 		return "ops.worktree", map[string]any{"run_id": args[0]}, nil
+	case "hooks-bootstrap":
+		if len(args) != 1 || args[0] == "" {
+			return "", nil, fmt.Errorf("usage: sift hooks-bootstrap <project-id>")
+		}
+		return "ops.hooks-bootstrap", map[string]any{"project_id": args[0]}, nil
 	case "kill", "retry":
 		fs := flag.NewFlagSet(command, flag.ContinueOnError)
 		version := fs.Int("expected-version", 0, "expected Run version")
@@ -231,7 +236,7 @@ func printJSON(w io.Writer, v any) error {
 }
 func report(w io.Writer, err error) { fmt.Fprintln(w, "sift:", err) }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sift ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|kill|retry|report <kind> --key KEY --payload JSON")
+	fmt.Fprintln(w, "usage: sift ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|hooks-bootstrap <project-id>|kill|retry|report <kind> --key KEY --payload JSON")
 }
 
 // nullableStringCLI emits nil for an empty string so the RPC param set stays

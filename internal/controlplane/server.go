@@ -42,6 +42,7 @@ type Server struct {
 	wg              sync.WaitGroup
 	db              *storage.DB
 	operations      func(context.Context, string, string, int64) error
+	hookBootstrap   func(context.Context, string) error
 	configuredQuota map[string]int
 	tmuxPath        string
 	tmuxSocketPath  string
@@ -249,6 +250,12 @@ func (s *Server) SetOperatorAction(action func(context.Context, string, string, 
 	s.operations = action
 }
 
+// SetHookBootstrap installs the daemon-owned, authenticated migration path for
+// legacy projects that have terminal history but predate hook baselines.
+func (s *Server) SetHookBootstrap(bootstrap func(context.Context, string) error) {
+	s.hookBootstrap = bootstrap
+}
+
 // SetTmuxObserver configures the read-only tmux observer used by ops.attach.
 func (s *Server) SetTmuxObserver(tmuxPath, socketPath string) {
 	s.tmuxPath, s.tmuxSocketPath = tmuxPath, socketPath
@@ -297,6 +304,21 @@ func (s *Server) operatorRequest(req Request) Response {
 			result["channel_deliveries"] = projections
 		}
 		return success(req.RequestID, result)
+	case "ops.hooks-bootstrap":
+		if !onlyKeys(req.Params, "project_id") {
+			return failure(req.RequestID, "invalid_request", "invalid params", false)
+		}
+		projectID, ok := req.Params["project_id"].(string)
+		if !ok || projectID == "" {
+			return failure(req.RequestID, "invalid_request", "invalid params", false)
+		}
+		if s.hookBootstrap == nil {
+			return failure(req.RequestID, "unavailable", "hook bootstrap is unavailable", true)
+		}
+		if err := s.hookBootstrap(context.Background(), projectID); err != nil {
+			return failure(req.RequestID, "hook_bootstrap_failed", "hook baseline was not bootstrapped", true)
+		}
+		return success(req.RequestID, map[string]any{"accepted": true, "project_id": projectID})
 	case "ops.kill", "ops.retry":
 		if !onlyKeys(req.Params, "run_id", "expected_version", "request_key") {
 			return failure(req.RequestID, "invalid_request", "invalid params", false)

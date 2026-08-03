@@ -50,6 +50,16 @@ func withDatabase(t *testing.T, home string) {
 // TestDoctorExitCode extracts the §7 exit status from every shape the doctor
 // result can take: a Go int (offline, direct) and a JSON float64 (online, after
 // wire decode), plus the degenerate cases that must default to 0.
+func TestHookBootstrapRequestRequiresExplicitProject(t *testing.T) {
+	method, params, err := request("hooks-bootstrap", []string{"project"})
+	if err != nil || method != "ops.hooks-bootstrap" || params["project_id"] != "project" {
+		t.Fatalf("bootstrap request = %q %#v %v", method, params, err)
+	}
+	if _, _, err := request("hooks-bootstrap", nil); err == nil {
+		t.Fatal("missing project bootstrap request succeeded")
+	}
+}
+
 func TestDoctorExitCode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

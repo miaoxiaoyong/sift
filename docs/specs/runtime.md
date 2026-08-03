@@ -201,7 +201,7 @@ M6 交付持久化机制、生产查询接线和 synthetic verified/detached fix
 | tmux host + backend router | #845 | tmux production topology、response-loss reclaim |
 | observational attach | #846 | closed RPC、`attach -r` argv、零领域写入 |
 | session mismatch + qualification gate | #847 | 两 mismatch 行、verified/unverified synthetic fixtures |
-| hooks carryover | #848 | project baseline 与 completion recheck |
+| hooks carryover | #848 | project baseline、legacy fail-closed bootstrap 与 completion recheck |
 | V2 dual backend | #849 | backend-parameterized handoff/crash suite |
 | non-human V4 rows | #850 | DESIGN §10.1 row inventory |
 | human/concurrent V4 | #851 | interleavings、kill/retry、four discoverers |
