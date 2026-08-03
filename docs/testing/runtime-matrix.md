@@ -34,23 +34,23 @@ summary: M6 V2/V4 逐行证据清单
 
 | ID | attempt/观测 | 当前精确证据 | 状态/Owner |
 |---|---|---|---|
-| R01 | pending：operation 未派发/lease 过期，无 wrapper/control | `TestRecoverStartupRedispatchesPendingAttemptBeforeOpeningBarrier` | partial → #849/#850 双 backend |
-| R02 | pending：bootstrap 已读/acquire 在途，wrapper 匹配、无 control | launch crash suite 覆盖局部，未形成双 backend recovery row | planned #850 |
-| R03 | starting：session owner/control 在、无 permit | `TestRecoverKeepsLiveStartingOwner` | partial → #850 双 backend |
-| R04 | starting：owner 与进程组均不存在 | 无精确具名 row | planned #850 |
-| R05 | spawning：owner 匹配、Agent identity 未落盘 | `TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner`、launch kill boundaries | partial → #849/#850 双 backend |
-| R06 | spawning：Agent identity/live，started 未提交或响应丢失 | handoff/production wrapper tests 覆盖局部 | planned #850 双 backend补 started/接管监督 |
-| R07 | spawning：Agent 已退出且 identity-matched result 在 | fast-exit tests 覆盖生产 wrapper，恢复补 started+result 未双 backend合取 | planned #850 |
-| R08 | spawning：Agent identity 在，process/result 不在；wrapper live/dead 分支 | 无完整双分支证据 | planned #850 |
-| R09 | spawning：wrapper 死、进程组存在、Agent identity 缺失/不可信 | `TestTerminatorSignalsOnlyVerifiedIdentityAndProvesAbsence` 为 termination seam | partial → #850 生产恢复行 |
-| R10 | spawning：wrapper/进程组均不存在、无 Agent identity | 无精确具名 row | planned #850 |
-| R11 | running：result success | 现有 success/Change 链覆盖结果消费，未作为双 backend recovery row | planned #850 |
-| R12 | running：result failed | 现有 termination/result tests 局部覆盖 | planned #850 |
-| R13 | running：process identity 匹配、heartbeat 新鲜 | live starting owner 有证据；running row 无精确双 backend test | planned #850 |
-| R14 | running：process 存在、heartbeat 过期 | `TestRecoverRoutesStaleHeartbeatThroughTermination` | partial → #850 双 backend |
-| R15 | running：tmux session 在、wrapper 不在 | 无 backend observer | planned #847（端口）/#850（收敛） |
-| R16 | running：wrapper 在、tmux session 不在 | 无 backend observer | planned #847（继续监督+诊断）/#850 |
-| R17 | 任意：process identity 无法确认，不向不确定 PID 发信号 | `TestTerminatorNeverSignalsReusedOrUncertainPID`、`TestPlatformProcessInspectorRequiresMatchingControlNonce`、`TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible` | partial → #850 精确断言一次 startup_stall/waiting_human/frozen |
+| R01 | pending：operation 未派发/lease 过期，无 wrapper/control | `TestRecoveryRowsBackendParameterized/{process,tmux}/R01_pending_no_execution_body` | covered #850 两 backend |
+| R02 | pending：bootstrap 已读/acquire 在途，wrapper 匹配、无 control | `TestRecoveryRowsBackendParameterized/{process,tmux}/R02_pending_prepared_without_control` | covered #850 两 backend |
+| R03 | starting：session owner/control 在、无 permit | `TestRecoveryRowsBackendParameterized/{process,tmux}/R03_starting_owner_unknown` | covered #850 两 backend |
+| R04 | starting：owner 与进程组均不存在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R04_starting_owner_absent` | covered #850 两 backend |
+| R05 | spawning：owner 匹配、Agent identity 未落盘 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R05_spawning_owner_unknown` | covered #850 两 backend |
+| R06 | spawning：Agent identity/live，started 未提交或响应丢失 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R06_spawning_started_not_committed` | covered #850 两 backend |
+| R07 | spawning：Agent 已退出且 identity-matched result 在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R07_spawning_result_missing` | covered #850 两 backend |
+| R08 | spawning：Agent identity 在，process/result 不在；wrapper live/dead 分支 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R08_spawning_process_evidence_unknown` | covered #850 两 backend |
+| R09 | spawning：wrapper 死、进程组存在、Agent identity 缺失/不可信 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R09_spawning_group_residual` | covered #850 两 backend |
+| R10 | spawning：wrapper/进程组均不存在、无 Agent identity | `TestRecoveryRowsBackendParameterized/{process,tmux}/R10_spawning_no_identity` | covered #850 两 backend |
+| R11 | running：result success | `TestRecoveryRowsBackendParameterized/{process,tmux}/R11_running_success_evidence_missing` | covered #850 两 backend |
+| R12 | running：result failed | `TestRecoveryRowsBackendParameterized/{process,tmux}/R12_running_failed_evidence_missing` | covered #850 两 backend |
+| R13 | running：process identity 匹配、heartbeat 新鲜 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R13_running_fresh_identity_unknown` | covered #850 两 backend |
+| R14 | running：process 存在、heartbeat 过期 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R14_running_stale_heartbeat` | covered #850 两 backend |
+| R15 | running：tmux session 在、wrapper 不在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R15_running_tmux_session_present_owner_absent` + session diagnostic tests | covered #850 两 backend |
+| R16 | running：wrapper 在、tmux session 不在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R16_running_owner_present_tmux_session_absent` + session diagnostic tests | covered #850 两 backend |
+| R17 | 任意：process identity 无法确认，不向不确定 PID 发信号 | `TestRecoveryRowsBackendParameterized/{process,tmux}` + existing inspector tests | covered #850；精确一次 startup_stall/waiting_human/frozen |
 | R18 | 任意：多个 wrapper 竞争同 attempt | `TestHandoffPermitReplayAndStartedEvidence`、handoff security event tests | partial → #849 两 backend |
 | R19 | 任意：旧 generation wrapper 苏醒 | handoff stale/conflict tests与 security event | partial → #849 两 backend |
 
