@@ -21,12 +21,12 @@ summary: M6 V2/V4 逐行证据清单
 | V2-05 | bootstrap temp/write/rename/digest 回填前后 | `TestLaunchWorkerWrapperCrashSuite/after_bootstrap_write|after_bootstrap_digest`、`TestWriteControlFileIsPrivateAndReplacesContents` | partial → #849 | 两 backend |
 | V2-06 | backend 接受 wrapper 前/响应丢失后 | `TestLaunchWorkerWrapperCrashSuite/before_spawn`、`TestLaunchWorkerKilledAfterRealWrapperSpawn` | partial → #849；tmux binding/reclaim 由 #845 | 两 backend |
 | V2-07 | acquire 请求提交/响应丢失 | `TestProductionWrapperCrashWindows/acquired`、`TestLaunchWorkerKilledAtHandoffBoundaries/acquire` | partial → #849 | 两 backend |
-| V2-08 | permit 请求提交/响应丢失，spawn adapter count=1 | `TestHandoffPermitReplayAndStartedEvidence`、`TestPermitGateConsumesReplayedPermitBeforeSpawn`、`TestProductionWrapperReplaysLostPermitResponseWithSameParameters` | partial → #849 | 两 backend |
+| V2-08 | permit 请求提交/响应丢失，spawn adapter count=1 | `TestHandoffPermitReplayAndStartedEvidence`、`TestPermitGateConsumesReplayedPermitBeforeSpawn`、`TestProductionWrapperReplaysLostPermitResponseWithSameParameters`、`TestV2HandoffReplayIsBackendParameterized` | partial → #849 | 两 backend |
 | V2-09 | Agent spawn 后、identity/control 写前 | `TestProductionWrapperCrashWindows/spawned`、`TestLaunchWorkerKilledAtHandoffBoundaries/permit` | partial → #849 | PTY-active 两 backend |
 | V2-10 | Agent identity/control 写后、started 提交/响应前 | `TestProductionWrapperCrashWindows/started`、`TestLaunchWorkerKilledAtHandoffBoundaries/started` | partial → #849 | 两 backend |
 | V2-11 | 极快退出/result 与 started 交错 | `TestProductionWrapperCrashWindows` fast-exit cases | partial → #849/#850 | 两 backend |
-| V2-12 | Interrupt 五件事：Run、Interrupt、charge、event、publication 全有或全无 | `TestEmitInterruptBindingFailureRollsBackFiveThings`、`TestEmitInterruptWritesFiveThingsAndDeduplicates` 证明拒绝/成功；尚无逐写点 crash table | planned #849 | backend-neutral，一次；不得用双 backend 重复代替逐写点 |
-| V2-13 | `startup_stall` retry success：absence、旧 attempt/resolution/isolation、Interrupt、Run、新 attempt/claim/launch/ack/event 全有或全无 | `TestV2CurrentWritePortsCrashAtomicity/startup_stall_probe_success` 只注入 successor claim 边界；`TestApplyRetryProbeResultSuccessClosesAndQueues` 验 happy path | planned #849：逐写点 crash table | backend-neutral，一次 |
+| V2-12 | Interrupt 五件事：Run、Interrupt、charge、event、publication 全有或全无 | `TestV2InterruptFivePartCrashMatrix`（run/charge/interrupt/admission/binding/event/outbox/delivery/target） | covered #849 | backend-neutral，一次；逐写点 SQLite crash injection |
+| V2-13 | `startup_stall` retry success：absence、旧 attempt/resolution/isolation、Interrupt、Run、新 attempt/claim/launch/ack/event 全有或全无 | `TestV2RetryProbeSuccessCrashMatrix`（probe/old attempt/interrupt/run event/final outcome/isolation/successor/claim/launch/ack） | covered #849 | backend-neutral，一次；逐写点 SQLite crash injection |
 | V2-14 | 人工态 started/result 与决定的单事务仲裁 | `TestV4HumanStateInterleavings`、`TestResolveAttemptRace*` | partial → #851 | 两 backend 交错调用图 |
 | V2-15 | hooks baseline/recheck 与诊断写入崩溃重放 | `TestHookCrashReplayRecordsOneStableDrift`、`TestHookRecheckCrashReplayReceiptIsAtomicWithTerminalResult` | existing #848 | backend-neutral |
 
