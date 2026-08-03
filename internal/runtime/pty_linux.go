@@ -31,7 +31,7 @@ func NewPTY() (*PTY, error) {
 			_ = unix.Close(masterFD)
 		}
 	}()
-	if err := unix.IoctlSetInt(masterFD, unix.TIOCSPTLCK, 0); err != nil {
+	if err := unix.IoctlSetPointerInt(masterFD, unix.TIOCSPTLCK, 0); err != nil {
 		return nil, fmt.Errorf("runtime: unlock PTY: %w", err)
 	}
 	ptyNumber, err := unix.IoctlGetInt(masterFD, unix.TIOCGPTN)
