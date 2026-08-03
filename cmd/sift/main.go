@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/schema"
 )
 
@@ -54,7 +56,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if command == "attach" {
-		return runAttach(response, stdout, stderr)
+		return runAttach(response, home, stdout, stderr)
 	}
 	if err := printJSON(stdout, response); err != nil {
 		report(stderr, err)
@@ -174,8 +176,8 @@ type attachResponse struct {
 	SessionName string `json:"session_name"`
 }
 
-func runAttach(response controlplane.Response, stdout, stderr io.Writer) int {
-	if response.ProtocolMajor != controlplane.ProtocolMajor || response.ProtocolMinor > controlplane.ProtocolMinor || response.ServerVersion == "" {
+func runAttach(response controlplane.Response, home config.Home, stdout, stderr io.Writer) int {
+	if !response.OK || response.ProtocolMajor != controlplane.ProtocolMajor || response.ProtocolMinor > controlplane.ProtocolMinor || response.ServerVersion == "" {
 		report(stderr, fmt.Errorf("invalid daemon response for attach"))
 		return 1
 	}
@@ -185,7 +187,7 @@ func runAttach(response controlplane.Response, stdout, stderr io.Writer) int {
 		return 1
 	}
 	var result attachResponse
-	if err := schema.Decode(body, &result, schema.Closed); err != nil || result.RunID == "" || result.AttemptNo < 1 || result.Generation < 1 || result.Backend != "tmux" || result.SessionName == "" {
+	if err := schema.Decode(body, &result, schema.Closed); err != nil || result.RunID == "" || result.AttemptNo < 1 || result.Generation < 1 || result.Backend != "tmux" || !validAttachSessionName(result.SessionName) {
 		report(stderr, fmt.Errorf("invalid daemon attach result"))
 		return 1
 	}
@@ -194,7 +196,9 @@ func runAttach(response controlplane.Response, stdout, stderr io.Writer) int {
 		report(stderr, fmt.Errorf("tmux unavailable: %w", err))
 		return 1
 	}
-	cmd := exec.Command(tmux, "attach-session", "-r", "-t", "="+result.SessionName)
+	socket := runtime.TmuxSocketPath(filepath.Join(home.Path, "tmux.sock"))
+	cmd := exec.Command(tmux, "-f", "/dev/null", "-S", socket, "attach-session", "-r", "-t", "="+result.SessionName)
+	cmd.Env = runtime.TmuxClientEnvironment()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, stdout, stderr
 	if err := cmd.Run(); err != nil {
 		if exit, ok := err.(*exec.ExitError); ok {
@@ -203,6 +207,18 @@ func runAttach(response controlplane.Response, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func validAttachSessionName(name string) bool {
+	if len(name) != len("sift-")+64 || name[:len("sift-")] != "sift-" {
+		return false
+	}
+	for _, c := range name[len("sift-"):] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func printJSON(w io.Writer, v any) error {

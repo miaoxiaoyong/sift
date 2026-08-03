@@ -777,6 +777,27 @@ func (d *DB) SeedLaunchRunForTest(ctx context.Context, runID, projectID, cfgID s
 	return nil
 }
 
+// SeedAttachRunForTest creates a fully dispatched active attempt for attach
+// observer tests. It is test-only; production dispatch still flows through the
+// launch worker's claim and prepare ports.
+func (d *DB) SeedAttachRunForTest(ctx context.Context, runID, projectID, cfgID, backend string, nowMS int64, worktree string) error {
+	if backend != "process" && backend != "tmux" {
+		return fmt.Errorf("storage: invalid attach test backend %q", backend)
+	}
+	if err := d.SeedLaunchRunForTest(ctx, runID, projectID, cfgID, nowMS, worktree); err != nil {
+		return err
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE attempts SET backend=? WHERE run_id=? AND attempt_no=1`, backend, runID); err != nil {
+		return fmt.Errorf("storage: seed attach backend: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE attempt_claims
+		SET dispatch_id='dispatch-' || ?, bootstrap_nonce_hash=x'01', run_token_hash=x'02'
+		WHERE run_id=? AND attempt_no=1`, runID, runID); err != nil {
+		return fmt.Errorf("storage: seed attach dispatch: %w", err)
+	}
+	return nil
+}
+
 // SeedGateCandidateForTest creates the persisted Change and attempt identity
 // required by the production Gate reconciler.
 func (d *DB) SeedGateCandidateForTest(ctx context.Context, runID, projectID, cfgID, changeID string, nowMS int64) error {
