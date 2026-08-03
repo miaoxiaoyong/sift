@@ -14,6 +14,7 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
 	"github.com/miaoxiaoyong/sift/internal/daemon"
+	"github.com/miaoxiaoyong/sift/internal/hooks"
 	"github.com/miaoxiaoyong/sift/internal/launchworker"
 	"github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/storage"
@@ -67,6 +68,18 @@ func main() {
 			return err == nil && ok
 		},
 		AttentionDailyQuota: attentionQuota(snapshot.Config.Attention.DailyQuota), DayTimezone: snapshot.Config.Attention.DayTimezone, DailySummaryAt: snapshot.Config.Attention.DailySummaryAt, CriticalWindowMS: snapshot.Config.Attention.CriticalFuse.Window.Milliseconds(), CriticalTotalLimit: snapshot.Config.Attention.CriticalFuse.TotalLimit, CriticalPerRunLimit: snapshot.Config.Attention.CriticalFuse.PerRunLimit, Channels: interruptChannels(snapshot.Config.Attention), Now: time.Now,
+	}
+	termination.HookRecheck = func(ctx context.Context, runID string, attemptNo int) error {
+		projectID, repo, err := db.HookProjectForRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		observed, err := hooks.Capture(ctx, repo)
+		if err != nil {
+			return err
+		}
+		source := attemptNo
+		return db.RecordHookBaseline(ctx, storage.RecordHookBaselineCmd{ProjectID: projectID, Snapshot: storage.HookBaselineSnapshot{GitConfigDigest: observed.GitConfigDigest, CoreHooksPathValue: observed.CoreHooksPathValue, EffectiveHooksPath: observed.EffectiveHooksPath, HooksDirectoryDigest: observed.DirectoryDigest, Digest: observed.Digest}, SourceRunID: runID, SourceAttemptNo: &source, CapturedAtMS: time.Now().UnixMilli()})
 	}
 	// startup_stall retry probe process-check shares the same process inspector
 	// and control root as termination. It runs on the supervisor tick and drives

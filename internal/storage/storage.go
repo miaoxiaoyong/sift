@@ -420,6 +420,91 @@ type HookBaseline struct {
 	Digest    string
 }
 
+// HookBaselineSnapshot is the immutable observation supplied by the
+// application layer. Storage persists it but never performs filesystem IO.
+type HookBaselineSnapshot struct {
+	GitConfigDigest      string
+	CoreHooksPathValue   *string
+	EffectiveHooksPath   string
+	HooksDirectoryDigest string
+	Digest               string
+}
+
+type RecordHookBaselineCmd struct {
+	ProjectID       string
+	Snapshot        HookBaselineSnapshot
+	ExpectedDigest  string
+	SourceRunID     string
+	SourceAttemptNo *int
+	CapturedAtMS    int64
+}
+
+// HookProjectForRun resolves the immutable project/repository identity used
+// by completion-time hook rechecks.
+func (d *DB) HookProjectForRun(ctx context.Context, runID string) (string, string, error) {
+	var projectID, repo string
+	err := d.db.QueryRowContext(ctx, `SELECT r.project_id,p.repo_path FROM runs r JOIN projects p ON p.id=r.project_id WHERE r.id=?`, runID).Scan(&projectID, &repo)
+	return projectID, repo, err
+}
+
+// RecordHookBaseline installs the trusted initial baseline, or rechecks the
+// current baseline. A changed observation is recorded as an audit event and
+// deliberately does not replace the trusted baseline.
+func (d *DB) RecordHookBaseline(ctx context.Context, cmd RecordHookBaselineCmd) error {
+	if cmd.ProjectID == "" || cmd.Snapshot.Digest == "" || cmd.Snapshot.GitConfigDigest == "" || cmd.Snapshot.EffectiveHooksPath == "" || cmd.Snapshot.HooksDirectoryDigest == "" || cmd.CapturedAtMS <= 0 {
+		return errors.New("storage: invalid hook baseline")
+	}
+	if (cmd.SourceRunID == "") != (cmd.SourceAttemptNo == nil) {
+		return errors.New("storage: hook baseline source must be paired")
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var old string
+	var exists bool
+	err = tx.QueryRowContext(ctx, `SELECT baseline_digest FROM project_hook_baselines WHERE project_id=?`, cmd.ProjectID).Scan(&old)
+	if err == sql.ErrNoRows {
+		exists = false
+	} else if err != nil {
+		return err
+	} else {
+		exists = true
+	}
+	if cmd.ExpectedDigest != "" && ((!exists) || old != cmd.ExpectedDigest) {
+		return ErrRejectedStale
+	}
+	if !exists && cmd.SourceRunID != "" {
+		payload, _ := json.Marshal(map[string]any{"project_id": cmd.ProjectID, "observed_digest": cmd.Snapshot.Digest, "source_run_id": cmd.SourceRunID, "source_attempt_no": cmd.SourceAttemptNo})
+		_, err = tx.ExecContext(ctx, `INSERT INTO events(id,project_id,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES(?,?, 'hooks_baseline_missing','system',1,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, newID(), cmd.ProjectID, string(payload), "hooks-baseline-missing:"+cmd.ProjectID, cmd.CapturedAtMS, cmd.CapturedAtMS)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if exists {
+		if old != cmd.Snapshot.Digest {
+			payload, _ := json.Marshal(map[string]any{"project_id": cmd.ProjectID, "baseline_digest": old, "observed_digest": cmd.Snapshot.Digest, "git_config_digest": cmd.Snapshot.GitConfigDigest, "core_hooks_path": cmd.Snapshot.CoreHooksPathValue, "effective_hooks_path": cmd.Snapshot.EffectiveHooksPath, "hooks_directory_digest": cmd.Snapshot.HooksDirectoryDigest, "source_run_id": cmd.SourceRunID, "source_attempt_no": cmd.SourceAttemptNo})
+			_, err = tx.ExecContext(ctx, `INSERT INTO events(id,project_id,type,source,payload_schema_version,payload_json,idempotency_key,occurred_at_ms,recorded_at_ms) VALUES(?,?, 'hooks_drift_detected','system',1,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, newID(), cmd.ProjectID, string(payload), "hooks-drift:"+cmd.ProjectID+":"+cmd.Snapshot.Digest, cmd.CapturedAtMS, cmd.CapturedAtMS)
+			if err != nil {
+				return err
+			}
+			return tx.Commit()
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE project_hook_baselines SET updated_at_ms=? WHERE project_id=?`, cmd.CapturedAtMS, cmd.ProjectID)
+		if err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO project_hook_baselines(project_id,git_config_digest,core_hooks_path_value,effective_hooks_path,hooks_directory_digest,baseline_digest,source_run_id,source_attempt_no,captured_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)`, cmd.ProjectID, cmd.Snapshot.GitConfigDigest, cmd.Snapshot.CoreHooksPathValue, cmd.Snapshot.EffectiveHooksPath, cmd.Snapshot.HooksDirectoryDigest, cmd.Snapshot.Digest, nullable(cmd.SourceRunID), cmd.SourceAttemptNo, cmd.CapturedAtMS, cmd.CapturedAtMS)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 type DoctorAttempt struct {
 	RunID          string
 	AttemptNo      int

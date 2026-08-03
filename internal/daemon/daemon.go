@@ -16,6 +16,7 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/forge"
 	"github.com/miaoxiaoyong/sift/internal/forgeworker"
 	"github.com/miaoxiaoyong/sift/internal/gate"
+	"github.com/miaoxiaoyong/sift/internal/hooks"
 	"github.com/miaoxiaoyong/sift/internal/intake"
 	"github.com/miaoxiaoyong/sift/internal/launchworker"
 	"github.com/miaoxiaoyong/sift/internal/storage"
@@ -72,6 +73,21 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 		now = time.Now
 	}
 	d := &Daemon{DB: db, Now: now}
+	// Capture at daemon activation, before any Agent can run. Reopening with
+	// the same trusted digest only refreshes its timestamp; it never adopts
+	// Agent-modified state.
+	for _, p := range cfg.Projects {
+		if !p.Enabled || p.Repo == "" {
+			continue
+		}
+		snapshot, err := hooks.Capture(context.Background(), p.Repo)
+		if err != nil {
+			return nil, fmt.Errorf("project %s: capture hook baseline: %w", p.ID, err)
+		}
+		if err := db.RecordHookBaseline(context.Background(), storage.RecordHookBaselineCmd{ProjectID: p.ID, Snapshot: storage.HookBaselineSnapshot{GitConfigDigest: snapshot.GitConfigDigest, CoreHooksPathValue: snapshot.CoreHooksPathValue, EffectiveHooksPath: snapshot.EffectiveHooksPath, HooksDirectoryDigest: snapshot.DirectoryDigest, Digest: snapshot.Digest}, CapturedAtMS: now().UnixMilli()}); err != nil {
+			return nil, fmt.Errorf("project %s: persist hook baseline: %w", p.ID, err)
+		}
+	}
 	// One per-project adapter map is shared by the cross-project consumers
 	// (forge_alert and command_ack): their payloads do not carry project
 	// routing, so each worker resolves the frozen target and selects the

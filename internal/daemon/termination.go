@@ -36,9 +36,13 @@ type TerminationCoordinator struct {
 	CriticalTotalLimit    int
 	CriticalPerRunLimit   int
 	Channels              []storage.InterruptChannel
-	ControlRoot           string
-	TmuxPath              string
-	TmuxSocketPath        string
+	// HookRecheck is invoked after durable result evidence is consumed. It is
+	// deliberately outside the storage transaction: capture performs read-only
+	// filesystem inspection and RecordHookBaseline is the CAS write port.
+	HookRecheck    func(context.Context, string, int) error
+	ControlRoot    string
+	TmuxPath       string
+	TmuxSocketPath string
 }
 
 func (c *TerminationCoordinator) Recover(ctx context.Context) error {
@@ -382,6 +386,11 @@ func (c *TerminationCoordinator) resolveLateFact(ctx context.Context, a storage.
 		Agent:  &storage.AgentIdentity{PID: int64(result.Agent.PID), StartedAtMS: result.Agent.StartedAtMS, Executable: result.Agent.Executable},
 		Result: &storage.AttemptResult{Agent: storage.AgentIdentity{PID: int64(result.Agent.PID), StartedAtMS: result.Agent.StartedAtMS, Executable: result.Agent.Executable}, ExitCode: exit, Signal: result.Signal, FailureReason: result.FailureReason, FinalHeadSHA: result.FinalHeadSHA, Digest: result.Digest, FinishedAtMS: result.FinishedAt.UnixMilli()},
 	})
+	if err == nil && c.HookRecheck != nil {
+		if hookErr := c.HookRecheck(ctx, a.RunID, a.AttemptNo); hookErr != nil {
+			return disposition, hookErr
+		}
+	}
 	return disposition, err
 }
 
