@@ -78,6 +78,10 @@ func TestRecordHandoffSecurityEventDoesNotPersistCredentials(t *testing.T) {
 
 func TestTerminationRetryAfterAbsenceCreatesNewAttempt(t *testing.T) {
 	db, ctx := seedTerminationAttempt(t)
+	oldKey := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if _, err := db.ExecForTest(ctx, `UPDATE attempts SET topology_qualification_key=? WHERE run_id='run' AND attempt_no=1`, oldKey); err != nil {
+		t.Fatal(err)
+	}
 	run, err := db.RecordTerminationObservation(ctx, RecordTerminationObservationCmd{RunID: "run", AttemptNo: 1, ExpectedRunVersion: 1, ExpectedGeneration: 1, Source: TerminationRetry, Absent: true, Evidence: "group gone", NowMS: testNow})
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +95,10 @@ func TestTerminationRetryAfterAbsenceCreatesNewAttempt(t *testing.T) {
 	}
 	if phase != "pending" {
 		t.Fatalf("new attempt phase = %s", phase)
+	}
+	var successorKey string
+	if err := db.db.QueryRow(`SELECT COALESCE(topology_qualification_key,'') FROM attempts WHERE run_id='run' AND attempt_no=2`).Scan(&successorKey); err != nil || successorKey != "" {
+		t.Fatalf("absence successor qualification key=%q err=%v, want empty", successorKey, err)
 	}
 	var resolution string
 	if err := db.db.QueryRow(`SELECT attempt_resolution FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&resolution); err != nil {

@@ -281,6 +281,9 @@ func TestApplyCommandFailureReviewNewAttemptRetrySpawnsNextAttempt(t *testing.T)
 	db, _ := openTestDB(t)
 	ctx := context.Background()
 	f := seedFailureReviewNewAttemptInterrupt(t, db, ctx)
+	if _, err := db.ExecForTest(ctx, `UPDATE attempts SET topology_qualification_key=? WHERE run_id=? AND attempt_no=1`, strings.Repeat("a", 64), cmdRun); err != nil {
+		t.Fatal(err)
+	}
 
 	body := "/sift retry " + cmdRun + " " + f.nonce
 	env := commentEnv(t, "project", "c1", body)
@@ -296,6 +299,10 @@ func TestApplyCommandFailureReviewNewAttemptRetrySpawnsNextAttempt(t *testing.T)
 	assertCount(t, db, "attempts WHERE run_id='"+cmdRun+"' AND attempt_no=2 AND phase='pending'", 1)
 	assertCount(t, db, "attempt_claims WHERE run_id='"+cmdRun+"' AND attempt_no=2", 1)
 	assertCount(t, db, "outbox_operations WHERE kind='launch_agent'", 1)
+	var successorKey string
+	if err := db.db.QueryRow(`SELECT COALESCE(topology_qualification_key,'') FROM attempts WHERE run_id=? AND attempt_no=2`, cmdRun).Scan(&successorKey); err != nil || successorKey != "" {
+		t.Fatalf("retry successor qualification key=%q err=%v, want empty", successorKey, err)
+	}
 	if status := runStatus(t, db); status != "queued" {
 		t.Fatalf("run = %s, want queued", status)
 	}
@@ -355,6 +362,9 @@ func TestApplyCommandAgentBlockedAskFullContract(t *testing.T) {
 	db, _ := openTestDB(t)
 	ctx := context.Background()
 	f := seedAgentBlockedInterrupt(t, db, ctx)
+	if _, err := db.ExecForTest(ctx, `UPDATE attempts SET topology_qualification_key=? WHERE run_id=? AND attempt_no=1`, strings.Repeat("b", 64), cmdRun); err != nil {
+		t.Fatal(err)
+	}
 
 	body := "/sift ask " + cmdRun + " " + f.nonce + " use the cached token"
 	env := commentEnv(t, "project", "c1", body)
@@ -411,6 +421,10 @@ func TestApplyCommandAgentBlockedAskFullContract(t *testing.T) {
 	assertCount(t, db, "attempts WHERE run_id='"+cmdRun+"' AND attempt_no=2 AND phase='pending'", 1)
 	assertCount(t, db, "attempt_claims WHERE run_id='"+cmdRun+"' AND attempt_no=2", 1)
 	assertCount(t, db, "outbox_operations WHERE kind='launch_agent'", 1)
+	var successorKey string
+	if err := db.db.QueryRow(`SELECT COALESCE(topology_qualification_key,'') FROM attempts WHERE run_id=? AND attempt_no=2`, cmdRun).Scan(&successorKey); err != nil || successorKey != "" {
+		t.Fatalf("ask successor qualification key=%q err=%v, want empty", successorKey, err)
+	}
 	// The new attempt references the clarification snapshot; the historical
 	// attempt keeps the snapshot it started from (no overwrite).
 	var spec1, spec2 string
