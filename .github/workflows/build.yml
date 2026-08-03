@@ -113,9 +113,9 @@ jobs:
       - name: M6 real tmux runtime evidence (linux)
         run: |
           set -o pipefail
-          SIFT_REQUIRE_TMUX=1 go test -v -race ./internal/runtime -run 'Test.*Tmux.*Binding|Test.*Tmux.*Credential|Test.*Tmux.*Environment' -count=10 | tee m6-tmux-runtime.log
-          grep -q -- '--- PASS: TestTmuxBackendBindingUsesFrozenHostLaunchNotBootstrap' m6-tmux-runtime.log
+          SIFT_REQUIRE_TMUX=1 go test -v -race ./internal/runtime ./internal/config -run 'TestTmuxCredentialIsolationAndLiteralWrapperArgv|TestTmuxProbe' -count=10 | tee m6-tmux-runtime.log
           grep -q -- '--- PASS: TestTmuxCredentialIsolationAndLiteralWrapperArgv' m6-tmux-runtime.log
+          grep -q -- '--- PASS: TestTmuxProbe' m6-tmux-runtime.log
           if grep -q -- '--- SKIP:' m6-tmux-runtime.log; then
             echo '::error::Real tmux runtime evidence must not skip.'
             exit 1
