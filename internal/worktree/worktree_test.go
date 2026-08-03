@@ -57,6 +57,20 @@ func TestManagerCreatesIsolatedWorktreeAndReadsBaseOnly(t *testing.T) {
 	}
 }
 
+func TestReadResultPreservesFailureReason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":1,"run_id":"run-1","attempt_no":1,"generation":1,"wrapper_instance_id":"wrapper","agent_identity":{"pid":42,"started_at_ms":100,"executable":"/agent"},"exit_code":1,"signal":null,"failure_reason":"agent_log_relay_failed","finished_at_ms":200}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ReadResult(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FailureReason != "agent_log_relay_failed" {
+		t.Fatalf("failure reason = %q, want agent_log_relay_failed", result.FailureReason)
+	}
+}
+
 func TestEvaluateSuccessRequiresMatchingIdentityHeadAndCommit(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init", "-q")

@@ -223,12 +223,13 @@ func (d *DB) HandoffClaimHash(secret string) string { return handoffHash(secret)
 // attempt: wrapper started, recovery started, result evidence, and a human
 // terminal decision.  All of them must use ResolveAttemptRace.
 type AttemptResult struct {
-	Agent        AgentIdentity
-	ExitCode     *int
-	Signal       string
-	FinalHeadSHA string
-	Digest       string
-	FinishedAtMS int64
+	Agent         AgentIdentity
+	ExitCode      *int
+	Signal        string
+	FinalHeadSHA  string
+	Digest        string
+	FinishedAtMS  int64
+	FailureReason string
 }
 
 type AttemptRaceCommand struct {
@@ -358,11 +359,11 @@ func (d *DB) ResolveAttemptRace(ctx context.Context, cmd AttemptRaceCommand) (st
 	}
 	if cmd.Result != nil {
 		if resolution == "" {
-			if _, err = tx.ExecContext(ctx, `UPDATE attempts SET result_exit_code=?,result_signal=?,final_head_sha=?,result_digest=?,result_observed_at_ms=?,finished_at_ms=?,phase='finished',updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND phase IN ('spawning','running')`, nullableInt(cmd.Result.ExitCode), nullableString(cmd.Result.Signal), nullableString(cmd.Result.FinalHeadSHA), cmd.Result.Digest, cmd.Result.FinishedAtMS, cmd.Result.FinishedAtMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE attempts SET result_exit_code=?,result_signal=?,result_failure_reason=?,final_head_sha=?,result_digest=?,result_observed_at_ms=?,finished_at_ms=?,phase='finished',updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=? AND phase IN ('spawning','running')`, nullableInt(cmd.Result.ExitCode), nullableString(cmd.Result.Signal), nullableString(cmd.Result.FailureReason), nullableString(cmd.Result.FinalHeadSHA), cmd.Result.Digest, cmd.Result.FinishedAtMS, cmd.Result.FinishedAtMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
 				return "", err
 			}
 		} else {
-			if _, err = tx.ExecContext(ctx, `UPDATE attempts SET result_exit_code=?,result_signal=?,final_head_sha=?,result_digest=?,result_observed_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=?`, nullableInt(cmd.Result.ExitCode), nullableString(cmd.Result.Signal), nullableString(cmd.Result.FinalHeadSHA), cmd.Result.Digest, cmd.Result.FinishedAtMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE attempts SET result_exit_code=?,result_signal=?,result_failure_reason=?,final_head_sha=?,result_digest=?,result_observed_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND generation=?`, nullableInt(cmd.Result.ExitCode), nullableString(cmd.Result.Signal), nullableString(cmd.Result.FailureReason), nullableString(cmd.Result.FinalHeadSHA), cmd.Result.Digest, cmd.Result.FinishedAtMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo, cmd.ExpectedGeneration); err != nil {
 				return "", err
 			}
 		}

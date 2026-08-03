@@ -196,7 +196,7 @@ func TestProductionWrapperRecordsAgentLogRelayFailure(t *testing.T) {
 	if err := os.Symlink("/dev/full", filepath.Join(runDir, "agent.log")); err != nil {
 		t.Fatal(err)
 	}
-	server := newWrapperServer(t, root, "")
+	server := newWrapperServerWithStartedBarrier(t, root)
 	defer server.Close()
 	cmd := osexec.Command(wrapperPath, bootstrap)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -205,9 +205,11 @@ func TestProductionWrapperRecordsAgentLogRelayFailure(t *testing.T) {
 	}
 	pgid := executionWrapperPGID(t, filepath.Join(runDir, "control.json"))
 	assertProcessInGroup(t, filepath.Join(runDir, "descendant.pid"), pgid)
+	server.waitForStartedReceipt(t) // claim.started is held until relay failure interrupts it
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("wrapper unexpectedly succeeded")
 	}
+	server.confirmStarted()
 	assertGroupAbsent(t, pgid)
 	var result struct {
 		ExitCode      *int   `json:"exit_code"`
@@ -353,8 +355,13 @@ func TestProductionWrapperKeepsAgentInWrapperProcessGroup(t *testing.T) {
 		t.Fatalf("agent stdout is tty = %q, want yes", got)
 	}
 
+	heartbeat := filepath.Join(runDir, "heartbeat")
+	if _, err := os.Stat(heartbeat); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("post-start heartbeat was pre-stored: %v", err)
+	}
 	server.confirmStarted()
-	server.waitForStartedConfirmation(t)
+	server.waitForStartedConfirmation(t) // server has written the response
+	waitForWrapperFile(t, heartbeat)     // wrapper returned from call and ran post-claim.started code
 	assertAgentTopology(t, wrapperPID, agentPID)
 	if err := os.WriteFile(filepath.Join(runDir, "finish"), nil, 0600); err != nil {
 		t.Fatal(err)

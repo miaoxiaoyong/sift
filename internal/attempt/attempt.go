@@ -40,12 +40,13 @@ type Identity struct {
 }
 
 type Result struct {
-	ExitCode     *int
-	Signal       string
-	FinalHeadSHA string
-	Digest       string // result.json content digest
-	FinishedAt   time.Time
-	Agent        Identity
+	ExitCode      *int
+	Signal        string
+	FailureReason string
+	FinalHeadSHA  string
+	Digest        string // result.json content digest
+	FinishedAt    time.Time
+	Agent         Identity
 }
 
 // ErrNotFinished is returned by Result before the fake agent has produced

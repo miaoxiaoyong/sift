@@ -73,6 +73,41 @@ func seedRecoveryCoordinator(t *testing.T, phase string, heartbeat int64) (*stor
 
 func sqlNumber(v int64) string { return strconv.FormatInt(v, 10) }
 
+func TestProductionResultConsumerPreservesAgentLogRelayFailure(t *testing.T) {
+	db, raw, _, now := seedRecoveryCoordinator(t, "running", 0)
+	root := t.TempDir()
+	resultPath := filepath.Join(root, "runs", "run", "attempts", "1", "result.json")
+	if err := os.MkdirAll(filepath.Dir(resultPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	result, err := json.Marshal(map[string]any{
+		"schema_version": 1, "run_id": "run", "attempt_no": 1, "generation": 1,
+		"wrapper_instance_id": "instance", "agent_identity": map[string]any{"pid": 11, "started_at_ms": 1001, "executable": "/agent"},
+		"exit_code": 1, "signal": nil, "failure_reason": "agent_log_relay_failed", "finished_at_ms": now.UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resultPath, result, 0600); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := db.RecoveryAttemptForRun(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := &TerminationCoordinator{DB: db, ControlRoot: root, Now: func() time.Time { return now }}
+	if disposition, err := coordinator.resolveLateFact(context.Background(), attempt); err != nil || disposition != storage.AttemptRaceDuplicate {
+		t.Fatalf("late result disposition=%q err=%v", disposition, err)
+	}
+	var failureReason string
+	if err := raw.QueryRow(`SELECT result_failure_reason FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&failureReason); err != nil {
+		t.Fatal(err)
+	}
+	if failureReason != "agent_log_relay_failed" {
+		t.Fatalf("stored failure reason = %q", failureReason)
+	}
+}
+
 func TestRecoverKeepsLiveStartingOwner(t *testing.T) {
 	db, raw, attempt, now := seedRecoveryCoordinator(t, "starting", 0)
 	signaler := &recoverySignaler{}

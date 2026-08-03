@@ -107,17 +107,17 @@ func TestResolveAttemptRacePersistsLateResult(t *testing.T) {
 	got, err := db.ResolveAttemptRace(ctx, AttemptRaceCommand{
 		RunID: "run", AttemptNo: 1, ExpectedGeneration: 1, ExpectedRunVersion: version,
 		FactKey: "late-result:digest", NowMS: testNow + 1, Agent: &agent,
-		Result: &AttemptResult{Agent: agent, ExitCode: &exit, Digest: "digest", FinishedAtMS: testNow + 1},
+		Result: &AttemptResult{Agent: agent, ExitCode: &exit, FailureReason: "agent_log_relay_failed", Digest: "digest", FinishedAtMS: testNow + 1},
 	})
 	if err != nil || got != AttemptRaceSupersededByFact {
 		t.Fatalf("result = %q, %v", got, err)
 	}
-	var phase, digest string
-	if err := db.db.QueryRow(`SELECT phase,result_digest FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&phase, &digest); err != nil {
+	var phase, digest, failureReason string
+	if err := db.db.QueryRow(`SELECT phase,result_digest,result_failure_reason FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&phase, &digest, &failureReason); err != nil {
 		t.Fatal(err)
 	}
-	if phase != "finished" || digest != "digest" {
-		t.Fatalf("phase/digest = %q/%q", phase, digest)
+	if phase != "finished" || digest != "digest" || failureReason != "agent_log_relay_failed" {
+		t.Fatalf("phase/digest/failure_reason = %q/%q/%q", phase, digest, failureReason)
 	}
 }
 

@@ -325,7 +325,7 @@ func (c *TerminationCoordinator) resolveLateFact(ctx context.Context, a storage.
 		RunID: a.RunID, AttemptNo: a.AttemptNo, ExpectedGeneration: a.Generation,
 		ExpectedRunVersion: a.RunVersion, FactKey: fact, NowMS: now().UnixMilli(),
 		Agent:  &storage.AgentIdentity{PID: int64(result.Agent.PID), StartedAtMS: result.Agent.StartedAtMS, Executable: result.Agent.Executable},
-		Result: &storage.AttemptResult{Agent: storage.AgentIdentity{PID: int64(result.Agent.PID), StartedAtMS: result.Agent.StartedAtMS, Executable: result.Agent.Executable}, ExitCode: exit, Signal: result.Signal, FinalHeadSHA: result.FinalHeadSHA, Digest: result.Digest, FinishedAtMS: result.FinishedAt.UnixMilli()},
+		Result: &storage.AttemptResult{Agent: storage.AgentIdentity{PID: int64(result.Agent.PID), StartedAtMS: result.Agent.StartedAtMS, Executable: result.Agent.Executable}, ExitCode: exit, Signal: result.Signal, FailureReason: result.FailureReason, FinalHeadSHA: result.FinalHeadSHA, Digest: result.Digest, FinishedAtMS: result.FinishedAt.UnixMilli()},
 	})
 	return disposition, err
 }
