@@ -2,6 +2,7 @@ package wrapper
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -340,6 +341,135 @@ func TestReapProcessGroupRecordsFailure(t *testing.T) {
 	}
 }
 
+func TestProductionTmuxWrapperKeepsAgentInWrapperProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups differ on Windows")
+	}
+	tmux := requireRealTmux(t)
+	wrapperPath := buildWrapper(t)
+	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", `if test -t 1; then echo yes > "$SIFT_RUN_DIR/pty-active"; else echo no > "$SIFT_RUN_DIR/pty-active"; fi; echo "$$" > "$SIFT_RUN_DIR/agent-pid"; while test ! -f "$SIFT_RUN_DIR/finish"; do sleep 0.01; done`})
+	server := newWrapperServerWithStartedBarrier(t, root)
+	defer server.Close()
+	backend, err := runtimepkg.NewTmuxBackend(tmux, wrapperPath, filepath.Join(root, "tmux.sock"), staticTmuxBindingVerifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer killTmuxServer(t, tmux, backend.SocketPath())
+	launch := runtimepkg.HostLaunch{Backend: "tmux", RunID: "run-1", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", WrapperPath: wrapperPath, BootstrapPath: bootstrap}
+	if _, err := backend.Spawn(context.Background(), launch); err != nil {
+		t.Fatalf("tmux wrapper host: %v", err)
+	}
+
+	waitForWrapperFile(t, filepath.Join(runDir, "pty-active"))
+	wrapperPID := executionWrapperPID(t, filepath.Join(runDir, "control.json"))
+	agentPID := readPIDFile(t, filepath.Join(runDir, "agent-pid"))
+	server.waitForStartedReceipt(t)
+	assertAgentTopology(t, wrapperPID, agentPID)
+	if got := strings.TrimSpace(readFile(t, filepath.Join(runDir, "pty-active"))); got != "yes" {
+		t.Fatalf("agent stdout is tty = %q, want yes", got)
+	}
+
+	server.confirmStarted()
+	server.waitForStartedConfirmation(t)
+	waitForWrapperFile(t, filepath.Join(runDir, "heartbeat"))
+	assertAgentTopology(t, wrapperPID, agentPID)
+	if err := os.WriteFile(filepath.Join(runDir, "finish"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitForWrapperFile(t, filepath.Join(runDir, "result.json"))
+	name, err := runtimepkg.TmuxSessionName(launch.RunID, launch.AttemptNo, launch.Generation, launch.DispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTmuxSessionGone(t, tmux, backend.SocketPath(), name)
+}
+
+// TestProductionTmuxWrapperCrashWindows repeats the wrapper handoff failure
+// matrix through the real tmux host. The host only accepts the wrapper; the
+// result/session assertions still come from the wrapper and run directory.
+func TestProductionTmuxWrapperCrashWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups differ on Windows")
+	}
+	tmux := requireRealTmux(t)
+	wrapperPath := buildWrapper(t)
+	cases := []struct {
+		name       string
+		bootstrap  bool
+		private    bool
+		reject     string
+		executable string
+		wantSpawn  int
+		wantResult bool
+	}{
+		{name: "bootstrap", executable: "/bin/sh"},
+		{name: "file", bootstrap: true, private: false, executable: "/bin/sh"},
+		{name: "spawn", bootstrap: true, private: true, executable: "/not-an-agent"},
+		{name: "acquire", bootstrap: true, private: true, reject: "claim.acquire", executable: "/bin/sh"},
+		{name: "permit", bootstrap: true, private: true, reject: "claim.permit_spawn", executable: "/bin/sh"},
+		{name: "started", bootstrap: true, private: true, reject: "claim.started", executable: "/bin/sh", wantSpawn: 1},
+		{name: "quick-exit", bootstrap: true, private: true, executable: "/bin/sh", wantSpawn: 1, wantResult: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := shortTempDir(t)
+			runDir := filepath.Join(root, "runs", "run-1", "1")
+			if err := os.MkdirAll(runDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			worktree := t.TempDir()
+			bootstrap := filepath.Join(runDir, "bootstrap.json")
+			if c.bootstrap {
+				data, err := json.Marshal(runtimepkg.Bootstrap{
+					SchemaVersion: 2, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor,
+					DaemonVersion: controlplane.Version, WrapperVersion: controlplane.Version, RunID: "run-1", AttemptNo: 1,
+					Generation: 1, DispatchID: "dispatch", BootstrapNonce: "aaaaaaaaaaaaaaaa", RunToken: "bbbbbbbbbbbbbbbb",
+					RunDir: runDir, WorktreePath: worktree, Agent: runtimepkg.BootstrapAgent{ID: "agent", Executable: c.executable, Args: []string{"-c", "echo spawned >> \"$SIFT_RUN_DIR/spawn-count\""}, TaskTransport: "stdin"},
+					TaskSpecSnapshotID: "task-1", TaskSpec: json.RawMessage(`{}`),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				mode := os.FileMode(0600)
+				if !c.private {
+					mode = 0644
+				}
+				if err := os.WriteFile(bootstrap, data, mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var server *wrapperServer
+			if c.reject == "claim.started" {
+				server = newWrapperServerWaitFor(t, root, c.reject, filepath.Join(runDir, "spawn-count"))
+			} else {
+				server = newWrapperServer(t, root, c.reject)
+			}
+			defer server.Close()
+			backend, err := runtimepkg.NewTmuxBackend(tmux, wrapperPath, filepath.Join(root, "tmux.sock"), staticTmuxBindingVerifier)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer killTmuxServer(t, tmux, backend.SocketPath())
+			launch := runtimepkg.HostLaunch{Backend: "tmux", RunID: "run-1", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", WrapperPath: wrapperPath, BootstrapPath: bootstrap}
+			if _, err := backend.Spawn(context.Background(), launch); err != nil {
+				t.Fatalf("tmux wrapper host: %v", err)
+			}
+			name, err := runtimepkg.TmuxSessionName(launch.RunID, launch.AttemptNo, launch.Generation, launch.DispatchID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitForTmuxSessionGone(t, tmux, backend.SocketPath(), name)
+			if count := countLines(filepath.Join(runDir, "spawn-count")); count != c.wantSpawn {
+				t.Fatalf("agent spawn count = %d, want %d", count, c.wantSpawn)
+			}
+			_, resultErr := os.Stat(filepath.Join(runDir, "result.json"))
+			if (resultErr == nil) != c.wantResult {
+				t.Fatalf("result exists=%v, want %v", resultErr == nil, c.wantResult)
+			}
+		})
+	}
+}
+
 func TestProductionWrapperKeepsAgentInWrapperProcessGroup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups differ on Windows")
@@ -671,4 +801,40 @@ func (s *wrapperServer) serve() {
 			}
 		}()
 	}
+}
+
+func staticTmuxBindingVerifier(context.Context, runtimepkg.HostLaunch) error { return nil }
+
+func requireRealTmux(t *testing.T) string {
+	t.Helper()
+	tmux, err := osexec.LookPath("tmux")
+	if err == nil {
+		return tmux
+	}
+	if os.Getenv("SIFT_REQUIRE_TMUX") != "" {
+		t.Fatalf("real tmux is required but unavailable: %v", err)
+	}
+	t.Skip("real tmux is not installed")
+	return ""
+}
+
+func waitForTmuxSessionGone(t *testing.T, tmux, socket, name string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		cmd := osexec.Command(tmux, "-f", "/dev/null", "-S", socket, "has-session", "-t", "="+name)
+		cmd.Env = runtimepkg.TmuxClientEnvironment()
+		if err := cmd.Run(); err != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("tmux session %q did not exit", name)
+}
+
+func killTmuxServer(t *testing.T, tmux, socket string) {
+	t.Helper()
+	cmd := osexec.Command(tmux, "-f", "/dev/null", "-S", socket, "kill-server")
+	cmd.Env = runtimepkg.TmuxClientEnvironment()
+	_ = cmd.Run()
 }

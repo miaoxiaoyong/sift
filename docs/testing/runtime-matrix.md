@@ -68,7 +68,7 @@ R01–R19 的 tmux 参数化断言只能读取 wrapper/control/result/process-gr
 | X06 | PID/PGID reuse | `TestTerminatorNeverSignalsReusedOrUncertainPID` | partial → #850 production recovery row |
 | X07 | process group 拒绝消失 | `TestTerminatorEscalatesAndFailsClosedWhenGroupRemains` | partial → #850 exact one Interrupt/waiting_human/frozen |
 | X08 | identity unknown | `TestPlatformProcessInspectorRequiresMatchingControlNonce`、`TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible` | partial → #850 exact convergence |
-| X09 | process/tmux 下 Agent direct child + same PGID，PTY active | `TestProductionWrapperKeepsAgentInWrapperProcessGroup` 仅 process/no M6 PTY | planned #844/#845/#849 |
+| X09 | process/tmux 下 Agent direct child + same PGID，PTY active | `TestProductionWrapperKeepsAgentInWrapperProcessGroup`、`TestProductionTmuxWrapperKeepsAgentInWrapperProcessGroup` | existing | process/tmux production topology；tmux 需显式安装 |
 | X10 | kill 无 successor；retry absence 后仅一个 successor | `TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`、`TestTerminationRetryAfterAbsenceCreatesNewAttempt` | partial → #851 双 backend/并发 |
 | X11 | Interrupt commit 前/后 × started，decision 前/后 × started | `TestV4HumanStateInterleavings` 四格 storage seam | partial → #851 两 backend生产调用图 |
 | X12 | X11 的 late `result.json` 对称重放 | `TestResolveAttemptRacePersistsLateResult`/decision tests，未四格 | planned #851 |

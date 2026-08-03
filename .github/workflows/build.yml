@@ -120,6 +120,17 @@ jobs:
             echo '::error::Real tmux runtime evidence must not skip.'
             exit 1
           fi
+      - name: M6 tmux production topology and routing evidence
+        run: |
+          set -o pipefail
+          SIFT_REQUIRE_TMUX=1 go test -v -race ./internal/wrapper ./internal/launchworker -run 'TestProductionTmuxWrapper(KeepsAgentInWrapperProcessGroup|CrashWindows)|TestLaunchDispatchBackendRouting' -count=3 | tee m6-tmux-production.log
+          grep -q -- '--- PASS: TestProductionTmuxWrapperKeepsAgentInWrapperProcessGroup' m6-tmux-production.log
+          grep -q -- '--- PASS: TestProductionTmuxWrapperCrashWindows' m6-tmux-production.log
+          grep -q -- '--- PASS: TestLaunchDispatchBackendRouting' m6-tmux-production.log
+          if grep -q -- '--- SKIP:' m6-tmux-production.log; then
+            echo '::error::Production tmux topology evidence must not skip.'
+            exit 1
+          fi
       - name: V10 zero-listener evidence (linux)
         run: |
           CGO_ENABLED=0 go test -v -run TestV10ZeroNetworkListeners ./internal/controlplane/ | tee v10.log
