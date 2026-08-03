@@ -40,6 +40,25 @@ func writeConfig(t *testing.T, home Home, yaml string) {
 	}
 }
 
+func TestAgentBackendInheritsRuntimeDefaultAndAllowsOverride(t *testing.T) {
+	cfg := mustCfg(t, `version: 1
+runtime:
+  backend: tmux
+agents:
+  - id: inherited
+    executable: echo
+  - id: explicit
+    executable: echo
+    backend: process
+`)
+	if cfg.Runtime.Backend != BackendTmux {
+		t.Fatalf("runtime backend = %q, want tmux", cfg.Runtime.Backend)
+	}
+	if cfg.Agents[0].Backend != BackendTmux || cfg.Agents[1].Backend != BackendProcess {
+		t.Fatalf("agent backends = %q/%q, want tmux/process", cfg.Agents[0].Backend, cfg.Agents[1].Backend)
+	}
+}
+
 func TestAttentionChannelsNormalizeAndRejectInvalidTargets(t *testing.T) {
 	home := tempHome(t)
 	writeConfig(t, home, "version: 1\nunknown: {}\nattention:\n  channels:\n    - id: ops-slack\n      type: webhook\n      target: {secret_ref: SIFT_CHANNEL_OPS_SLACK}\n      capabilities: [text]\n      renderer: plain-v1\n      default: true\n")

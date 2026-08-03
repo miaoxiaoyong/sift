@@ -20,8 +20,23 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
+// Backend is the wrapper-host seam. It owns only where the wrapper is
+// started; completion, ownership, and Agent observation remain in the
+// existing handoff/result paths.
 type Backend interface {
 	Spawn(context.Context, string) (*os.Process, error)
+}
+
+// BackendRouter selects a wrapper host using the backend frozen on the
+// attempt. It deliberately has no observer or lifecycle methods.
+type BackendRouter map[config.Backend]Backend
+
+func (r BackendRouter) Spawn(ctx context.Context, backend config.Backend, bootstrap string) (*os.Process, error) {
+	host, ok := r[backend]
+	if !ok || host == nil {
+		return nil, fmt.Errorf("launch worker: backend %q is unavailable", backend)
+	}
+	return host.Spawn(ctx, bootstrap)
 }
 
 // ProcessBackend adapts runtime.ProcessBackend without exposing exec.Cmd.
@@ -40,9 +55,12 @@ type Worker struct {
 	BootID, WorkerID, Root string
 	Lease                  time.Duration
 	Now                    func() time.Time
-	Backend                Backend
-	Agents                 []config.Agent
-	hooks                  workerHooks
+	// Backend is retained as a test/compatibility seam for process-only
+	// callers. Production wiring should use Backends so routing is explicit.
+	Backend  Backend
+	Backends BackendRouter
+	Agents   []config.Agent
+	hooks    workerHooks
 }
 
 type workerHooks struct {
@@ -53,7 +71,7 @@ type workerHooks struct {
 }
 
 func (w *Worker) RunOnce(ctx context.Context) error {
-	if w.DB == nil || w.Backend == nil || w.BootID == "" || w.Root == "" {
+	if w.DB == nil || w.Backend == nil && w.Backends == nil || w.BootID == "" || w.Root == "" {
 		return errors.New("launch worker: incomplete configuration")
 	}
 	now := time.Now
@@ -143,7 +161,26 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 			return err
 		}
 	}
-	if _, err := w.Backend.Spawn(ctx, path); err != nil {
+	backend := config.Backend(dispatch.Backend)
+	if backend == "" {
+		// Older fixtures did not project backend from attempts. Keep their
+		// process-only behavior while production always uses the frozen value.
+		backend = config.BackendProcess
+		if agent, ok := w.agent(dispatch.AgentID); ok {
+			backend = agent.Backend
+		}
+	}
+	var spawn func(context.Context, string) (*os.Process, error)
+	if w.Backends != nil {
+		spawn = func(ctx context.Context, bootstrap string) (*os.Process, error) {
+			return w.Backends.Spawn(ctx, backend, bootstrap)
+		}
+	} else if w.Backend != nil {
+		spawn = w.Backend.Spawn
+	} else {
+		return errors.New("launch worker: no backend host configured")
+	}
+	if _, err := spawn(ctx, path); err != nil {
 		return fmt.Errorf("launch worker: spawn wrapper: %w", err)
 	}
 	return nil

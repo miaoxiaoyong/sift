@@ -88,7 +88,13 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	workers.SetLaunchWorker(&launchworker.Worker{DB: db, BootID: bootID, WorkerID: "siftd:launch_agent", Root: home.Path, Lease: snapshot.Config.Runtime.SpawnOperationLeaseTTL, Now: time.Now, Backend: launchworker.ProcessBackend{Backend: backend}, Agents: snapshot.Config.Agents})
+	workers.SetLaunchWorker(&launchworker.Worker{
+		DB: db, BootID: bootID, WorkerID: "siftd:launch_agent", Root: home.Path,
+		Lease: snapshot.Config.Runtime.SpawnOperationLeaseTTL, Now: time.Now,
+		Backends: launchworker.BackendRouter{
+			config.BackendProcess: launchworker.ProcessBackend{Backend: backend},
+		}, Agents: snapshot.Config.Agents,
+	})
 	s, err := controlplane.Start(home, db)
 	if err != nil {
 		fatal(err)

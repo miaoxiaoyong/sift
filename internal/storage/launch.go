@@ -60,6 +60,7 @@ var ErrLaunchDispatchPrepared = errors.New("storage: launch dispatch already pre
 type LaunchDispatch struct {
 	RunID, DispatchID, RunToken, BootstrapNonce string
 	AttemptNo, Generation                       int
+	Backend                                     string
 	AgentID, TaskSpecID, WorktreePath           string
 	TaskSpec                                    []byte
 }
@@ -78,12 +79,12 @@ func (d *DB) PrepareLaunchDispatch(ctx context.Context, claim ClaimedOperation, 
 	defer tx.Rollback()
 	var out LaunchDispatch
 	var operationKey string
-	err = tx.QueryRowContext(ctx, `SELECT o.operation_key,a.run_id,a.attempt_no,a.generation,a.agent_id,a.task_spec_snapshot_id,a.worktree_path,t.canonical_json,COALESCE(c.dispatch_id,'')
+	err = tx.QueryRowContext(ctx, `SELECT o.operation_key,a.run_id,a.attempt_no,a.generation,a.backend,a.agent_id,a.task_spec_snapshot_id,a.worktree_path,t.canonical_json,COALESCE(c.dispatch_id,'')
 		FROM outbox_operations o JOIN attempts a ON a.run_id=o.run_id AND a.attempt_no=o.attempt_no
 		JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no
 		JOIN task_spec_snapshots t ON t.run_id=a.run_id AND t.id=a.task_spec_snapshot_id
 		WHERE o.id=? AND o.kind='launch_agent' AND o.state='executing' AND o.lease_owner=? AND o.lease_expires_at_ms=?`, claim.ID, claim.LeaseOwner, claim.LeaseExpiresAtMS).
-		Scan(&operationKey, &out.RunID, &out.AttemptNo, &out.Generation, &out.AgentID, &out.TaskSpecID, &out.WorktreePath, &out.TaskSpec, &out.DispatchID)
+		Scan(&operationKey, &out.RunID, &out.AttemptNo, &out.Generation, &out.Backend, &out.AgentID, &out.TaskSpecID, &out.WorktreePath, &out.TaskSpec, &out.DispatchID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LaunchDispatch{}, ErrRejectedStaleWorker
 	}
@@ -128,12 +129,12 @@ func (d *DB) ResumeLaunchDispatch(ctx context.Context, claim ClaimedOperation, d
 		return LaunchDispatch{}, err
 	}
 	var out LaunchDispatch
-	err := d.db.QueryRowContext(ctx, `SELECT a.run_id,a.attempt_no,a.generation,a.agent_id,a.task_spec_snapshot_id,a.worktree_path,t.canonical_json
+	err := d.db.QueryRowContext(ctx, `SELECT a.run_id,a.attempt_no,a.generation,a.backend,a.agent_id,a.task_spec_snapshot_id,a.worktree_path,t.canonical_json
 		FROM outbox_operations o JOIN attempts a ON a.run_id=o.run_id AND a.attempt_no=o.attempt_no
 		JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no
 		JOIN task_spec_snapshots t ON t.run_id=a.run_id AND t.id=a.task_spec_snapshot_id
 		WHERE o.id=? AND o.kind='launch_agent' AND o.state='executing' AND c.dispatch_id=?`, claim.ID, dispatchID).
-		Scan(&out.RunID, &out.AttemptNo, &out.Generation, &out.AgentID, &out.TaskSpecID, &out.WorktreePath, &out.TaskSpec)
+		Scan(&out.RunID, &out.AttemptNo, &out.Generation, &out.Backend, &out.AgentID, &out.TaskSpecID, &out.WorktreePath, &out.TaskSpec)
 	if err != nil {
 		return LaunchDispatch{}, ErrRejectedStaleWorker
 	}

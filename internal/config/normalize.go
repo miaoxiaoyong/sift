@@ -64,24 +64,18 @@ func Normalize(raw *RawConfig) (*Config, error) {
 		cfg.Operators.GitLab = gl
 	}
 
-	defined, err := normalizeAgents(raw.Agents, cfg.Runtime.DefaultAgentMaxConcurrent)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Agents = defined
-
+	// Runtime defaults must be resolved before agents: an omitted agent backend
+	// inherits runtime.backend just like the other effective agent settings.
 	if raw.Runtime != nil {
 		if err := normalizeRuntime(raw.Runtime, cfg); err != nil {
 			return nil, err
 		}
-		// Agent max_concurrent inherits the resolved runtime default (C1):
-		// re-resolve any agent that took the default before runtime was known.
-		for i := range cfg.Agents {
-			if raw.Agents[i].MaxConcurrent == nil {
-				cfg.Agents[i].MaxConcurrent = cfg.Runtime.DefaultAgentMaxConcurrent
-			}
-		}
 	}
+	defined, err := normalizeAgents(raw.Agents, cfg.Runtime.DefaultAgentMaxConcurrent, cfg.Runtime.Backend)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Agents = defined
 
 	projects, err := normalizeProjects(raw.Projects, cfg.Agents)
 	if err != nil {
@@ -172,7 +166,7 @@ func dedupAllowlist(field string, in []string) ([]string, error) {
 	return out, nil
 }
 
-func normalizeAgents(raw []RawAgent, defaultConc int) ([]Agent, error) {
+func normalizeAgents(raw []RawAgent, defaultConc int, defaultBackend Backend) ([]Agent, error) {
 	out := make([]Agent, 0, len(raw))
 	ids := make(map[string]int)
 	for i, a := range raw {
@@ -195,7 +189,7 @@ func normalizeAgents(raw []RawAgent, defaultConc int) ([]Agent, error) {
 		if a.TaskTransport != nil {
 			transport = *a.TaskTransport
 		}
-		backend := BackendProcess
+		backend := defaultBackend
 		if a.Backend != nil {
 			backend = *a.Backend
 		}
