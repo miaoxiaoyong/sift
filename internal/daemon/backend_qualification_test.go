@@ -122,6 +122,46 @@ func TestQualificationRecoveryVerifiedAbsenceConfirmed(t *testing.T) {
 	}
 }
 
+func TestQualificationInvalidationMarkerBlocksVerifiedRecovery(t *testing.T) {
+	db, raw, _, now := seedRecoveryCoordinator(t, "running", 0)
+	q := detachedQualification(t, runtimepkg.QualificationEvidence{Status: runtimepkg.ProcessGroupUnverified, Reason: "detached_descendant"})
+	q.ID, q.Status, q.Reason = "verified", "process-group-verified", "qualified"
+	var err error
+	q.EvidenceJSON, err = storage.TopologyQualificationEvidenceJSON(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordTopologyQualification(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE attempts SET topology_qualification_key=? WHERE run_id='run'`, q.QualificationKey); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	marker := filepath.Join(root, "runs", "run", "attempts", "1", "qualification-invalid")
+	if err := os.MkdirAll(filepath.Dir(marker), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte(q.ExecutableSHA256), 0600); err != nil {
+		t.Fatal(err)
+	}
+	coordinator := &TerminationCoordinator{DB: db, ControlRoot: root, Terminator: runtimepkg.Terminator{Inspector: recoveryInspector{}, Signaler: &recoverySignaler{}}, Runtime: config.Runtime{AbsenceRecheckCount: 1}, ProcessGroupQualified: func(key string) bool { ok, _ := db.ProcessGroupQualified(context.Background(), key); return ok }, AttentionDailyQuota: recoveryQuota(), Now: func() time.Time { return now }}
+	if err := coordinator.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var phase string
+	var stalls int
+	if err := raw.QueryRow(`SELECT phase FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&phase); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.QueryRow(`SELECT count(*) FROM interrupts WHERE run_id='run' AND reason='startup_stall'`).Scan(&stalls); err != nil {
+		t.Fatal(err)
+	}
+	if phase == "orphaned" || stalls != 1 {
+		t.Fatalf("invalidated qualification recovery phase=%q startup_stalls=%d", phase, stalls)
+	}
+}
+
 func TestDetachedDescendantIsUnverifiedAndCannotRetry(t *testing.T) {
 	observation := detachedTopologyObservation(t)
 	evidence, err := runtimepkg.ClassifyDetachedDescendant(observation)

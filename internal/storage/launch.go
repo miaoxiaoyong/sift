@@ -9,6 +9,28 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/config"
 )
 
+// ClearLaunchQualification removes an invalidated qualification binding before
+// any wrapper is spawned. Recovery consequently treats the attempt as
+// unverified rather than authorizing absence from a stale verified row.
+func (d *DB) ClearLaunchQualification(ctx context.Context, claim ClaimedOperation, qualificationKey string, nowMS int64) error {
+	if claim.Kind != OperationLaunchAgent || claim.ID == "" || claim.LeaseOwner == "" || claim.LeaseExpiresAtMS <= 0 || qualificationKey == "" || nowMS <= 0 {
+		return ErrRejectedStaleWorker
+	}
+	result, err := d.db.ExecContext(ctx, `UPDATE attempts SET topology_qualification_key=NULL,updated_at_ms=?
+		WHERE run_id=(SELECT run_id FROM outbox_operations WHERE id=?)
+		AND attempt_no=(SELECT attempt_no FROM outbox_operations WHERE id=?)
+		AND topology_qualification_key=?
+		AND EXISTS (SELECT 1 FROM outbox_operations WHERE id=? AND kind='launch_agent' AND state='executing' AND lease_owner=? AND lease_expires_at_ms=? AND lease_expires_at_ms>=?)`, nowMS, claim.ID, claim.ID, qualificationKey, claim.ID, claim.LeaseOwner, claim.LeaseExpiresAtMS, nowMS)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return ErrRejectedStaleWorker
+	}
+	return nil
+}
+
 // RevalidateLaunchLease fences every external launch-worker step. A lease that
 // expired or moved to another worker is never authority to write a bootstrap
 // file or start a wrapper.

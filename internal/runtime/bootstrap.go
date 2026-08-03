@@ -23,8 +23,11 @@ type Bootstrap struct {
 	TaskSpec           json.RawMessage `json:"task_spec"`
 }
 type BootstrapAgent struct {
-	ID            string   `json:"id"`
-	Executable    string   `json:"executable"`
-	Args          []string `json:"args"`
-	TaskTransport string   `json:"task_transport"`
+	ID         string `json:"id"`
+	Executable string `json:"executable"`
+	// ExecutableSHA256 binds the wrapper's final exec to the bytes measured for
+	// the attempt's topology qualification key.
+	ExecutableSHA256 string   `json:"executable_sha256,omitempty"`
+	Args             []string `json:"args"`
+	TaskTransport    string   `json:"task_transport"`
 }

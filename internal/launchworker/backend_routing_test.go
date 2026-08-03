@@ -326,7 +326,11 @@ func prepareRoutingDispatch(t *testing.T, ctx context.Context, db *storage.DB, b
 	if err != nil || claim == nil {
 		t.Fatalf("claim prepared dispatch = %#v, %v", claim, err)
 	}
-	dispatch, err := db.PrepareLaunchDispatch(ctx, *claim, "prepared-dispatch", strings.Repeat("a", 64), strings.Repeat("b", 64), nowMS)
+	qualification, err := runtime.BuildQualification(runtime.QualificationInput{AgentID: agent.ID, Args: agent.Args, TaskTransport: string(agent.TaskTransport), VersionArgs: agent.VersionArgs, Executable: agent.Executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := db.PrepareLaunchDispatchWithQualification(ctx, *claim, "prepared-dispatch", strings.Repeat("a", 64), strings.Repeat("b", 64), qualification.Key, nowMS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +344,7 @@ func prepareRoutingDispatch(t *testing.T, ctx context.Context, db *storage.DB, b
 		RunID: dispatch.RunID, AttemptNo: dispatch.AttemptNo, Generation: dispatch.Generation,
 		DispatchID: dispatch.DispatchID, BootstrapNonce: dispatch.BootstrapNonce, RunToken: dispatch.RunToken,
 		RunDir: runDir, WorktreePath: dispatch.WorktreePath,
-		Agent:              runtime.BootstrapAgent{ID: agent.ID, Executable: agent.Executable, Args: agent.Args, TaskTransport: string(agent.TaskTransport)},
+		Agent:              runtime.BootstrapAgent{ID: agent.ID, Executable: qualification.ExecutablePath, ExecutableSHA256: qualification.ExecutableSHA256, Args: agent.Args, TaskTransport: string(agent.TaskTransport)},
 		TaskSpecSnapshotID: dispatch.TaskSpecID, TaskSpec: dispatch.TaskSpec,
 	}
 	contents, err := json.Marshal(bootstrap)
@@ -406,7 +410,11 @@ func processBootstrapGolden(root string, agent config.Agent) []byte {
 		return string(b)
 	}
 	args, _ := json.Marshal(agent.Args)
-	return []byte(fmt.Sprintf(`{"schema_version":2,"protocol_major":%d,"protocol_minor":%d,"daemon_version":%s,"wrapper_version":%s,"run_id":"run-1","attempt_no":1,"generation":1,"dispatch_id":"<dynamic>","bootstrap_nonce":"<dynamic>","run_token":"<dynamic>","run_dir":%s,"worktree_path":"/worktree/baseline","agent":{"id":%s,"executable":%s,"args":%s,"task_transport":%s},"task_spec_snapshot_id":"task-run-1","task_spec":{"title":"crash-suite"}}`, controlplane.ProtocolMajor, controlplane.ProtocolMinor, quote(controlplane.Version), quote(controlplane.Version), quote(filepath.Join(root, "runs", "run-1", "attempts", "1")), quote(agent.ID), quote(agent.Executable), args, quote(string(agent.TaskTransport))))
+	qualification, err := runtime.BuildQualification(runtime.QualificationInput{AgentID: agent.ID, Args: agent.Args, TaskTransport: string(agent.TaskTransport), VersionArgs: agent.VersionArgs, Executable: agent.Executable})
+	if err != nil {
+		panic(err)
+	}
+	return []byte(fmt.Sprintf(`{"schema_version":2,"protocol_major":%d,"protocol_minor":%d,"daemon_version":%s,"wrapper_version":%s,"run_id":"run-1","attempt_no":1,"generation":1,"dispatch_id":"<dynamic>","bootstrap_nonce":"<dynamic>","run_token":"<dynamic>","run_dir":%s,"worktree_path":"/worktree/baseline","agent":{"id":%s,"executable":%s,"executable_sha256":%s,"args":%s,"task_transport":%s},"task_spec_snapshot_id":"task-run-1","task_spec":{"title":"crash-suite"}}`, controlplane.ProtocolMajor, controlplane.ProtocolMinor, quote(controlplane.Version), quote(controlplane.Version), quote(filepath.Join(root, "runs", "run-1", "attempts", "1")), quote(agent.ID), quote(qualification.ExecutablePath), quote(qualification.ExecutableSHA256), args, quote(string(agent.TaskTransport))))
 }
 
 type recordingBackend struct {

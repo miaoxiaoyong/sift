@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,9 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 const TopologyMethodVersion = "runtime-topology/v1"
+
+// QualificationProbeTimeout bounds execution of an untrusted Agent's version
+// command. Version probes receive no inherited daemon environment.
+const QualificationProbeTimeout = 15 * time.Second
 
 type QualificationInput struct {
 	AgentID       string
@@ -23,6 +29,10 @@ type QualificationInput struct {
 	Executable    string
 	GOOS          string
 	GOARCH        string
+	// Context and ProbeTimeout bound the untrusted version command. A nil
+	// Context uses Background; a non-positive timeout uses the safe default.
+	Context      context.Context
+	ProbeTimeout time.Duration
 }
 
 type Qualification struct {
@@ -86,13 +96,11 @@ func BuildQualification(in QualificationInput) (Qualification, error) {
 		VersionArgs   []string `json:"version_args"`
 	}{1, in.Args, in.TaskTransport, in.VersionArgs}
 	definitionJSON, _ := json.Marshal(definition)
-	version := exec.Command(path, in.VersionArgs...)
-	var stdout, stderr bytes.Buffer
-	version.Stdout, version.Stderr = &stdout, &stderr
-	if err := version.Run(); err != nil {
+	stdoutBytes, stderrBytes, err := ProbeVersion(in.Context, path, in.VersionArgs, in.ProbeTimeout)
+	if err != nil {
 		return Qualification{}, fmt.Errorf("runtime: agent version probe: %w", err)
 	}
-	versionBytes := append(append(append([]byte{}, stdout.Bytes()...), 0), stderr.Bytes()...)
+	versionBytes := append(append(append([]byte{}, stdoutBytes...), 0), stderrBytes...)
 	versionDigest := sha256Hex(versionBytes)
 	q := Qualification{MethodVersion: TopologyMethodVersion, AgentID: in.AgentID, AgentDefinitionHash: sha256Hex(definitionJSON), ExecutablePath: path, ExecutableSHA256: sha256Hex(data), VersionOutputDigest: versionDigest, GOOS: in.GOOS, GOARCH: in.GOARCH}
 	if q.GOOS == "" {
@@ -106,6 +114,52 @@ func BuildQualification(in QualificationInput) (Qualification, error) {
 		return Qualification{}, err
 	}
 	return q, nil
+}
+
+// ProbeVersion runs only an Agent's version command with a bounded context and
+// an empty environment. It is deliberately separate from task launch: no task
+// input, run directory, or daemon credential can enter this probe.
+func ProbeVersion(parent context.Context, executable string, args []string, timeout time.Duration) ([]byte, []byte, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = QualificationProbeTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Env = []string{}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		return stdout.Bytes(), stderr.Bytes(), ctx.Err()
+	}
+	if err != nil {
+		return stdout.Bytes(), stderr.Bytes(), err
+	}
+	return stdout.Bytes(), stderr.Bytes(), nil
+}
+
+// ValidateQualificationExecutable closes the measurement-to-exec boundary.
+// The wrapper repeats this check immediately before its sole Launcher call.
+func ValidateQualificationExecutable(q Qualification) error {
+	if q.ExecutablePath == "" || q.ExecutableSHA256 == "" {
+		return errors.New("runtime: incomplete executable qualification")
+	}
+	info, err := os.Stat(q.ExecutablePath)
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.New("runtime: qualified executable is unavailable")
+	}
+	data, err := os.ReadFile(q.ExecutablePath)
+	if err != nil {
+		return fmt.Errorf("runtime: read qualified executable: %w", err)
+	}
+	if sha256Hex(data) != q.ExecutableSHA256 {
+		return errors.New("runtime: qualified executable changed")
+	}
+	return nil
 }
 
 type QualificationStatus string

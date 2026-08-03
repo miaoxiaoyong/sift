@@ -314,6 +314,16 @@ func (c *TerminationCoordinator) resultPath(a storage.RecoveryAttempt) string {
 	return filepath.Join(c.ControlRoot, "runs", a.RunID, "attempts", strconv.Itoa(a.AttemptNo), "result.json")
 }
 
+func (c *TerminationCoordinator) qualificationInvalidated(a storage.RecoveryAttempt) bool {
+	if c.ControlRoot == "" {
+		return false
+	}
+	_, err := safeRecoveryFile(filepath.Join(c.ControlRoot, "runs", a.RunID, "attempts", strconv.Itoa(a.AttemptNo), "qualification-invalid"))
+	// A malformed marker is also fail-closed; only its complete absence permits
+	// a qualification row to participate in recovery.
+	return err == nil || !os.IsNotExist(err)
+}
+
 // resolveLateFact consumes durable wrapper evidence before recovery attempts
 // termination. Both recovery-started and result.json use the same arbitration
 // port; a decision-first result is deliberately left for terminate below.
@@ -387,6 +397,11 @@ func (c *TerminationCoordinator) terminate(ctx context.Context, attempt storage.
 		now = c.Now
 	}
 	cmd := storage.RecordTerminationObservationCmd{RunID: attempt.RunID, AttemptNo: attempt.AttemptNo, ExpectedRunVersion: expectedVersion, ExpectedGeneration: attempt.Generation, Source: source, NowMS: now().UnixMilli(), AttentionDailyQuota: c.AttentionDailyQuota, DayTimezone: c.DayTimezone, DailySummaryAt: c.DailySummaryAt, CriticalWindowMS: c.CriticalWindowMS, CriticalTotalLimit: c.CriticalTotalLimit, CriticalPerRunLimit: c.CriticalPerRunLimit, Channels: c.Channels}
+	if c.qualificationInvalidated(attempt) {
+		cmd.DiagnosticCause = "process_group_unverified"
+		_, err := c.DB.RecordTerminationObservation(ctx, cmd)
+		return err
+	}
 	identity := runtimepkg.ProcessIdentity{PID: attempt.WrapperPID, StartedAtMS: attempt.WrapperStartedAtMS, Executable: attempt.WrapperExecutable, PGID: attempt.WrapperPGID, ControlNonceHash: attempt.ControlNonceHash, ControlPath: c.controlPath(attempt)}
 	if identity.PID <= 0 || identity.StartedAtMS <= 0 || identity.Executable == "" || identity.PGID <= 0 || identity.ControlNonceHash == "" {
 		// A missing wrapper identity is not absence proof. When this attempt has

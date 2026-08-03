@@ -183,6 +183,16 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 		return errors.New("wrapper: unsupported task transport")
 	}
 	var in = stdin
+	if b.Agent.ExecutableSHA256 != "" {
+		if err := runtime.ValidateQualificationExecutable(runtime.Qualification{ExecutablePath: b.Agent.Executable, ExecutableSHA256: b.Agent.ExecutableSHA256}); err != nil {
+			// This durable fail-closed marker is consumed by recovery if bytes change
+			// after the worker's final check but before this Launcher boundary.
+			if markerErr := runtime.WriteControlFile(filepath.Join(b.RunDir, "qualification-invalid"), []byte(b.Agent.ExecutableSHA256)); markerErr != nil {
+				return errors.Join(fmt.Errorf("wrapper: qualification executable check: %w", err), markerErr)
+			}
+			return fmt.Errorf("wrapper: qualification executable check: %w", err)
+		}
+	}
 	launch := runtime.AgentLaunch{Executable: b.Agent.Executable, Args: args, Worktree: b.WorktreePath, RunDir: b.RunDir, Stdin: in, Stdout: pty.Slave, Stderr: pty.Slave}
 	cmd, err := gate.StartOnce(ctx, runtime.DirectLauncher{}, launch)
 	if err != nil {

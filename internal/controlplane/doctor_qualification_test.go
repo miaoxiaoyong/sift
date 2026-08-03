@@ -1,0 +1,37 @@
+package controlplane
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestDoctorQualificationProbeSanitizesEnvironmentAndHonorsContext(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "credential-leaked")
+	agent := filepath.Join(dir, "agent")
+	body := "#!/bin/sh\nif [ -n \"${SIFT_DOCTOR_SENTINEL+x}\" ]; then echo leaked > " + marker + "; fi\nprintf version\n"
+	if err := os.WriteFile(agent, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SIFT_DOCTOR_SENTINEL", "daemon-credential")
+	if check := qualificationCommandCheck(context.Background(), "agent", agent, nil); check.Level != "ok" {
+		t.Fatalf("doctor qualification probe = %#v", check)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("doctor qualification probe inherited sentinel credential: %v", err)
+	}
+
+	hanging := filepath.Join(dir, "hanging-agent")
+	if err := os.WriteFile(hanging, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if check := qualificationCommandCheck(ctx, "agent", hanging, nil); check.Level != "error" {
+		t.Fatalf("doctor hanging qualification probe = %#v, want error", check)
+	}
+}

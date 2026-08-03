@@ -72,7 +72,7 @@ func runtimeCheck() doctorCheck {
 func executableChecks(ctx context.Context, cfg *config.Config) []doctorCheck {
 	checks := make([]doctorCheck, 0, len(cfg.Agents)+len(cfg.Projects)*2+2)
 	for _, agent := range cfg.Agents {
-		checks = append(checks, commandCheck(ctx, "agent-cli:"+agent.ID, agent.Executable, agent.VersionArgs))
+		checks = append(checks, qualificationCommandCheck(ctx, "agent-cli:"+agent.ID, agent.Executable, agent.VersionArgs))
 	}
 	if cfg.Brain.Executable != "" {
 		checks = append(checks, commandCheck(ctx, "brain-cli", cfg.Brain.Executable, cfg.Brain.VersionArgs))
@@ -102,7 +102,7 @@ func executableChecks(ctx context.Context, cfg *config.Config) []doctorCheck {
 func processGroupChecks(ctx context.Context, dbPath string, cfg *config.Config) []doctorCheck {
 	checks := make([]doctorCheck, 0, len(cfg.Agents))
 	for _, agent := range cfg.Agents {
-		q, err := runtimepkg.BuildQualification(runtimepkg.QualificationInput{AgentID: agent.ID, Args: agent.Args, TaskTransport: string(agent.TaskTransport), VersionArgs: agent.VersionArgs, Executable: agent.Executable})
+		q, err := runtimepkg.BuildQualification(runtimepkg.QualificationInput{AgentID: agent.ID, Args: agent.Args, TaskTransport: string(agent.TaskTransport), VersionArgs: agent.VersionArgs, Executable: agent.Executable, Context: ctx})
 		if err != nil {
 			checks = append(checks, doctorCheck{ID: "process-group:" + agent.ID, Level: "warning", Message: "process-group qualification identity is unavailable", Details: map[string]any{"agent_id": agent.ID, "status": "process-group-unverified", "reason": "identity_incomplete"}})
 			continue
@@ -301,6 +301,25 @@ func configUsesTmux(cfg *config.Config) bool {
 		}
 	}
 	return false
+}
+
+// qualificationCommandCheck is the credential-free, bounded path for Agent
+// version checks. Forge and brain checks retain commandCheck because their
+// authenticated capability checks have different contracts.
+func qualificationCommandCheck(ctx context.Context, id, name string, args []string) doctorCheck {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return errorCheck(id, fmt.Errorf("executable %q not found: %w", name, err))
+	}
+	stdout, stderr, err := runtimepkg.ProbeVersion(ctx, path, args, 0)
+	if err != nil {
+		output := strings.TrimSpace(string(append(stdout, stderr...)))
+		if output != "" {
+			return errorCheck(id, fmt.Errorf("%s: %w", output, err))
+		}
+		return errorCheck(id, err)
+	}
+	return doctorCheck{ID: id, Level: "ok", Message: "command is available", Details: map[string]any{"path": path, "output": strings.TrimSpace(string(append(stdout, stderr...)))}}
 }
 
 func commandCheck(ctx context.Context, id, name string, args []string) doctorCheck {
