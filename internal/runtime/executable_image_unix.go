@@ -24,7 +24,7 @@ func ReleaseExecutableImage(image *os.File) {
 }
 
 // executableImagePath exposes an inherited Linux image to exec without
-// resolving its original pathname. Darwin executes the private hard link.
+// resolving its original pathname. Darwin executes its private copy by path.
 func executableImagePath(image *os.File) (string, error) {
 	if image == nil {
 		return "", fmt.Errorf("runtime: executable image is nil")

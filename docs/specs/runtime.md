@@ -173,7 +173,7 @@ tmux attach-session -r -t =<session_name>
 }
 ```
 
-`agent_definition_hash` 是 closed canonical `{"schema_version":1,"args":[],"task_transport":"stdin|file","version_args":[]}` 的 SHA-256；不含 backend/max concurrency，因为两个 backend 必须共享 wrapper→Agent 拓扑。`executable_sha256` 对 symlink-resolved regular file bytes 计算。版本命令只经 argv、在有界 context 与无凭据空环境中执行且必须 exit 0；`version_output_digest = SHA256(stdout_bytes || 0x00 || stderr_bytes)`，不 trim/改码，原始输出不进入普通事件。launch bootstrap 携带被测量的 executable SHA-256；worker 在 host spawn 前重验该 hash。Linux wrapper 在唯一 Launcher 调用前从已验证字节 materialize 一份 unlink 的只读 image，并经其 `/proc/self/fd` 执行；Darwin wrapper 使用已验证 private hard link（系统 sealed volume 上不可 link 的 executable 只可在重验后按其 immutable system path 执行）。任一不匹配则不得启动 Agent。worker 清除该 attempt 的 key；wrapper 写入 durable invalidation marker，恢复不得让旧 verified row 授权自动 retry。digest 与 executable bytes 防止同路径替换后继承旧资格。
+`agent_definition_hash` 是 closed canonical `{"schema_version":1,"args":[],"task_transport":"stdin|file","version_args":[]}` 的 SHA-256；不含 backend/max concurrency，因为两个 backend 必须共享 wrapper→Agent 拓扑。`executable_sha256` 对 symlink-resolved regular file bytes 计算。版本命令只经 argv、在有界 context 与无凭据空环境中执行且必须 exit 0；`version_output_digest = SHA256(stdout_bytes || 0x00 || stderr_bytes)`，不 trim/改码，原始输出不进入普通事件。launch bootstrap 携带被测量的 executable SHA-256；worker 在 host spawn 前重验该 hash。wrapper 在唯一 Launcher 调用前从已验证字节 materialize 独立的只读 image：Linux unlink 后经其 `/proc/self/fd` 执行，Darwin 保留 private-copy path 执行；Darwin sealed system volume 的不可复制 executable 经重验后只按其 immutable system path 执行。任一不匹配则不得启动 Agent。worker 清除该 attempt 的 key；wrapper 写入 durable invalidation marker，恢复不得让旧 verified row 授权自动 retry。digest 与 executable bytes 防止同路径替换后继承旧资格。
 
 ### 7.2 状态与门控
 

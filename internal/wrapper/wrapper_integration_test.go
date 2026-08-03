@@ -175,6 +175,78 @@ func TestQualificationBinaryReplacementBetweenMeasurementAndAgentExecFailsClosed
 	}
 }
 
+func TestQualificationBinaryInPlaceMutationBetweenMaterializationAndAgentExecFailsClosed(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("in-place mutation coverage is Darwin-specific")
+	}
+	root := shortTempDir(t)
+	runDir := filepath.Join(root, "runs", "run-1", "1")
+	if err := os.MkdirAll(runDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	agent := filepath.Join(root, "agent")
+	old := []byte("#!/bin/sh\nprintf old > \"$SIFT_RUN_DIR/executed-bytes\"\n")
+	if err := os.WriteFile(agent, old, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(old)
+	bootstrapData, err := json.Marshal(runtimepkg.Bootstrap{SchemaVersion: 2, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor, DaemonVersion: controlplane.Version, WrapperVersion: controlplane.Version, RunID: "run-1", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", BootstrapNonce: "aaaaaaaaaaaaaaaa", RunToken: "bbbbbbbbbbbbbbbb", RunDir: runDir, WorktreePath: t.TempDir(), Agent: runtimepkg.BootstrapAgent{ID: "agent", Executable: agent, ExecutableSHA256: hex.EncodeToString(sum[:]), TaskTransport: "stdin"}, TaskSpecSnapshotID: "task-1", TaskSpec: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := filepath.Join(runDir, "bootstrap.json")
+	if err := os.WriteFile(bootstrap, bootstrapData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := newWrapperServer(t, root, "")
+	defer server.Close()
+	ready := filepath.Join(root, "qualified-image-ready")
+	release := filepath.Join(root, "qualified-image-release")
+	cmd := osexec.Command(buildWrapperWithTags(t, "sift_test"), bootstrap)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	cmd.Env = append(os.Environ(), "SIFT_WRAPPER_TEST_PAUSE=after-qualified-executable-open", "SIFT_WRAPPER_TEST_READY="+ready, "SIFT_WRAPPER_TEST_RELEASE="+release)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForWrapperFile(t, ready)
+
+	originalInfo, err := os.Stat(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated, err := os.OpenFile(agent, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mutated.Write([]byte("#!/bin/sh\nprintf replacement > \"$SIFT_RUN_DIR/executed-bytes\"\n")); err != nil {
+		_ = mutated.Close()
+		t.Fatal(err)
+	}
+	if err := mutated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mutatedInfo, err := os.Stat(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(originalInfo, mutatedInfo) {
+		t.Fatal("mutation unexpectedly replaced the original inode")
+	}
+	if err := os.WriteFile(release, []byte("release"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wrapper failed after executing sealed image: %v\n%s", err, output.String())
+	}
+	if got := readFile(t, filepath.Join(runDir, "executed-bytes")); got != "old" {
+		t.Fatalf("agent bytes after in-place mutation = %q, want old verified image", got)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, "qualification-invalid")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sealed image unexpectedly invalidated qualification: %v", err)
+	}
+}
+
 func TestProductionWrapperReplaysLostPermitResponseWithSameParameters(t *testing.T) {
 	wrapperPath := buildWrapper(t)
 	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "echo spawned >> \"$SIFT_RUN_DIR/spawn-count\""})
