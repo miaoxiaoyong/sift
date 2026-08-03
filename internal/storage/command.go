@@ -589,12 +589,12 @@ func (d *DB) spawnNextAttemptTx(ctx context.Context, tx *sql.Tx, runID string, b
 	if taskSpecSnapshotID == "" {
 		// Retry: the new attempt reuses the bound attempt's frozen snapshot
 		// (no Task Spec change).
-		if _, err := tx.ExecContext(ctx, `INSERT INTO attempts (run_id,attempt_no,phase,generation,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,topology_qualification_key,isolation_state,created_at_ms,updated_at_ms) SELECT run_id,?,'pending',1,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,topology_qualification_key,'none',?,? FROM attempts WHERE run_id=? AND attempt_no=?`, newNo, nowMS, nowMS, runID, boundAttemptNo); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO attempts (run_id,attempt_no,phase,generation,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,isolation_state,created_at_ms,updated_at_ms) SELECT run_id,?,'pending',1,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,'none',?,? FROM attempts WHERE run_id=? AND attempt_no=?`, newNo, nowMS, nowMS, runID, boundAttemptNo); err != nil {
 			return 0, err
 		}
 	} else {
 		// Ask: the new attempt starts from the clarification snapshot.
-		if _, err := tx.ExecContext(ctx, `INSERT INTO attempts (run_id,attempt_no,phase,generation,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,topology_qualification_key,isolation_state,created_at_ms,updated_at_ms) SELECT run_id,?,'pending',1,backend,agent_id,?,worktree_path,branch_name,base_ref,base_sha,topology_qualification_key,'none',?,? FROM attempts WHERE run_id=? AND attempt_no=?`, newNo, taskSpecSnapshotID, nowMS, nowMS, runID, boundAttemptNo); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO attempts (run_id,attempt_no,phase,generation,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,isolation_state,created_at_ms,updated_at_ms) SELECT run_id,?,'pending',1,backend,agent_id,?,worktree_path,branch_name,base_ref,base_sha,'none',?,? FROM attempts WHERE run_id=? AND attempt_no=?`, newNo, taskSpecSnapshotID, nowMS, nowMS, runID, boundAttemptNo); err != nil {
 			return 0, err
 		}
 	}

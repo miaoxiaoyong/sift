@@ -341,6 +341,7 @@ func TestObserveBackendSessionClassifiesHasSessionErrorsAndSanitizesEnv(t *testi
 		want       BackendSessionState
 	}{
 		{"explicit_absence", "absent", SessionAbsent},
+		{"exit_1_empty_output", "empty", SessionUnknown},
 		{"timeout", "timeout", SessionUnknown},
 		{"permission", "permission", SessionUnknown},
 		{"protocol", "protocol", SessionUnknown},
@@ -350,14 +351,8 @@ func TestObserveBackendSessionClassifiesHasSessionErrorsAndSanitizesEnv(t *testi
 			path := filepath.Join(t.TempDir(), "tmux")
 			script := "#!/bin/sh\n" +
 				"if [ -n \"${SIFT_SENTINEL_CREDENTIAL+x}\" ]; then echo credential-inherited >&2; exit 42; fi\n" +
-				"case \"$TMUX_FIXTURE_MODE\" in absent) exit 1;; timeout) sleep 1; exit 1;; permission) echo permission denied >&2; exit 126;; protocol) echo bad protocol >&2; exit 1;; server) echo no server running >&2; exit 1;; esac\n"
+				"case \"" + tc.mode + "\" in absent) echo \"can't find session: sift-test\" >&2; exit 1;; empty) exit 1;; timeout) sleep 1; exit 1;; permission) echo permission denied >&2; exit 126;; protocol) echo bad protocol >&2; exit 1;; server) echo no server running >&2; exit 1;; esac\n"
 			if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-				t.Fatal(err)
-			}
-			// The fixture mode goes in the executable's file name-independent
-			// environment by wrapping it in a tiny script; the observer itself
-			// must not inherit the sentinel above.
-			if err := os.WriteFile(path, []byte(strings.ReplaceAll(script, "$TMUX_FIXTURE_MODE", tc.mode)), 0755); err != nil {
 				t.Fatal(err)
 			}
 			ctx := context.Background()

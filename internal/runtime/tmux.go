@@ -242,17 +242,24 @@ func ObserveBackendSession(ctx context.Context, tmuxPath, socketPath, name, dige
 	return BackendSessionObservation{Backend: "tmux", State: SessionPresent, BindingDigest: digest, DiagnosticCode: "session_present"}
 }
 
-// tmux documents has-session's clean status-1 result as the session-absent
-// answer. A server, protocol, permission, or timeout error is not absence and
-// must remain unknown. Real tmux prints no diagnostic for this one expected
-// condition; test doubles may use its explicit "can't find session" wording.
+// tmux's explicit "can't find session" response is the session-absent answer.
+// A server, protocol, permission, timeout, or empty response is not absence and
+// must remain unknown. Only recognizable absence wording is accepted.
 func tmuxHasSessionAbsent(err error, output []byte) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
 		return false
 	}
-	text := strings.TrimSpace(string(output))
-	return text == "" || strings.Contains(text, "can't find session")
+	text := strings.ToLower(strings.TrimSpace(string(output)))
+	if text == "" || strings.Contains(text, "no server running") {
+		return false
+	}
+	for _, marker := range []string{"can't find session", "no such session", "session not found", "unknown session"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // ObserveTmuxSession proves that an exact, durably-derived session is live and
