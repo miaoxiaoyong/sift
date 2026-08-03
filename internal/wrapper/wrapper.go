@@ -36,6 +36,8 @@ func Run(ctx context.Context, bootstrapPath string) error {
 		return fmt.Errorf("wrapper: locate supervisor executable: %w", err)
 	}
 	cmd := exec.Command(self, "--run", bootstrapPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("wrapper: start execution wrapper: %w", err)
@@ -123,19 +125,23 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 	if err := pauseForTest("before-permit-rpc"); err != nil {
 		return err
 	}
+	// Establish the authoritative PTY before accepting the one-shot permit.
 	// A lost response is not a new permit request: replay the exact candidate
 	// and params with a new envelope request ID until the bounded deadline.
-	if _, err := callPermit(ctx, b.RunDir, map[string]any{"kind": "wrapper_session", "session": session}, pp); err != nil {
-		return err
-	}
-	// The gate is adjacent to the sole launcher invocation; no permit replay can
-	// cross it after this point.
 	var gate runtime.PermitGate
 	log, err := os.OpenFile(filepath.Join(b.RunDir, "agent.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
+	pty, err := runtime.NewPTY()
+	if err != nil {
+		return err
+	}
+	defer pty.Close()
+	if _, err := callPermit(ctx, b.RunDir, map[string]any{"kind": "wrapper_session", "session": session}, pp); err != nil {
+		return err
+	}
 	task := filepath.Join(b.RunDir, "task.json")
 	if _, err := writeJSON(task, map[string]any{"schema_version": 1, "task_spec_snapshot_id": b.TaskSpecSnapshotID, "task_spec": json.RawMessage(b.TaskSpec)}); err != nil {
 		return err
@@ -163,11 +169,29 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 		return errors.New("wrapper: unsupported task transport")
 	}
 	var in = stdin
-	launch := runtime.AgentLaunch{Executable: b.Agent.Executable, Args: args, Worktree: b.WorktreePath, RunDir: b.RunDir, Stdin: in, Stdout: log, Stderr: log}
+	launch := runtime.AgentLaunch{Executable: b.Agent.Executable, Args: args, Worktree: b.WorktreePath, RunDir: b.RunDir, Stdin: in, Stdout: pty.Slave, Stderr: pty.Slave}
 	cmd, err := gate.StartOnce(ctx, runtime.DirectLauncher{}, launch)
 	if err != nil {
 		return err
 	}
+	// Only the Agent child owns the slave after Start. The wrapper reads the
+	// master and keeps the persisted log ahead of the host observation stream.
+	if err := pty.CloseSlave(); err != nil {
+		return errors.Join(err, terminateAndReap(cmd, b.RunDir))
+	}
+	relayDone := make(chan error, 1)
+	go func() { relayDone <- relayPTY(pty.Master, log, os.Stdout) }()
+	relayConsumed := false
+	defer func() {
+		_ = pty.CloseMaster()
+		if relayConsumed {
+			return
+		}
+		select {
+		case <-relayDone:
+		case <-time.After(time.Second):
+		}
+	}()
 	ai := map[string]any{"pid": int64(cmd.Process.Pid), "started_at_ms": time.Now().UnixMilli(), "executable": b.Agent.Executable}
 	control["agent_identity"] = ai
 	control["updated_at_ms"] = time.Now().UnixMilli()
@@ -188,10 +212,25 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
 	var waitErr error
+	relayFinished := false
 	select {
 	case waitErr = <-waited:
+	case relayErr := <-relayDone:
+		relayFinished = true
+		relayConsumed = true
+		if relayErr != nil {
+			return errors.Join(relayErr, terminateProcessGroup(b.RunDir))
+		}
+		waitErr = <-waited
 	case <-ctx.Done():
 		return errors.Join(ctx.Err(), terminateProcessGroup(b.RunDir))
+	}
+	if !relayFinished {
+		if err := waitForPTYRelay(relayDone, pty.Master); err != nil {
+			relayConsumed = true
+			return errors.Join(err, terminateProcessGroup(b.RunDir))
+		}
+		relayConsumed = true
 	}
 	exitCode, signal := resultStatus(waitErr)
 	result := map[string]any{"schema_version": 1, "run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "agent_identity": ai, "exit_code": exitCode, "signal": signal, "finished_at_ms": time.Now().UnixMilli(), "final_head_sha": headSHA(b.WorktreePath), "control_digest": digest}
@@ -461,6 +500,58 @@ func heartbeat(b runtime.Bootstrap, instance string, stop <-chan struct{}) {
 		}
 	}
 }
+func relayPTY(master *os.File, log io.Writer, host io.Writer) error {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := master.Read(buf)
+		if n > 0 {
+			if writeErr := writeAll(log, buf[:n]); writeErr != nil {
+				return fmt.Errorf("wrapper: write agent log: %w", writeErr)
+			}
+			// The durable log is authoritative. A closed host stream or pane is
+			// observational only and must not alter the Agent result.
+			_, _ = host.Write(buf[:n])
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrClosed) {
+				return nil
+			}
+			return fmt.Errorf("wrapper: read PTY master: %w", err)
+		}
+	}
+}
+
+func writeAll(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if n > 0 {
+			data = data[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func waitForPTYRelay(done <-chan error, master *os.File) error {
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		// A descendant that retained the slave must not turn a fast Agent exit
+		// into a hung wrapper. Closing the master ends observation only; it does
+		// not decide process ownership or completion.
+		_ = master.Close()
+		return <-done
+	}
+}
+
 func resultStatus(err error) (*int, any) {
 	if err == nil {
 		n := 0

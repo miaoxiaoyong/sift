@@ -96,6 +96,23 @@ func TestProductionWrapperCrashWindows(t *testing.T) {
 	}
 }
 
+func TestProductionWrapperPTYRelaysRawOutputToLogAndHost(t *testing.T) {
+	wrapperPath := buildWrapper(t)
+	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", `printf 'pty-raw\n'`})
+	server := newWrapperServer(t, root, "")
+	defer server.Close()
+	out, err := osexec.Command(wrapperPath, bootstrap).CombinedOutput()
+	if err != nil {
+		t.Fatalf("wrapper failed: %v\n%s", err, out)
+	}
+	if got, want := string(out), "pty-raw\n"; got != want {
+		t.Fatalf("host stream = %q, want %q; log=%q", got, want, readFile(t, filepath.Join(runDir, "agent.log")))
+	}
+	if got, want := readFile(t, filepath.Join(runDir, "agent.log")), "pty-raw\n"; got != want {
+		t.Fatalf("agent.log = %q, want %q", got, want)
+	}
+}
+
 func TestProductionWrapperReplaysLostPermitResponseWithSameParameters(t *testing.T) {
 	wrapperPath := buildWrapper(t)
 	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "echo spawned >> \"$SIFT_RUN_DIR/spawn-count\""})
@@ -252,7 +269,7 @@ func TestProductionWrapperKeepsAgentInWrapperProcessGroup(t *testing.T) {
 		t.Skip("process groups differ on Windows")
 	}
 	wrapperPath := buildWrapper(t)
-	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "sleep 2"})
+	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", `if test -t 1; then echo yes > "$SIFT_RUN_DIR/pty-active"; else echo no > "$SIFT_RUN_DIR/pty-active"; fi; echo "$$" > "$SIFT_RUN_DIR/agent-pid"; echo "$PPID" > "$SIFT_RUN_DIR/agent-ppid"; ps -o pgid= -p "$$" | tr -d ' ' > "$SIFT_RUN_DIR/agent-pgid"; sleep 2`})
 	server := newWrapperServer(t, root, "")
 	defer server.Close()
 	cmd := osexec.Command(wrapperPath, bootstrap)
@@ -261,30 +278,114 @@ func TestProductionWrapperKeepsAgentInWrapperProcessGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cmd.Process.Kill()
+
+	// The Agent writes these facts before the wrapper sends claim.started.
+	// The control file already contains the wrapper identity at this point.
+	waitForWrapperFile(t, filepath.Join(runDir, "pty-active"))
+	wrapperPID := executionWrapperPID(t, filepath.Join(runDir, "control.json"))
+	agentPID := readPIDFile(t, filepath.Join(runDir, "agent-pid"), filepath.Join(runDir, "agent-ppid"), filepath.Join(runDir, "agent-pgid"))
+	assertAgentTopology(t, wrapperPID, agentPID, filepath.Join(runDir, "agent-ppid"), filepath.Join(runDir, "agent-pgid"))
+	if got := strings.TrimSpace(readFile(t, filepath.Join(runDir, "pty-active"))); got != "yes" {
+		t.Fatalf("agent stdout is tty = %q, want yes", got)
+	}
+
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(filepath.Join(runDir, "control.json"))
-		if err == nil && string(data) != "" {
+		if err == nil {
 			var control struct {
 				AgentIdentity *struct {
 					PID int `json:"pid"`
 				} `json:"agent_identity"`
 			}
 			if json.Unmarshal(data, &control) == nil && control.AgentIdentity != nil {
-				wrapperPGID, err1 := syscall.Getpgid(executionWrapperPID(t, filepath.Join(runDir, "control.json")))
-				agentPGID, err2 := syscall.Getpgid(control.AgentIdentity.PID)
-				if err1 != nil || err2 != nil {
-					t.Fatalf("get process groups: %v %v", err1, err2)
+				if control.AgentIdentity.PID != agentPID {
+					t.Fatalf("agent identity pid=%d, observed pid=%d", control.AgentIdentity.PID, agentPID)
 				}
-				if wrapperPGID != agentPGID {
-					t.Fatalf("agent pgid=%d, wrapper pgid=%d", agentPGID, wrapperPGID)
-				}
+				assertAgentTopology(t, wrapperPID, agentPID, filepath.Join(runDir, "agent-ppid"), filepath.Join(runDir, "agent-pgid"))
 				return
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("wrapper did not publish agent identity")
+}
+
+func waitForWrapperFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file was not written: %s", path)
+}
+
+func readPIDFile(t *testing.T, paths ...string) int {
+	t.Helper()
+	for _, path := range paths {
+		waitForNonEmptyFile(t, path)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(readFile(t, paths[0])))
+	if err != nil {
+		t.Fatalf("parse pid %s: %v", paths[0], err)
+	}
+	return pid
+}
+
+func waitForNonEmptyFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file was not populated: %s", path)
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func assertAgentTopology(t *testing.T, wrapperPID, agentPID int, ppidPath, pgidPath string) {
+	t.Helper()
+	ppid, err := strconv.Atoi(strings.TrimSpace(readFile(t, ppidPath)))
+	if err != nil {
+		t.Fatalf("parse agent PPID: %v", err)
+	}
+	declaredPGID, err := strconv.Atoi(strings.TrimSpace(readFile(t, pgidPath)))
+	if err != nil {
+		t.Fatalf("parse agent PGID: %v", err)
+	}
+	wrapperPGID, err := syscall.Getpgid(wrapperPID)
+	if err != nil {
+		t.Fatalf("get wrapper PGID: %v", err)
+	}
+	agentPGID, err := syscall.Getpgid(agentPID)
+	if err != nil {
+		t.Fatalf("get agent PGID: %v", err)
+	}
+	if ppid != wrapperPID {
+		t.Fatalf("agent PPID=%d, want wrapper PID=%d", ppid, wrapperPID)
+	}
+	if wrapperPGID != wrapperPID {
+		t.Fatalf("wrapper PGID=%d, want wrapper PID=%d", wrapperPGID, wrapperPID)
+	}
+	if agentPGID != wrapperPGID || declaredPGID != wrapperPGID {
+		t.Fatalf("agent PGID=%d (declared %d), wrapper PGID=%d", agentPGID, declaredPGID, wrapperPGID)
+	}
+	if agentPID == agentPGID {
+		t.Fatalf("agent PID=%d unexpectedly leads its process group", agentPID)
+	}
 }
 
 func buildWrapper(t *testing.T) string {
