@@ -69,8 +69,8 @@ func TmuxSessionName(runID string, attemptNo, generation int, dispatchID string)
 	return "sift-" + digest, nil
 }
 
-// TmuxSessionConflictError reports that an exact target already exists. This
-// slice never adopts it: durable reclaim convergence is a later operation.
+// TmuxSessionConflictError reports that an existing exact target cannot be
+// proven to be the live wrapper for the current frozen launch binding.
 type TmuxSessionConflictError struct {
 	Session string
 	Cause   error
@@ -134,11 +134,38 @@ func (b *TmuxBackend) Spawn(ctx context.Context, launch HostLaunch) (*os.Process
 	cmd := b.command(ctx, "new-session", "-d", "-s", name, "-e", "SIFT_TMUX_BINDING="+digest, "--", launch.WrapperPath, launch.BootstrapPath)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		return cmd.Process, nil
-	} else if b.sessionExists(ctx, name) {
-		return nil, &TmuxSessionConflictError{Session: name, Cause: err}
-	} else {
+	} else if !b.sessionExists(ctx, name) {
 		return nil, fmt.Errorf("runtime: create tmux session %q: %w: %s", name, err, string(out))
+	} else if err := b.validateExistingSession(ctx, name, digest); err != nil {
+		return nil, &TmuxSessionConflictError{Session: name, Cause: err}
 	}
+	// new-session may have succeeded even though its client lost the response,
+	// or another reclaim may have won the same deterministic binding. Once the
+	// exact session proves it is the current live binding, both cases have
+	// already accepted exactly one wrapper and must converge without respawn.
+	return nil, nil
+}
+
+// validateExistingSession proves that name is the single live pane created for
+// digest. Every target begins with the exact deterministic session name; no
+// prefix lookup, attach, or lifecycle observation is used to adopt a session.
+func (b *TmuxBackend) validateExistingSession(ctx context.Context, name, digest string) error {
+	binding, err := b.command(ctx, "show-environment", "-t", "="+name, "SIFT_TMUX_BINDING").Output()
+	if err != nil || string(binding) != "SIFT_TMUX_BINDING="+digest+"\n" {
+		return errors.New("tmux session binding does not match frozen launch")
+	}
+	panes, err := b.command(ctx, "list-panes", "-t", "="+name, "-F", "#{pane_dead}").Output()
+	if err != nil || string(panes) != "0\n" {
+		return errors.New("tmux session does not have exactly one live pane")
+	}
+	// A fresh session has window 0/pane 0. Requiring it here is deliberately
+	// fail-closed: a mutated target is never reclaimed, even if it retained the
+	// right environment value.
+	remain, err := b.command(ctx, "show-options", "-A", "-v", "-t", "="+name+":0.0", "remain-on-exit").Output()
+	if err != nil || string(remain) != "off\n" {
+		return errors.New("tmux session has remain-on-exit enabled or unknown")
+	}
+	return nil
 }
 
 func (b *TmuxBackend) command(ctx context.Context, args ...string) *exec.Cmd {
