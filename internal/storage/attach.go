@@ -27,7 +27,7 @@ func (d *DB) AttachTargetForRun(ctx context.Context, runID string) (AttachTarget
 		return AttachTarget{}, ErrAttachRunNotFound
 	}
 	rows, err := d.db.QueryContext(ctx, `SELECT a.attempt_no,a.generation,a.backend,c.dispatch_id
-		FROM attempts a JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no
+		FROM attempts a JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no AND c.generation=a.generation
 		WHERE a.run_id=? AND a.phase IN ('pending','starting','spawning','running')
 		ORDER BY a.attempt_no`, runID)
 	if err != nil {

@@ -72,6 +72,16 @@ func TestAttachTargetForRunReturnsActiveTmuxBindingWithoutDomainWrites(t *testin
 	}
 }
 
+func TestAttachTargetForRunRejectsStaleGeneration(t *testing.T) {
+	db, _ := openTestDB(t)
+	seedAttachTarget(t, db)
+	mustExec(t, db, `UPDATE attempt_claims SET generation=2, dispatch_id='stale-dispatch' WHERE run_id='run-attach' AND attempt_no=1`)
+
+	if _, err := db.AttachTargetForRun(context.Background(), "run-attach"); !errors.Is(err, ErrAttachConflict) {
+		t.Fatalf("AttachTargetForRun error = %v, want ErrAttachConflict", err)
+	}
+}
+
 func TestAttachTargetForRunFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

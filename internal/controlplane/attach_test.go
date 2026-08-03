@@ -73,6 +73,34 @@ func TestOpsAttachReturnsClosedTmuxBinding(t *testing.T) {
 	}
 }
 
+func TestAttachOpsAttachStaleGenerationFailsClosedBeforeObservation(t *testing.T) {
+	s, db := startServerWithDB(t)
+	seedOpsAttachRun(t, db, "tmux")
+	mustExec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.ExecForTest(context.Background(), query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec(`UPDATE attempt_claims SET generation=2, dispatch_id='stale-dispatch' WHERE run_id='run-attach' AND attempt_no=1`)
+
+	counter := filepath.Join(t.TempDir(), "tmux-observer-called")
+	tmux := filepath.Join(t.TempDir(), "tmux")
+	script := "#!/bin/sh\nprintf x >> '" + counter + "'\nexit 0\n"
+	if err := os.WriteFile(tmux, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.SetTmuxObserver(tmux, "/tmp/sift-private.sock")
+
+	response := opsAttachRequest(s, "run-attach")
+	if response.OK || response.Error.Code != "conflict" || response.Error.Retryable {
+		t.Fatalf("ops.attach = %#v, want non-retryable conflict", response)
+	}
+	if _, err := os.Stat(counter); !os.IsNotExist(err) {
+		t.Fatalf("tmux observer call marker exists: %v", err)
+	}
+}
+
 func TestOpsAttachFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
