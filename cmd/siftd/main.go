@@ -28,6 +28,10 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	tmuxDiagnostics := config.NewDiagnostics()
+	if err := config.TmuxProbe(snapshot.Config, tmuxDiagnostics).Run(context.Background()); err != nil {
+		fatal(err)
+	}
 	if hasEnabledProjects(snapshot.Config) {
 		if _, err := runtime.ResolveInstalledWrapper(controlplane.Version); err != nil {
 			fatal(err)
@@ -88,12 +92,22 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	backends := launchworker.BackendRouter{
+		config.BackendProcess: launchworker.ProcessBackend{Backend: backend},
+	}
+	if usesTmux(snapshot.Config) {
+		// This is the process-level tmux startup probe. Process-only
+		// configurations intentionally never resolve or require tmux.
+		tmux, backendErr := runtime.NewTmuxBackend(tmuxDiagnostics.TmuxPath, backend.WrapperPath())
+		if backendErr != nil {
+			fatal(backendErr)
+		}
+		backends[config.BackendTmux] = launchworker.TmuxBackend{Backend: tmux}
+	}
 	workers.SetLaunchWorker(&launchworker.Worker{
 		DB: db, BootID: bootID, WorkerID: "siftd:launch_agent", Root: home.Path,
 		Lease: snapshot.Config.Runtime.SpawnOperationLeaseTTL, Now: time.Now,
-		Backends: launchworker.BackendRouter{
-			config.BackendProcess: launchworker.ProcessBackend{Backend: backend},
-		}, Agents: snapshot.Config.Agents,
+		Backends: backends, Agents: snapshot.Config.Agents,
 	})
 	s, err := controlplane.Start(home, db)
 	if err != nil {
@@ -112,6 +126,18 @@ func main() {
 		fatal(err)
 	}
 }
+func usesTmux(cfg *config.Config) bool {
+	if cfg.Runtime.Backend == config.BackendTmux {
+		return true
+	}
+	for _, agent := range cfg.Agents {
+		if agent.Backend == config.BackendTmux {
+			return true
+		}
+	}
+	return false
+}
+
 func hasEnabledProjects(cfg *config.Config) bool {
 	for _, project := range cfg.Projects {
 		if project.Enabled {

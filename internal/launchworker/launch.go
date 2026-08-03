@@ -50,6 +50,14 @@ func (b ProcessBackend) Spawn(ctx context.Context, path string) (*os.Process, er
 	return c.Process, nil
 }
 
+// TmuxBackend adapts the runtime tmux host without exposing its command
+// process to the launch worker.
+type TmuxBackend struct{ Backend *runtime.TmuxBackend }
+
+func (b TmuxBackend) Spawn(ctx context.Context, path string) (*os.Process, error) {
+	return b.Backend.Spawn(ctx, path)
+}
+
 type Worker struct {
 	DB                     *storage.DB
 	BootID, WorkerID, Root string
