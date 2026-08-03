@@ -31,6 +31,12 @@ func Run(ctx context.Context, bootstrapPath string) error {
 	ctx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stopSignals()
 
+	// On Linux this makes the outer supervisor adopt descendants orphaned when
+	// the execution wrapper is killed. waitForReaper then reaps those zombies,
+	// so a non-init container cannot leave their PGID falsely alive forever.
+	if err := enableChildSubreaper(); err != nil {
+		return fmt.Errorf("wrapper: enable child subreaper: %w", err)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("wrapper: locate supervisor executable: %w", err)
@@ -367,13 +373,21 @@ func ReapProcessGroup(pgid int, resultPath string) (err error) {
 		return fmt.Errorf("wrapper: kill process group: %w", err)
 	}
 	deadline := time.Now().Add(reaperGrace)
+	absentProbes := 0
 	for {
 		err := syscall.Kill(-pgid, 0)
 		if errors.Is(err, syscall.ESRCH) {
-			return nil
-		}
-		if err != nil {
+			// A single absence probe is not publication evidence: a just-reaped
+			// group number can be reused. Keep the reaper pending until absence
+			// remains true across consecutive probes.
+			absentProbes++
+			if absentProbes == 3 {
+				return nil
+			}
+		} else if err != nil {
 			return fmt.Errorf("wrapper: probe process group: %w", err)
+		} else {
+			absentProbes = 0
 		}
 		if time.Now().After(deadline) {
 			return errors.New("wrapper: process group remained after SIGKILL")
@@ -385,6 +399,9 @@ func ReapProcessGroup(pgid int, resultPath string) (err error) {
 func waitForReaper(path string) error {
 	deadline := time.Now().Add(reaperGrace + terminationGrace)
 	for {
+		if err := reapExitedChildren(); err != nil {
+			return fmt.Errorf("wrapper: reap terminated group child: %w", err)
+		}
 		data, err := os.ReadFile(path)
 		if err == nil {
 			var result struct {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
 	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
+	"github.com/miaoxiaoyong/sift/internal/worktree"
 )
 
 func TestProductionWrapperCrashWindows(t *testing.T) {
@@ -192,7 +193,7 @@ func TestProductionWrapperRecordsAgentLogRelayFailure(t *testing.T) {
 		t.Skip("/dev/full is Linux-specific")
 	}
 	wrapperPath := buildWrapper(t)
-	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", `trap '' TERM; (trap '' TERM; while :; do :; done) & echo $! > "$SIFT_RUN_DIR/descendant.pid"; printf log-trigger; while :; do :; done`})
+	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", `trap '' TERM; (trap '' TERM; while :; do :; done) & echo $! > "$SIFT_RUN_DIR/descendant.pid"; while test ! -f "$SIFT_RUN_DIR/log-trigger"; do sleep 0.01; done; printf log-trigger; while :; do :; done`})
 	if err := os.Symlink("/dev/full", filepath.Join(runDir, "agent.log")); err != nil {
 		t.Fatal(err)
 	}
@@ -205,19 +206,26 @@ func TestProductionWrapperRecordsAgentLogRelayFailure(t *testing.T) {
 	}
 	pgid := executionWrapperPGID(t, filepath.Join(runDir, "control.json"))
 	assertProcessInGroup(t, filepath.Join(runDir, "descendant.pid"), pgid)
-	server.waitForStartedReceipt(t) // claim.started is held until relay failure interrupts it
+	server.waitForStartedReceipt(t) // Agent has not yet been allowed to write.
+	if err := os.WriteFile(filepath.Join(runDir, "log-trigger"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// relayFailure records only a private pre-termination diagnostic. Its
+	// presence proves the relay has failed while claim.started remains blocked;
+	// result.json must still be unavailable to the production decoder.
+	waitForWrapperFile(t, relayFailurePath(runDir))
+	waitForPendingReaper(t, filepath.Join(runDir, "reaper-result.json"))
+	if _, err := worktree.ReadResult(filepath.Join(runDir, "result.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("terminal result was consumable before group reaping: %v", err)
+	}
+	server.confirmStarted()
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("wrapper unexpectedly succeeded")
 	}
-	server.confirmStarted()
 	assertGroupAbsent(t, pgid)
-	var result struct {
-		ExitCode      *int   `json:"exit_code"`
-		FailureReason string `json:"failure_reason"`
-	}
-	data := []byte(readFile(t, filepath.Join(runDir, "result.json")))
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("decode relay failure result: %v", err)
+	result, err := worktree.ReadResult(filepath.Join(runDir, "result.json"))
+	if err != nil {
+		t.Fatalf("read published relay failure result: %v", err)
 	}
 	if result.ExitCode == nil || *result.ExitCode == 0 || result.FailureReason != agentLogRelayFailure {
 		t.Fatalf("result = %+v, want non-success %q failure", result, agentLogRelayFailure)
@@ -381,6 +389,24 @@ func waitForWrapperFile(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("file was not written: %s", path)
+}
+
+func waitForPendingReaper(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			var result struct {
+				Pending bool `json:"pending"`
+			}
+			if json.Unmarshal(data, &result) == nil && result.Pending {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("reaper was not pending: %s", path)
 }
 
 func readPIDFile(t *testing.T, paths ...string) int {
