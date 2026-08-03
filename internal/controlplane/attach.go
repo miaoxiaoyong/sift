@@ -46,8 +46,19 @@ func (s *Server) handleOpsAttach(req Request) Response {
 		return failure(req.RequestID, "conflict", "run launch identity is incomplete", false)
 	}
 	digest := name[len("sift-"):]
-	if err := runtime.ObserveTmuxSession(context.Background(), s.tmuxPath, s.tmuxSocketPath, name, digest); err != nil {
+	observe := s.tmuxObserver
+	if observe == nil {
+		observe = runtime.ObserveTmuxSession
+	}
+	if err := observe(context.Background(), s.tmuxPath, s.tmuxSocketPath, name, digest); err != nil {
 		return failure(req.RequestID, "conflict", "tmux session is not attachable", false)
+	}
+	// The external observation has no transaction with durable state. Re-read
+	// the exact target before returning it so recovery cannot hand the CLI a
+	// session derived from a superseded generation or dispatch.
+	current, err := s.db.AttachTargetForRun(context.Background(), p.RunID)
+	if err != nil || current != target {
+		return failure(req.RequestID, "conflict", "run launch identity changed during observation", false)
 	}
 	return success(req.RequestID, attachResult{RunID: target.RunID, AttemptNo: target.AttemptNo, Generation: target.Generation, Backend: target.Backend, SessionName: name})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/miaoxiaoyong/sift/internal/runtime"
@@ -50,6 +51,28 @@ func opsAttachRequest(s *Server, runID string) Response {
 	})
 }
 
+func opsAttachDomainProjection(t *testing.T, db *storage.DB) map[string]string {
+	t.Helper()
+	queries := map[string]string{
+		"runs":       `SELECT COALESCE(group_concat(id || '|' || status || '|' || version || '|' || updated_at_ms, char(10)), '') FROM runs ORDER BY id`,
+		"attempts":   `SELECT COALESCE(group_concat(run_id || '|' || attempt_no || '|' || phase || '|' || generation || '|' || backend || '|' || COALESCE(attempt_resolution,'') || '|' || isolation_state, char(10)), '') FROM attempts ORDER BY run_id,attempt_no`,
+		"claims":     `SELECT COALESCE(group_concat(run_id || '|' || attempt_no || '|' || generation || '|' || launch_operation_key || '|' || COALESCE(dispatch_id,''), char(10)), '') FROM attempt_claims ORDER BY run_id,attempt_no`,
+		"gates":      `SELECT COALESCE(group_concat(id || '|' || run_id || '|' || snapshot_id || '|' || verdict_digest, char(10)), '') FROM gate_evaluations ORDER BY id`,
+		"interrupts": `SELECT COALESCE(group_concat(id || '|' || run_id || '|' || status || '|' || version, char(10)), '') FROM interrupts ORDER BY id`,
+		"outbox":     `SELECT COALESCE(group_concat(id || '|' || operation_key || '|' || state || '|' || attempt_count || '|' || COALESCE(run_id,''), char(10)), '') FROM outbox_operations ORDER BY id`,
+		"events":     `SELECT COALESCE(group_concat(id || '|' || type || '|' || source, char(10)), '') FROM events ORDER BY id`,
+	}
+	projection := make(map[string]string, len(queries))
+	for name, query := range queries {
+		var value string
+		if err := db.QueryRowForTest(context.Background(), query).Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		projection[name] = value
+	}
+	return projection
+}
+
 func TestOpsAttachReturnsClosedTmuxBinding(t *testing.T) {
 	s, db := startServerWithDB(t)
 	seedOpsAttachRun(t, db, "tmux")
@@ -70,6 +93,41 @@ func TestOpsAttachReturnsClosedTmuxBinding(t *testing.T) {
 	want := attachResult{RunID: "run-attach", AttemptNo: 1, Generation: 1, Backend: "tmux", SessionName: name}
 	if result != want {
 		t.Fatalf("ops.attach result = %#v, want %#v", result, want)
+	}
+}
+
+func TestOpsAttachRejectsIdentityDriftDuringObservation(t *testing.T) {
+	s, db := startServerWithDB(t)
+	seedOpsAttachRun(t, db, "tmux")
+	name, err := runtime.TmuxSessionName("run-attach", 1, 1, "dispatch-run-attach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetTmuxObserver("/tmux", "/tmp/sift-private.sock")
+
+	observerCalls := 0
+	var afterRecovery map[string]string
+	s.tmuxObserver = func(_ context.Context, tmuxPath, socketPath, gotName, digest string) error {
+		observerCalls++
+		if tmuxPath != "/tmux" || socketPath != "/tmp/sift-private.sock" || gotName != name || digest != name[len("sift-"):] {
+			t.Fatalf("observer inputs = (%q, %q, %q, %q)", tmuxPath, socketPath, gotName, digest)
+		}
+		if err := db.AdvanceAttachIdentityForTest(context.Background(), "run-attach", 1, 2, "recovery-dispatch"); err != nil {
+			t.Fatal(err)
+		}
+		afterRecovery = opsAttachDomainProjection(t, db)
+		return nil
+	}
+
+	response := opsAttachRequest(s, "run-attach")
+	if response.OK || response.Error.Code != "conflict" || response.Error.Retryable || response.Result != nil {
+		t.Fatalf("ops.attach = %#v, want non-retryable conflict without old session", response)
+	}
+	if observerCalls != 1 {
+		t.Fatalf("observer calls = %d, want 1", observerCalls)
+	}
+	if after := opsAttachDomainProjection(t, db); !reflect.DeepEqual(after, afterRecovery) {
+		t.Fatalf("ops.attach revalidation wrote durable domain state:\nbefore=%#v\nafter =%#v", afterRecovery, after)
 	}
 }
 

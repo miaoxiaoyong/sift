@@ -717,6 +717,23 @@ func (d *DB) QueryRowForTest(ctx context.Context, query string, args ...any) *sq
 	return d.db.QueryRowContext(ctx, query, args...)
 }
 
+// AdvanceAttachIdentityForTest atomically simulates recovery superseding an
+// active attach binding. It is only for cross-package attach race fixtures.
+func (d *DB) AdvanceAttachIdentityForTest(ctx context.Context, runID string, attemptNo, generation int, dispatchID string) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE attempts SET generation=? WHERE run_id=? AND attempt_no=?`, generation, runID, attemptNo); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE attempt_claims SET generation=?, dispatch_id=? WHERE run_id=? AND attempt_no=?`, generation, dispatchID, runID, attemptNo); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // SeedProjectForTest inserts a config snapshot and project with minimal
 // valid rows.
 func (d *DB) SeedProjectForTest(ctx context.Context, cfgID, projectID string, nowMS int64) error {

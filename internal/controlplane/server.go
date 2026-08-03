@@ -45,6 +45,7 @@ type Server struct {
 	configuredQuota map[string]int
 	tmuxPath        string
 	tmuxSocketPath  string
+	tmuxObserver    func(context.Context, string, string, string, string) error
 }
 
 // Start obtains the process-lifetime mutex, creates the capability token when
