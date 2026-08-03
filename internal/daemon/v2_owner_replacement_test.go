@@ -227,6 +227,20 @@ func runV2OwnerReplacement(t *testing.T, wrapperPath string, backend config.Back
 	}
 	waitPausedLines(t, filepath.Join(root, "runs", v2OwnerRun, "attempts", "2", "agent-started"), 1)
 
+	// The durable probe-success event is the absence proof that releases the
+	// old isolation. The replacement wrapper may only acquire after that event;
+	// compare append-only event sequence, not wall-clock timestamps.
+	var absenceSeq, replacementAcquireSeq int
+	if err := check.QueryRow(`SELECT e.seq FROM attempts a JOIN events e ON e.id=a.isolation_release_event_id WHERE a.run_id='` + v2OwnerRun + `' AND a.attempt_no=1`).Scan(&absenceSeq); err != nil {
+		t.Fatalf("old owner absence evidence: %v", err)
+	}
+	if err := check.QueryRow(`SELECT seq FROM events WHERE run_id='` + v2OwnerRun + `' AND attempt_no=2 AND type='attempt.acquired'`).Scan(&replacementAcquireSeq); err != nil {
+		t.Fatalf("replacement owner acquire evidence: %v", err)
+	}
+	if absenceSeq >= replacementAcquireSeq {
+		t.Fatalf("replacement acquired before absence proof: absence seq=%d replacement acquire seq=%d", absenceSeq, replacementAcquireSeq)
+	}
+
 	var liveOwners int
 	if err := check.QueryRow(`SELECT count(*) FROM attempts WHERE run_id='` + v2OwnerRun + `' AND phase NOT IN ('finished','orphaned') AND wrapper_instance_id IS NOT NULL`).Scan(&liveOwners); err != nil || liveOwners != 1 {
 		t.Fatalf("live owners after replacement=%d, want exactly 1: %v", liveOwners, err)

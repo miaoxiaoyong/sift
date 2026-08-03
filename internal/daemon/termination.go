@@ -156,6 +156,18 @@ func (c *TerminationCoordinator) recoverPreparedDispatch(ctx context.Context, at
 	if !os.IsNotExist(err) || recoveryFileExists(controlPath) {
 		return "ambiguous_file_evidence", "frozen"
 	}
+	// bootstrap.json may already have been consumed while acquire is in flight.
+	// That wrapper has no control/session/permit and cannot spawn, but it is a
+	// distinct recovery observation from a dispatch that never left the worker.
+	// Observe it before fencing; regardless of whether it remains live, the
+	// generation bump makes a late acquire fail and redispatch is safe.
+	if attempt.WrapperPID > 0 && attempt.WrapperStartedAtMS > 0 && attempt.WrapperExecutable != "" && attempt.WrapperPGID > 0 && attempt.ControlNonceHash != "" {
+		_, observeErr := c.ownerIsLive(ctx, attempt)
+		if observeErr != nil {
+			return "preacquire_owner_unknown", "frozen"
+		}
+		return "preacquire_without_control", "redispatch"
+	}
 	return "no_bootstrap_or_control", "redispatch"
 }
 
@@ -181,7 +193,7 @@ func (c *TerminationCoordinator) recoverAttempt(ctx context.Context, attempt sto
 	}
 	if disposition, err := c.resolveLateFact(ctx, attempt); err != nil {
 		return "", err
-	} else if disposition == storage.AttemptRaceSupersededByFact || disposition == storage.AttemptRaceDuplicate {
+	} else if disposition == storage.AttemptRaceRunning || disposition == storage.AttemptRaceSupersededByFact || disposition == storage.AttemptRaceDuplicate {
 		return "late_fact", nil
 	}
 	live, err := c.ownerIsLive(ctx, attempt)
