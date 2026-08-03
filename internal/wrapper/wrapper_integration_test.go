@@ -247,6 +247,60 @@ func TestQualificationBinaryInPlaceMutationBetweenMaterializationAndAgentExecFai
 	}
 }
 
+// TestBackendV2HandoffResponseReplayAndSpawnOnce runs the same wrapper through
+// both real hosts. Dropping acquire, permit, and started replies models a
+// response loss after the daemon's durable commit; replay must retain the
+// original handoff tuple and PermitGate must still invoke the launcher once.
+func TestBackendV2HandoffResponseReplayAndSpawnOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Fatal("V2 backend handoff harness requires Unix process groups")
+	}
+	tmux, err := osexec.LookPath("tmux")
+	if err != nil {
+		t.Fatalf("V2 tmux backend is required: %v", err)
+	}
+	wrapperPath := buildWrapper(t)
+	for _, backend := range []string{"process", "tmux"} {
+		t.Run("V2/"+backend+"/acquire-permit-started-replay/PASS", func(t *testing.T) {
+			root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "echo spawned >> \"$SIFT_RUN_DIR/spawn-count\""})
+			server := newWrapperServer(t, root, "")
+			server.dropFirstResponse("claim.acquire", "claim.permit_spawn", "claim.started")
+			defer server.Close()
+			if backend == "process" {
+				cmd := osexec.Command(wrapperPath, bootstrap)
+				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("process wrapper replay: %v\\n%s", err, out)
+				}
+			} else {
+				host, err := runtimepkg.NewTmuxBackend(tmux, wrapperPath, filepath.Join(root, "tmux.sock"), staticTmuxBindingVerifier)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer killTmuxServer(t, tmux, host.SocketPath())
+				launch := runtimepkg.HostLaunch{Backend: "tmux", RunID: "run-1", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", WrapperPath: wrapperPath, BootstrapPath: bootstrap}
+				if _, err := host.Spawn(context.Background(), launch); err != nil {
+					t.Fatalf("tmux wrapper replay: %v", err)
+				}
+				name, err := runtimepkg.TmuxSessionName(launch.RunID, launch.AttemptNo, launch.Generation, launch.DispatchID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waitForTmuxSessionGone(t, tmux, host.SocketPath(), name)
+			}
+			if got := countLines(filepath.Join(runDir, "spawn-count")); got != 1 {
+				t.Fatalf("%s spawnCalls=%d, want 1", backend, got)
+			}
+			for _, method := range []string{"claim.acquire", "claim.permit_spawn", "claim.started"} {
+				params := server.replayedParams(method)
+				if len(params) != 2 || string(params[0]) != string(params[1]) {
+					t.Fatalf("%s %s replay params=%q, want exactly identical pair", backend, method, params)
+				}
+			}
+		})
+	}
+}
+
 func TestProductionWrapperReplaysLostPermitResponseWithSameParameters(t *testing.T) {
 	wrapperPath := buildWrapper(t)
 	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", "echo spawned >> \"$SIFT_RUN_DIR/spawn-count\""})
@@ -811,7 +865,9 @@ type wrapperServer struct {
 	reject              string
 	waitPath            string
 	dropFirstPermit     bool
+	dropFirst           map[string]bool
 	permitParams        []json.RawMessage
+	paramsByMethod      map[string][]json.RawMessage
 	requests            map[string]int
 	startedReceipt      chan struct{}
 	startedRelease      chan struct{}
@@ -871,7 +927,7 @@ func newWrapperServerWithOptions(t *testing.T, root, reject, waitPath string, dr
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &wrapperServer{listener: l, reject: reject, waitPath: waitPath, dropFirstPermit: dropFirstPermit, requests: make(map[string]int)}
+	s := &wrapperServer{listener: l, reject: reject, waitPath: waitPath, dropFirstPermit: dropFirstPermit, requests: make(map[string]int), paramsByMethod: make(map[string][]json.RawMessage)}
 	if startedBarrier {
 		s.startedReceipt = make(chan struct{})
 		s.startedRelease = make(chan struct{})
@@ -885,6 +941,23 @@ func (s *wrapperServer) requestCount(method string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.requests[method]
+}
+
+func (s *wrapperServer) dropFirstResponse(methods ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dropFirst == nil {
+		s.dropFirst = make(map[string]bool)
+	}
+	for _, method := range methods {
+		s.dropFirst[method] = true
+	}
+}
+
+func (s *wrapperServer) replayedParams(method string) []json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]json.RawMessage(nil), s.paramsByMethod[method]...)
 }
 func (s *wrapperServer) waitForPath() {
 	if s.waitPath == "" {
@@ -922,15 +995,18 @@ func (s *wrapperServer) serve() {
 			_ = json.Unmarshal(body, &req)
 			s.mu.Lock()
 			s.requests[req.Method]++
-			s.mu.Unlock()
+			s.paramsByMethod[req.Method] = append(s.paramsByMethod[req.Method], append(json.RawMessage(nil), req.Params...))
+			drop := s.dropFirst[req.Method]
+			if drop {
+				delete(s.dropFirst, req.Method)
+			}
 			if req.Method == "claim.permit_spawn" {
-				s.mu.Lock()
 				s.permitParams = append(s.permitParams, append(json.RawMessage(nil), req.Params...))
-				drop := s.dropFirstPermit && len(s.permitParams) == 1
-				s.mu.Unlock()
-				if drop {
-					return // The daemon committed but its response was lost in transit.
-				}
+				drop = drop || (s.dropFirstPermit && len(s.permitParams) == 1)
+			}
+			s.mu.Unlock()
+			if drop {
+				return // The daemon committed but its response was lost in transit.
 			}
 			var confirmStarted func()
 			if req.Method == "claim.started" && s.startedReceipt != nil {

@@ -33,7 +33,7 @@ func TestV2InterruptFivePartCrashMatrix(t *testing.T) {
 			db, _ := openTestDB(t)
 			ctx := context.Background()
 			seedCommandRun(t, db, ctx)
-			before := projectionCounts(t, db, []string{"runs", "budget_entries", "budget_counters", "interrupts", "attention_admissions", "interrupt_command_effect_bindings", "events", "outbox_operations", "interrupt_deliveries", "interrupt_command_targets"})
+			before := projectionSnapshotFor(t, db, interruptProjectionTables)
 			trigger := "v2_interrupt_crash"
 			var sql string
 			if family.kind == "update" {
@@ -54,10 +54,8 @@ func TestV2InterruptFivePartCrashMatrix(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "injected crash") {
 				t.Fatalf("EmitInterrupt error = %v", err)
 			}
-			after := projectionCounts(t, db, before.names())
-			if got, want := after, before; !equalCounts(got, want) {
-				t.Fatalf("partial interrupt projection: before=%v after=%v", want, got)
-			}
+			after := projectionSnapshotFor(t, db, interruptProjectionTables)
+			assertProjectionUnchanged(t, "interrupt "+family.name, before, after)
 		})
 	}
 }
@@ -65,18 +63,100 @@ func TestV2InterruptFivePartCrashMatrix(t *testing.T) {
 // TestV2RetryProbeSuccessCrashMatrix is deliberately a write-point matrix,
 // rather than a single trigger at the last write.  It protects the ADR-013
 // all-or-nothing successor handoff (including the durable ack).
+// TestV2InterruptFivePartSuccessProjection is the complementary happy path:
+// every projection protected above must be committed together, including the
+// Run version and attention counter that count-only crash tests used to miss.
+func TestV2InterruptFivePartSuccessProjection(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	seedCommandRun(t, db, ctx)
+	attempt := 1
+	if _, err := db.EmitInterrupt(ctx, EmitInterruptCmd{RunID: cmdRun, ExpectedRunVersion: 1, AttemptNo: &attempt, Reason: InterruptStartupStall,
+		Facts:      map[string]string{"attempt_no": "1", "generation": "1", "diagnostic_cause": "termination_unconfirmed", "isolation_consequence": "worktree held", "attempt_diagnostic_ref": "/attempt", "worktree_ref": "/worktree", "recommended_action": "retry"},
+		Generation: InterruptGeneration{AttemptNo: 1, Generation: 1}, GatePhase: GateNone, GuardrailLevel: GuardrailNone,
+		ExpiresAfterMS: 10, OnExpire: ExpireEscalate, OnMaxEscalations: ExpireHold, MaxEscalations: 1,
+		AttentionDailyQuota: interruptQuota(), DayTimezone: "UTC", Source: SourceRecovery, NowMS: testNow,
+		Channels: []InterruptChannel{{ID: "text", Capabilities: []string{"text"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range interruptProjectionTables[1:] { // runs existed before emission.
+		if got := countRows(t, db, table); got == 0 {
+			t.Fatalf("successful interrupt omitted %s", table)
+		}
+	}
+	var status string
+	var version, attention int
+	if err := db.db.QueryRow(`SELECT status,version FROM runs WHERE id=?`, cmdRun).Scan(&status, &version); err != nil || status != "waiting_human" || version != 2 {
+		t.Fatalf("successful interrupt run=%s/%d: %v", status, version, err)
+	}
+	if err := db.db.QueryRow(`SELECT consumed_value FROM budget_counters WHERE kind='attention'`).Scan(&attention); err != nil || attention != 1 {
+		t.Fatalf("successful interrupt attention counter=%d: %v", attention, err)
+	}
+}
+
+// TestV2RetryProbeSuccessProjection proves the success transaction contains
+// every write point simultaneously; CrashMatrix then aborts each one in turn.
+func TestV2RetryProbeSuccessProjection(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	seedCommandRun(t, db, ctx)
+	interruptID, nonce := emitStartupStallInterrupt(t, db, ctx)
+	env := commentEnv(t, "project", "v2-retry-success", "/sift retry "+cmdRun+" "+nonce)
+	if _, err := db.ApplyCommandEvent(ctx, ApplyCommandEventCmd{Envelope: env, Allowlist: []string{"alice"}, NowMS: testNow + 5}); err != nil {
+		t.Fatal(err)
+	}
+	var probeID string
+	if err := db.db.QueryRow(`SELECT id FROM attempt_probes WHERE interrupt_id=?`, interruptID).Scan(&probeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ApplyRetryProbeResult(ctx, RetryProbeResultCmd{InterruptID: interruptID, ProbeID: probeID, Succeeded: true, AbsenceEvidenceJSON: json.RawMessage(`{"absent":true}`), NowMS: testNow + 10}); err != nil {
+		t.Fatal(err)
+	}
+	var status, probeState, resolution, isolation, interruptStatus string
+	var version int64
+	if err := db.db.QueryRow(`SELECT status,version FROM runs WHERE id=?`, cmdRun).Scan(&status, &version); err != nil || status != "queued" || version < 3 {
+		t.Fatalf("successful retry run=%s/%d: %v", status, version, err)
+	}
+	if err := db.db.QueryRow(`SELECT state FROM attempt_probes WHERE id=?`, probeID).Scan(&probeState); err != nil || probeState != "succeeded" {
+		t.Fatalf("successful retry probe=%s: %v", probeState, err)
+	}
+	if err := db.db.QueryRow(`SELECT attempt_resolution,isolation_state FROM attempts WHERE run_id=? AND attempt_no=1`, cmdRun).Scan(&resolution, &isolation); err != nil || resolution != "retry_after_absence" || isolation != "none" {
+		t.Fatalf("successful retry old attempt=%s/%s: %v", resolution, isolation, err)
+	}
+	if err := db.db.QueryRow(`SELECT status FROM interrupts WHERE id=?`, interruptID).Scan(&interruptStatus); err != nil || interruptStatus != "closed" {
+		t.Fatalf("successful retry interrupt=%s: %v", interruptStatus, err)
+	}
+	for _, table := range retryProjectionTables {
+		if got := countRows(t, db, table); got == 0 {
+			t.Fatalf("successful retry omitted %s", table)
+		}
+	}
+	if got := countRows(t, db, "attempts WHERE run_id='"+cmdRun+"' AND attempt_no=2"); got != 1 {
+		t.Fatalf("successful retry successors=%d, want 1", got)
+	}
+	if got := countRows(t, db, "attempt_claims WHERE run_id='"+cmdRun+"' AND attempt_no=2"); got != 1 {
+		t.Fatalf("successful retry claim=%d, want 1", got)
+	}
+	if got := countRows(t, db, "outbox_operations WHERE run_id='"+cmdRun+"' AND kind IN ('launch_agent','command_ack')"); got < 2 {
+		t.Fatalf("successful retry launch/ack outbox=%d, want both", got)
+	}
+}
+
 func TestV2RetryProbeSuccessCrashMatrix(t *testing.T) {
-	families := []struct{ name, table, event string }{
-		{"probe", "attempt_probes", "UPDATE"},
-		{"old attempt resolution", "attempts", "UPDATE"},
-		{"interrupt close", "interrupts", "UPDATE"},
-		{"run queued event", "events", "INSERT"},
-		{"final outcome", "command_event_outcomes", "UPDATE"},
-		{"isolation release", "attempts", "UPDATE"},
-		{"successor attempt", "attempts", "INSERT"},
-		{"successor claim", "attempt_claims", "INSERT"},
-		{"launch operation", "outbox_operations", "INSERT"},
-		{"ack operation", "outbox_operations", "INSERT"},
+	families := []struct{ name, table, event, condition string }{
+		{"probe", "attempt_probes", "UPDATE", " WHEN NEW.state='succeeded' AND OLD.state IN ('pending','running')"},
+		// These are two distinct attempts UPDATE write points. A bare BEFORE
+		// UPDATE trigger would always abort resolution and leave release untested.
+		{"old attempt resolution", "attempts", "UPDATE", " WHEN NEW.attempt_resolution='retry_after_absence' AND OLD.attempt_resolution IS NULL"},
+		{"interrupt close", "interrupts", "UPDATE", " WHEN NEW.status='closed' AND OLD.status='open'"},
+		{"run queued event", "events", "INSERT", " WHEN NEW.type='run.transitioned'"},
+		{"final outcome", "command_event_outcomes", "UPDATE", " WHEN NEW.state='final' AND OLD.state='pending'"},
+		{"isolation release", "attempts", "UPDATE", " WHEN NEW.isolation_state='none' AND OLD.isolation_state='frozen'"},
+		{"successor attempt", "attempts", "INSERT", " WHEN NEW.attempt_no=2"},
+		{"successor claim", "attempt_claims", "INSERT", " WHEN NEW.attempt_no=2"},
+		{"launch operation", "outbox_operations", "INSERT", " WHEN NEW.kind='launch_agent'"},
+		{"ack operation", "outbox_operations", "INSERT", " WHEN NEW.kind='command_ack'"},
 	}
 	for _, family := range families {
 		t.Run(family.name, func(t *testing.T) {
@@ -92,64 +172,85 @@ func TestV2RetryProbeSuccessCrashMatrix(t *testing.T) {
 			if err := db.db.QueryRow(`SELECT id FROM attempt_probes WHERE interrupt_id=?`, interruptID).Scan(&probeID); err != nil {
 				t.Fatal(err)
 			}
+			before := projectionSnapshotFor(t, db, retryProjectionTables)
 			trigger := "v2_probe_crash"
-			condition := ""
-			if family.table == "attempts" && family.event == "INSERT" {
-				condition = " WHEN NEW.attempt_no=2"
-			}
-			if family.table == "attempts" && family.event == "UPDATE" {
-				condition = " WHEN NEW.attempt_no=1"
-			}
-			if family.name == "launch operation" {
-				condition = " WHEN NEW.kind='launch_agent'"
-			}
-			if family.name == "ack operation" {
-				condition = " WHEN NEW.kind='command_ack'"
-			}
-			mustExec(t, db, fmt.Sprintf("CREATE TRIGGER %s BEFORE %s ON %s%s BEGIN SELECT RAISE(ABORT, 'injected crash'); END", trigger, family.event, family.table, condition))
+			mustExec(t, db, fmt.Sprintf("CREATE TRIGGER %s BEFORE %s ON %s%s BEGIN SELECT RAISE(ABORT, 'injected crash'); END", trigger, family.event, family.table, family.condition))
 			_, err := db.ApplyRetryProbeResult(ctx, RetryProbeResultCmd{InterruptID: interruptID, ProbeID: probeID, Succeeded: true, AbsenceEvidenceJSON: json.RawMessage(`{"absent":true}`), NowMS: testNow + 10})
 			if err == nil || !strings.Contains(err.Error(), "injected crash") {
 				t.Fatalf("ApplyRetryProbeResult error = %v", err)
 			}
-			if got := countRows(t, db, "attempts WHERE run_id='"+cmdRun+"' AND attempt_no=2"); got != 0 {
-				t.Fatalf("successor leaked after %s crash: %d", family.name, got)
-			}
-			if status := runStatus(t, db); status != "waiting_human" {
-				t.Fatalf("run status after %s crash = %s", family.name, status)
-			}
+			after := projectionSnapshotFor(t, db, retryProjectionTables)
+			assertProjectionUnchanged(t, "retry "+family.name, before, after)
 		})
 	}
 }
 
-type projectionSnapshot map[string]int
-
-func (p projectionSnapshot) names() []string {
-	names := make([]string, 0, len(p))
-	for name := range p {
-		names = append(names, name)
-	}
-	return names
+var interruptProjectionTables = []string{
+	"runs", "budget_entries", "budget_counters", "interrupts", "attention_admissions",
+	"interrupt_command_effect_bindings", "events", "outbox_operations", "interrupt_deliveries", "interrupt_command_targets",
 }
 
-func projectionCounts(t *testing.T, db *DB, names []string) projectionSnapshot {
+// retryProjectionTables intentionally includes every ADR-013 projection rather
+// than only row counts: updates to Run/version, evidence, resolution,
+// isolation, Interrupt, counters, and outbox must roll back too.
+var retryProjectionTables = []string{
+	"runs", "attempt_probes", "attempts", "attempt_claims", "interrupts", "budget_entries", "budget_counters",
+	"events", "command_event_outcomes", "outbox_operations",
+}
+
+type projectionSnapshot map[string]string
+
+func projectionSnapshotFor(t *testing.T, db *DB, tables []string) projectionSnapshot {
 	t.Helper()
-	p := projectionSnapshot{}
-	for _, name := range names {
-		p[name] = countRows(t, db, name)
+	snapshot := make(projectionSnapshot, len(tables))
+	for _, table := range tables {
+		rows, err := db.db.Query("SELECT * FROM " + table + " ORDER BY rowid")
+		if err != nil {
+			t.Fatalf("snapshot %s: %v", table, err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		var b strings.Builder
+		for rows.Next() {
+			values := make([]any, len(columns))
+			pointers := make([]any, len(columns))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if err := rows.Scan(pointers...); err != nil {
+				_ = rows.Close()
+				t.Fatal(err)
+			}
+			for i, value := range values {
+				fmt.Fprintf(&b, "%s=%T:%v|", columns[i], value, value)
+			}
+			b.WriteByte('\n')
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		snapshot[table] = b.String()
 	}
-	return p
+	return snapshot
 }
 
-func equalCounts(a, b projectionSnapshot) bool {
-	if len(a) != len(b) {
-		return false
+func assertProjectionUnchanged(t *testing.T, name string, before, after projectionSnapshot) {
+	t.Helper()
+	if len(before) != len(after) {
+		t.Fatalf("%s projection tables changed: before=%d after=%d", name, len(before), len(after))
 	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
+	for table, want := range before {
+		if got := after[table]; got != want {
+			t.Fatalf("%s partial projection in %s:\nbefore=%s\nafter=%s", name, table, want, got)
 		}
 	}
-	return true
 }
 
 func countRows(t *testing.T, db *DB, table string) int {

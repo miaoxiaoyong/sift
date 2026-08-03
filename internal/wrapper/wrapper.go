@@ -125,7 +125,7 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 	instance, session := secret(), secret()
 	wi := map[string]any{"pid": pid, "started_at_ms": started, "executable": self, "pgid": pid}
 	base := map[string]any{"run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "dispatch_id": b.DispatchID, "wrapper_instance_id": instance, "session_candidate": session, "wrapper_identity": wi}
-	if _, err := call(ctx, b.RunDir, "claim.acquire", map[string]any{"kind": "bootstrap", "nonce": b.BootstrapNonce}, base); err != nil {
+	if _, err := callReplay(ctx, b.RunDir, "claim.acquire", map[string]any{"kind": "bootstrap", "nonce": b.BootstrapNonce}, base); err != nil {
 		return err
 	}
 	nonce := secret()
@@ -246,7 +246,7 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 	startedCtx, cancelStarted := context.WithCancel(ctx)
 	startedDone := make(chan error, 1)
 	go func() {
-		_, startedErr := call(startedCtx, b.RunDir, "claim.started", map[string]any{"kind": "wrapper_started", "session": session, "permit": permit}, sp)
+		_, startedErr := callReplay(startedCtx, b.RunDir, "claim.started", map[string]any{"kind": "wrapper_started", "session": session, "permit": permit}, sp)
 		startedDone <- startedErr
 	}()
 	var startedErr error
@@ -496,10 +496,17 @@ type rpcError struct{ code string }
 func (e *rpcError) Error() string { return "wrapper: RPC rejected: " + e.code }
 
 func callPermit(ctx context.Context, runDir string, auth, params map[string]any) (map[string]any, error) {
+	return callReplay(ctx, runDir, "claim.permit_spawn", auth, params)
+}
+
+// callReplay is deliberately limited to the three idempotent handoff verbs.
+// A response can disappear after their durable commit; retrying another RPC
+// here would turn transport loss into an unreviewed semantic retry policy.
+func callReplay(ctx context.Context, runDir, method string, auth, params map[string]any) (map[string]any, error) {
 	deadline := time.NewTimer(30 * time.Second)
 	defer deadline.Stop()
 	for {
-		result, err := call(ctx, runDir, "claim.permit_spawn", auth, params)
+		result, err := call(ctx, runDir, method, auth, params)
 		if err == nil {
 			return result, nil
 		}
