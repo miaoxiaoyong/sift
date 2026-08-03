@@ -385,8 +385,8 @@ func TestProductionTmuxWrapperKeepsAgentInWrapperProcessGroup(t *testing.T) {
 }
 
 // TestProductionTmuxWrapperCrashWindows repeats the wrapper handoff failure
-// matrix through the real tmux host. The host only accepts the wrapper; the
-// result/session assertions still come from the wrapper and run directory.
+// matrix through the real tmux host. Each early failure proves the named
+// wrapper boundary, not merely that tmux eventually removed a session.
 func TestProductionTmuxWrapperCrashWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups differ on Windows")
@@ -394,19 +394,15 @@ func TestProductionTmuxWrapperCrashWindows(t *testing.T) {
 	tmux := requireRealTmux(t)
 	wrapperPath := buildWrapper(t)
 	cases := []struct {
-		name       string
-		bootstrap  bool
-		private    bool
-		reject     string
-		executable string
-		wantSpawn  int
-		wantResult bool
+		name, reject, executable, wantRequest, wantDiagnostic string
+		bootstrap, private, wantResult                        bool
+		wantSpawn                                             int
 	}{
-		{name: "bootstrap", executable: "/bin/sh"},
-		{name: "file", bootstrap: true, private: false, executable: "/bin/sh"},
-		{name: "spawn", bootstrap: true, private: true, executable: "/not-an-agent"},
-		{name: "acquire", bootstrap: true, private: true, reject: "claim.acquire", executable: "/bin/sh"},
-		{name: "permit", bootstrap: true, private: true, reject: "claim.permit_spawn", executable: "/bin/sh"},
+		{name: "bootstrap", executable: "/bin/sh", wantDiagnostic: "no such file"},
+		{name: "file", bootstrap: true, executable: "/bin/sh", wantDiagnostic: "unsafe bootstrap file"},
+		{name: "spawn", bootstrap: true, private: true, executable: "/not-an-agent", wantDiagnostic: "runtime: launch agent"},
+		{name: "acquire", bootstrap: true, private: true, reject: "claim.acquire", executable: "/bin/sh", wantRequest: "claim.acquire"},
+		{name: "permit", bootstrap: true, private: true, reject: "claim.permit_spawn", executable: "/bin/sh", wantRequest: "claim.permit_spawn"},
 		{name: "started", bootstrap: true, private: true, reject: "claim.started", executable: "/bin/sh", wantSpawn: 1},
 		{name: "quick-exit", bootstrap: true, private: true, executable: "/bin/sh", wantSpawn: 1, wantResult: true},
 	}
@@ -417,16 +413,9 @@ func TestProductionTmuxWrapperCrashWindows(t *testing.T) {
 			if err := os.MkdirAll(runDir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			worktree := t.TempDir()
 			bootstrap := filepath.Join(runDir, "bootstrap.json")
 			if c.bootstrap {
-				data, err := json.Marshal(runtimepkg.Bootstrap{
-					SchemaVersion: 2, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor,
-					DaemonVersion: controlplane.Version, WrapperVersion: controlplane.Version, RunID: "run-1", AttemptNo: 1,
-					Generation: 1, DispatchID: "dispatch", BootstrapNonce: "aaaaaaaaaaaaaaaa", RunToken: "bbbbbbbbbbbbbbbb",
-					RunDir: runDir, WorktreePath: worktree, Agent: runtimepkg.BootstrapAgent{ID: "agent", Executable: c.executable, Args: []string{"-c", "echo spawned >> \"$SIFT_RUN_DIR/spawn-count\""}, TaskTransport: "stdin"},
-					TaskSpecSnapshotID: "task-1", TaskSpec: json.RawMessage(`{}`),
-				})
+				data, err := json.Marshal(runtimepkg.Bootstrap{SchemaVersion: 2, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor, DaemonVersion: controlplane.Version, WrapperVersion: controlplane.Version, RunID: "run-1", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", BootstrapNonce: "aaaaaaaaaaaaaaaa", RunToken: "bbbbbbbbbbbbbbbb", RunDir: runDir, WorktreePath: t.TempDir(), Agent: runtimepkg.BootstrapAgent{ID: "agent", Executable: c.executable, Args: []string{"-c", "echo spawned >> \"$SIFT_RUN_DIR/spawn-count\""}, TaskTransport: "stdin"}, TaskSpecSnapshotID: "task-1", TaskSpec: json.RawMessage(`{}`)})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -438,19 +427,20 @@ func TestProductionTmuxWrapperCrashWindows(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			var server *wrapperServer
-			if c.reject == "claim.started" {
-				server = newWrapperServerWaitFor(t, root, c.reject, filepath.Join(runDir, "spawn-count"))
-			} else {
-				server = newWrapperServer(t, root, c.reject)
-			}
+			server := newWrapperServer(t, root, c.reject)
 			defer server.Close()
-			backend, err := runtimepkg.NewTmuxBackend(tmux, wrapperPath, filepath.Join(root, "tmux.sock"), staticTmuxBindingVerifier)
+			hostWrapperPath := wrapperPath
+			diagnostic := ""
+			if c.wantDiagnostic != "" {
+				diagnostic = filepath.Join(root, "wrapper-diagnostic")
+				hostWrapperPath = instrumentTmuxWrapper(t, wrapperPath, filepath.Join(root, "wrapper-started"), diagnostic)
+			}
+			backend, err := runtimepkg.NewTmuxBackend(tmux, hostWrapperPath, filepath.Join(root, "tmux.sock"), staticTmuxBindingVerifier)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer killTmuxServer(t, tmux, backend.SocketPath())
-			launch := runtimepkg.HostLaunch{Backend: "tmux", RunID: "run-1", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", WrapperPath: wrapperPath, BootstrapPath: bootstrap}
+			launch := runtimepkg.HostLaunch{Backend: "tmux", RunID: "run-1", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", WrapperPath: hostWrapperPath, BootstrapPath: bootstrap}
 			if _, err := backend.Spawn(context.Background(), launch); err != nil {
 				t.Fatalf("tmux wrapper host: %v", err)
 			}
@@ -459,6 +449,15 @@ func TestProductionTmuxWrapperCrashWindows(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitForTmuxSessionGone(t, tmux, backend.SocketPath(), name)
+			if c.wantDiagnostic != "" {
+				waitForWrapperFile(t, filepath.Join(root, "wrapper-started"))
+				if got := readFile(t, diagnostic); !strings.Contains(strings.ToLower(got), c.wantDiagnostic) {
+					t.Fatalf("wrapper diagnostic = %q, want substring %q", got, c.wantDiagnostic)
+				}
+			}
+			if c.wantRequest != "" && server.requestCount(c.wantRequest) != 1 {
+				t.Fatalf("%s requests = %d, want 1", c.wantRequest, server.requestCount(c.wantRequest))
+			}
 			if count := countLines(filepath.Join(runDir, "spawn-count")); count != c.wantSpawn {
 				t.Fatalf("agent spawn count = %d, want %d", count, c.wantSpawn)
 			}
@@ -672,6 +671,7 @@ type wrapperServer struct {
 	waitPath            string
 	dropFirstPermit     bool
 	permitParams        []json.RawMessage
+	requests            map[string]int
 	startedReceipt      chan struct{}
 	startedRelease      chan struct{}
 	startedConfirmation chan struct{}
@@ -730,7 +730,7 @@ func newWrapperServerWithOptions(t *testing.T, root, reject, waitPath string, dr
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &wrapperServer{listener: l, reject: reject, waitPath: waitPath, dropFirstPermit: dropFirstPermit}
+	s := &wrapperServer{listener: l, reject: reject, waitPath: waitPath, dropFirstPermit: dropFirstPermit, requests: make(map[string]int)}
 	if startedBarrier {
 		s.startedReceipt = make(chan struct{})
 		s.startedRelease = make(chan struct{})
@@ -740,6 +740,11 @@ func newWrapperServerWithOptions(t *testing.T, root, reject, waitPath string, dr
 	return s
 }
 func (s *wrapperServer) Close() { s.once.Do(func() { _ = s.listener.Close() }) }
+func (s *wrapperServer) requestCount(method string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requests[method]
+}
 func (s *wrapperServer) waitForPath() {
 	if s.waitPath == "" {
 		return
@@ -774,6 +779,9 @@ func (s *wrapperServer) serve() {
 				Params json.RawMessage `json:"params"`
 			}
 			_ = json.Unmarshal(body, &req)
+			s.mu.Lock()
+			s.requests[req.Method]++
+			s.mu.Unlock()
 			if req.Method == "claim.permit_spawn" {
 				s.mu.Lock()
 				s.permitParams = append(s.permitParams, append(json.RawMessage(nil), req.Params...))
@@ -801,6 +809,17 @@ func (s *wrapperServer) serve() {
 			}
 		}()
 	}
+}
+
+func instrumentTmuxWrapper(t *testing.T, wrapper, startedPath, diagnosticPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tmux-wrapper-probe")
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\\"'\\\"'") + "'" }
+	script := "#!/bin/sh\n: > " + quote(startedPath) + "\nexec " + quote(wrapper) + " \"$@\" 2> " + quote(diagnosticPath) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func staticTmuxBindingVerifier(context.Context, runtimepkg.HostLaunch) error { return nil }

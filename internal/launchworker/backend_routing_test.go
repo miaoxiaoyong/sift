@@ -115,6 +115,129 @@ func TestLaunchDispatchBackendRouting(t *testing.T) {
 	}
 }
 
+// TestProductionBackendFreezeRoutingAndInherit follows the actual write ports
+// from normalized configuration through initial-attempt creation, a prepared
+// dispatch resume, and a retry successor. Current configuration is then
+// deliberately changed; every launch must still use the Run's frozen backend.
+func TestProductionBackendFreezeRoutingAndInherit(t *testing.T) {
+	for _, tc := range []struct {
+		name, frozenRuntime, frozenAgent, driftRuntime, driftAgent string
+		want                                                       config.Backend
+	}{
+		{name: "runtime_tmux_agent_process", frozenRuntime: "tmux", frozenAgent: "process", driftRuntime: "process", driftAgent: "tmux", want: config.BackendProcess},
+		{name: "runtime_process_agent_tmux", frozenRuntime: "process", frozenAgent: "tmux", driftRuntime: "tmux", driftAgent: "process", want: config.BackendTmux},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			nowMS := time.Now().Truncate(time.Millisecond).UnixMilli()
+			root := t.TempDir()
+			db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(root, "sift.db"), BinaryVersion: controlplane.Version, Now: time.UnixMilli(nowMS)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+
+			frozen := loadRoutingConfig(t, filepath.Join(root, "frozen"), tc.frozenRuntime, tc.frozenAgent)
+			if err := db.ActivateConfig(ctx, frozen, controlplane.Version, nowMS); err != nil {
+				t.Fatal(err)
+			}
+			frozenSnapshotID, err := db.ConfigSnapshotID(ctx, frozen.Hash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Simulate the daemon's current config drifting after the source
+			// snapshot was frozen, but before any worker consumes it.
+			drift := loadRoutingConfig(t, filepath.Join(root, "drift"), tc.driftRuntime, tc.driftAgent)
+			if err := db.ActivateConfig(ctx, drift, controlplane.Version, nowMS+1); err != nil {
+				t.Fatal(err)
+			}
+			boot, err := db.StartDaemonBoot(ctx, drift.Hash, controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), nowMS+2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			completeLaunchRecovery(t, db, boot, nowMS+3, "supervise")
+
+			// Initial dispatch must ignore the now-opposite current Agent backend.
+			createFrozenRoutingRun(t, ctx, db, "initial", frozenSnapshotID, nowMS+4)
+			assertFrozenRoute(t, db, boot, root, drift.Config.Agents, tc.want, nowMS+10)
+
+			// Leave a production-written bootstrap prepared, expire its lease, then
+			createFrozenRoutingRun(t, ctx, db, "prepared", frozenSnapshotID, nowMS+11)
+			// resume it with a new worker. Resume must retain the frozen route.
+			prepareHost := &recordingBackend{}
+			first := &Worker{DB: db, BootID: boot, WorkerID: "prepare", Root: root, Lease: time.Millisecond, Now: func() time.Time { return time.UnixMilli(nowMS + 20) }, Backends: BackendRouter{config.BackendProcess: prepareHost, config.BackendTmux: prepareHost}, Agents: drift.Config.Agents}
+			first.hooks.afterBootstrapDigest = func() error { return errors.New("crash after production bootstrap digest") }
+			if err := first.RunOnce(ctx); err == nil {
+				t.Fatal("prepared dispatch unexpectedly reached backend")
+			}
+			assertFrozenRoute(t, db, boot, root, drift.Config.Agents, tc.want, nowMS+30)
+
+			// The retry port copies the source attempt's frozen backend into its
+			// successor; no test-only update or seed participates in this path.
+			createFrozenRoutingRun(t, ctx, db, "successor", frozenSnapshotID, nowMS+31)
+			if _, err := db.RecordTerminationObservation(ctx, storage.RecordTerminationObservationCmd{RunID: "successor", AttemptNo: 1, ExpectedRunVersion: 2, ExpectedGeneration: 1, Source: storage.TerminationRetry, Absent: true, Evidence: "test absence proof", NowMS: nowMS + 40}); err != nil {
+				t.Fatal(err)
+			}
+			assertFrozenRoute(t, db, boot, root, drift.Config.Agents, tc.want, nowMS+50)
+		})
+	}
+}
+
+func loadRoutingConfig(t *testing.T, root, runtimeBackend, agentBackend string) *config.Snapshot {
+	t.Helper()
+	home, err := config.ResolveHomeWith(func() (string, error) { return root, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home.Path, config.HomeDirMode); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(repo, 0700); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "version: 1\nruntime:\n  backend: " + runtimeBackend + "\nagents:\n  - id: agent\n    executable: /bin/echo\n    backend: " + agentBackend + "\nprojects:\n  - id: project\n    repo: " + repo + "\n    forge:\n      kind: github\n      project: org/repo\n"
+	if err := os.WriteFile(config.ConfigPath(home), []byte(yaml), config.ConfigFileMode); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := config.Load(home, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func createFrozenRoutingRun(t *testing.T, ctx context.Context, db *storage.DB, runID, snapshotID string, nowMS int64) {
+	t.Helper()
+	created, err := db.CreateForgeRun(ctx, storage.CreateForgeRunCmd{RunID: runID, ProjectID: "project", ConfigSnapshotID: snapshotID, ForgeKind: "github", ForgeHost: "github.com", ForgeProjectKey: "org/repo", IssueID: runID, TriggerLabelEventID: "event-" + runID, TriggerActor: "operator", TriggerObservedAtMS: nowMS, CreatedAtMS: nowMS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assigned, err := db.SetInitialTaskSpec(ctx, storage.SetInitialTaskSpecCmd{RunID: runID, ExpectedVersion: created.Version, TaskSpecID: "task-" + runID, CanonicalJSON: []byte(`{"title":"routing"}`), ContentDigest: "digest-" + runID, Kind: "bug", AgentID: "agent", OccurredAtMS: nowMS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateInitialAttempt(ctx, storage.CreateInitialAttemptCmd{RunID: runID, ExpectedRunVersion: assigned.Version, WorktreePath: filepath.Join("/tmp", "sift-routing-"+runID), BranchName: "sift/" + runID, BaseRef: "main", BaseSHA: "base", NowMS: nowMS}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertFrozenRoute(t *testing.T, db *storage.DB, boot, root string, agents []config.Agent, want config.Backend, nowMS int64) {
+	t.Helper()
+	processHost, tmuxHost := &recordingBackend{}, &recordingBackend{}
+	worker := &Worker{DB: db, BootID: boot, WorkerID: fmt.Sprintf("route-%d", nowMS), Root: root, Lease: time.Minute, Now: func() time.Time { return time.UnixMilli(nowMS) }, Backends: BackendRouter{config.BackendProcess: processHost, config.BackendTmux: tmuxHost}, Agents: agents}
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	selected, other := processHost, tmuxHost
+	if want == config.BackendTmux {
+		selected, other = tmuxHost, processHost
+	}
+	if len(selected.calls) != 1 || len(other.calls) != 0 || selected.calls[0].launch.Backend != string(want) {
+		t.Fatalf("frozen backend route %q: selected=%d other=%d calls=%#v", want, len(selected.calls), len(other.calls), selected.calls)
+	}
+}
+
 func TestLaunchWorkerTmuxReclaimFencesDurableLeaseDrift(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

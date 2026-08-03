@@ -103,6 +103,12 @@ func (d *DB) RecordTerminationObservation(ctx context.Context, cmd RecordTermina
 			return Run{}, err
 		}
 	}
+	// A confirmed-absent attempt cannot retain a dispatchable launch operation.
+	// Normally claim.acquire already completed it; this CAS also closes the
+	// pre-acquire crash/retry path before a successor is enqueued.
+	if _, err := tx.ExecContext(ctx, `UPDATE outbox_operations SET state='stale',lease_owner=NULL,lease_expires_at_ms=NULL,completed_at_ms=?,updated_at_ms=? WHERE run_id=? AND attempt_no=? AND kind='launch_agent' AND state IN ('pending','executing')`, cmd.NowMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo); err != nil {
+		return Run{}, err
+	}
 	if cmd.Source == TerminationKill || retryCount+1 >= maxAttempts {
 		reason := "operator_kill"
 		if cmd.Source != TerminationKill {
@@ -116,7 +122,7 @@ func (d *DB) RecordTerminationObservation(ctx context.Context, cmd RecordTermina
 		if _, err := tx.ExecContext(ctx, `INSERT INTO attempts (run_id,attempt_no,phase,generation,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,isolation_state,created_at_ms,updated_at_ms) SELECT run_id,?,'pending',1,backend,agent_id,task_spec_snapshot_id,worktree_path,branch_name,base_ref,base_sha,'none',?,? FROM attempts WHERE run_id=? AND attempt_no=?`, newNo, cmd.NowMS, cmd.NowMS, cmd.RunID, cmd.AttemptNo); err != nil {
 			return Run{}, err
 		}
-		key := fmt.Sprintf("launch:%s:%d:1", cmd.RunID, newNo)
+		key := LaunchOperationKey(cmd.RunID, newNo, 1)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_claims (run_id,attempt_no,generation,launch_operation_key,created_at_ms,updated_at_ms) VALUES (?,?,1,?,?,?)`, cmd.RunID, newNo, key, cmd.NowMS, cmd.NowMS); err != nil {
 			return Run{}, err
 		}
