@@ -98,10 +98,7 @@ func TestTmuxBackendExistingSessionIsTypedConflictWithoutReuse(t *testing.T) {
 }
 
 func TestTmuxCredentialIsolationAndLiteralWrapperArgv(t *testing.T) {
-	tmux, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("real tmux is not installed")
-	}
+	tmux := requireRealTmux(t)
 	dir := t.TempDir()
 	t.Setenv("SIFT_RUN_TOKEN", "daemon-run-secret")
 	t.Setenv("GITHUB_TOKEN", "daemon-github-secret")
@@ -156,6 +153,19 @@ func TestTmuxCredentialIsolationAndLiteralWrapperArgv(t *testing.T) {
 			t.Fatalf("tmux server retained %s: %q, %v", name, out, err)
 		}
 	}
+}
+
+func requireRealTmux(t *testing.T) string {
+	t.Helper()
+	tmux, err := exec.LookPath("tmux")
+	if err == nil {
+		return tmux
+	}
+	if os.Getenv("SIFT_REQUIRE_TMUX") != "" {
+		t.Fatalf("real tmux is required but unavailable: %v", err)
+	}
+	t.Skip("real tmux is not installed")
+	return ""
 }
 
 func waitForTmuxFixture(t *testing.T, path string) {

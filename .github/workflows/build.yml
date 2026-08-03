@@ -78,6 +78,10 @@ jobs:
         with:
           go-version: stable
           cache: true
+      - name: install tmux (Linux runtime evidence)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
       - run: CGO_ENABLED=0 go vet ./...
       - name: test (CGO_ENABLED=0)
         run: CGO_ENABLED=0 go test ./...
@@ -106,6 +110,16 @@ jobs:
           go test -v -race -count=3 ./internal/storage ./internal/brain ./internal/gate -run 'Test(V2CurrentWritePortsCrashAtomicity|V4HumanStateInterleavings|V8OutboxFairnessUnderHotRun|CriticalFuseConcurrentAdmissionSerializes|AttentionQuotaConcurrentNoBorrowing|EmitInterruptT4|EmitInterruptT6|T7Scheduler|A7|V9FullFake)' | tee m5-race.log
           grep -q -- '--- PASS: TestV4HumanStateInterleavings' m5-race.log
           grep -q -- '--- PASS: TestV9FullFakeGateInterruptCommandMergeChain' m5-race.log
+      - name: M6 real tmux runtime evidence (linux)
+        run: |
+          set -o pipefail
+          SIFT_REQUIRE_TMUX=1 go test -v -race ./internal/runtime -run 'Test.*Tmux.*Binding|Test.*Tmux.*Credential|Test.*Tmux.*Environment' -count=10 | tee m6-tmux-runtime.log
+          grep -q -- '--- PASS: TestTmuxBackendBindingUsesFrozenHostLaunchNotBootstrap' m6-tmux-runtime.log
+          grep -q -- '--- PASS: TestTmuxCredentialIsolationAndLiteralWrapperArgv' m6-tmux-runtime.log
+          if grep -q -- '--- SKIP:' m6-tmux-runtime.log; then
+            echo '::error::Real tmux runtime evidence must not skip.'
+            exit 1
+          fi
       - name: V10 zero-listener evidence (linux)
         run: |
           CGO_ENABLED=0 go test -v -run TestV10ZeroNetworkListeners ./internal/controlplane/ | tee v10.log
