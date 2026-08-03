@@ -2,4 +2,5 @@
 
 package wrapper
 
-func pauseForTest(string) error { return nil }
+func pauseForTest(string) error          { return nil }
+func dumpForTest(string, map[string]any) {}

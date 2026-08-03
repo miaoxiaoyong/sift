@@ -136,6 +136,7 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 	}
 	permit := secret()
 	pp := map[string]any{"run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "wrapper_identity": wi, "control_digest": digest, "control_nonce_hash": hash(nonce), "permit_candidate": permit}
+	dumpForTest("before-permit-rpc", map[string]any{"instance": instance, "session": session, "nonce": b.BootstrapNonce, "run_token": b.RunToken, "dispatch_id": b.DispatchID, "generation": b.Generation, "wrapper_identity": wi})
 	if err := pauseForTest("before-permit-rpc"); err != nil {
 		return err
 	}
@@ -154,6 +155,10 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 	}
 	defer pty.Close()
 	if _, err := callPermit(ctx, b.RunDir, map[string]any{"kind": "wrapper_session", "session": session}, pp); err != nil {
+		return err
+	}
+	dumpForTest("after-permit-rpc", map[string]any{"instance": instance, "session": session, "permit": permit, "nonce": b.BootstrapNonce, "dispatch_id": b.DispatchID, "generation": b.Generation, "wrapper_identity": wi})
+	if err := pauseForTest("after-permit-rpc"); err != nil {
 		return err
 	}
 	task := filepath.Join(b.RunDir, "task.json")
@@ -237,6 +242,7 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 		return errors.Join(err, terminateAndReap(cmd, b.RunDir))
 	}
 	sp := map[string]any{"run_id": b.RunID, "attempt_no": b.AttemptNo, "generation": b.Generation, "wrapper_instance_id": instance, "agent_identity": ai, "control_digest": digest, "result_digest": nil}
+	dumpForTest("before-started-rpc", map[string]any{"instance": instance, "session": session, "permit": permit, "control_digest": digest, "generation": b.Generation, "dispatch_id": b.DispatchID, "agent_identity": ai})
 	if err := pauseForTest("before-started-rpc"); err != nil {
 		return err
 	}
@@ -267,6 +273,10 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 	cancelStarted()
 	if startedErr != nil {
 		return errors.Join(startedErr, terminateAndReap(cmd, b.RunDir))
+	}
+	dumpForTest("after-started-rpc", map[string]any{"instance": instance, "session": session, "permit": permit, "control_digest": digest, "generation": b.Generation, "dispatch_id": b.DispatchID, "agent_identity": ai})
+	if err := pauseForTest("after-started-rpc"); err != nil {
+		return err
 	}
 	stopHeartbeat := make(chan struct{})
 	defer close(stopHeartbeat)

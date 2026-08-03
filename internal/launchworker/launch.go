@@ -102,6 +102,7 @@ type Worker struct {
 }
 
 type workerHooks struct {
+	afterClaim           func() error
 	afterPrepare         func() error
 	afterBootstrapWrite  func() error
 	afterBootstrapDigest func() error
@@ -123,6 +124,11 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	claim, err := w.DB.ClaimLaunchOperation(ctx, w.BootID, w.WorkerID, now().UnixMilli(), lease.Milliseconds())
 	if err != nil || claim == nil {
 		return err
+	}
+	if w.hooks.afterClaim != nil {
+		if err := w.hooks.afterClaim(); err != nil {
+			return err
+		}
 	}
 	agent, err := w.DB.FrozenLaunchAgent(ctx, *claim, now().UnixMilli())
 	if err != nil {

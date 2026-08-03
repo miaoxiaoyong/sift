@@ -3,6 +3,7 @@
 package wrapper
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"syscall"
@@ -35,4 +36,23 @@ func pauseForTest(point string) error {
 	for {
 		_ = syscall.Kill(os.Getpid(), syscall.SIGSTOP)
 	}
+}
+
+// dumpForTest appends the live handoff tuple at a boundary so crash-harness
+// tests can replay the exact same RPC parameters after killing the wrapper.
+func dumpForTest(point string, fields map[string]any) {
+	path := os.Getenv("SIFT_WRAPPER_TEST_DUMP")
+	if path == "" {
+		return
+	}
+	b, err := json.Marshal(map[string]any{"point": point, "fields": fields})
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
 }

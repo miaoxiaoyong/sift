@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestV2InterruptFivePartCrashMatrix exercises every durable write family in
@@ -30,7 +34,7 @@ func TestV2InterruptFivePartCrashMatrix(t *testing.T) {
 	}
 	for _, family := range families {
 		t.Run(family.name, func(t *testing.T) {
-			db, _ := openTestDB(t)
+			db, _ := openCrashMatrixDB(t)
 			ctx := context.Background()
 			seedCommandRun(t, db, ctx)
 			before := projectionSnapshotFor(t, db, interruptProjectionTables)
@@ -67,7 +71,7 @@ func TestV2InterruptFivePartCrashMatrix(t *testing.T) {
 // every projection protected above must be committed together, including the
 // Run version and attention counter that count-only crash tests used to miss.
 func TestV2InterruptFivePartSuccessProjection(t *testing.T) {
-	db, _ := openTestDB(t)
+	db, _ := openCrashMatrixDB(t)
 	ctx := context.Background()
 	seedCommandRun(t, db, ctx)
 	attempt := 1
@@ -98,7 +102,7 @@ func TestV2InterruptFivePartSuccessProjection(t *testing.T) {
 // TestV2RetryProbeSuccessProjection proves the success transaction contains
 // every write point simultaneously; CrashMatrix then aborts each one in turn.
 func TestV2RetryProbeSuccessProjection(t *testing.T) {
-	db, _ := openTestDB(t)
+	db, _ := openCrashMatrixDB(t)
 	ctx := context.Background()
 	seedCommandRun(t, db, ctx)
 	interruptID, nonce := emitStartupStallInterrupt(t, db, ctx)
@@ -113,7 +117,7 @@ func TestV2RetryProbeSuccessProjection(t *testing.T) {
 	if _, err := db.ApplyRetryProbeResult(ctx, RetryProbeResultCmd{InterruptID: interruptID, ProbeID: probeID, Succeeded: true, AbsenceEvidenceJSON: json.RawMessage(`{"absent":true}`), NowMS: testNow + 10}); err != nil {
 		t.Fatal(err)
 	}
-	var status, probeState, resolution, isolation, interruptStatus string
+	var status, probeState, resolution, isolation, interruptStatus, oldPhase string
 	var version int64
 	if err := db.db.QueryRow(`SELECT status,version FROM runs WHERE id=?`, cmdRun).Scan(&status, &version); err != nil || status != "queued" || version < 3 {
 		t.Fatalf("successful retry run=%s/%d: %v", status, version, err)
@@ -121,11 +125,20 @@ func TestV2RetryProbeSuccessProjection(t *testing.T) {
 	if err := db.db.QueryRow(`SELECT state FROM attempt_probes WHERE id=?`, probeID).Scan(&probeState); err != nil || probeState != "succeeded" {
 		t.Fatalf("successful retry probe=%s: %v", probeState, err)
 	}
-	if err := db.db.QueryRow(`SELECT attempt_resolution,isolation_state FROM attempts WHERE run_id=? AND attempt_no=1`, cmdRun).Scan(&resolution, &isolation); err != nil || resolution != "retry_after_absence" || isolation != "none" {
-		t.Fatalf("successful retry old attempt=%s/%s: %v", resolution, isolation, err)
+	if err := db.db.QueryRow(`SELECT attempt_resolution,isolation_state,phase FROM attempts WHERE run_id=? AND attempt_no=1`, cmdRun).Scan(&resolution, &isolation, &oldPhase); err != nil || resolution != "retry_after_absence" || isolation != "none" || oldPhase != "orphaned" {
+		t.Fatalf("successful retry old attempt=%s/%s/%s: %v", resolution, isolation, oldPhase, err)
 	}
 	if err := db.db.QueryRow(`SELECT status FROM interrupts WHERE id=?`, interruptID).Scan(&interruptStatus); err != nil || interruptStatus != "closed" {
 		t.Fatalf("successful retry interrupt=%s: %v", interruptStatus, err)
+	}
+	// The success transaction emits exactly one new run.transitioned event and
+	// exactly one new final command.event; both must coexist with the initial.
+	var transitioned, commandEvents int
+	if err := db.db.QueryRow(`SELECT count(*) FROM events WHERE run_id=? AND type='run.transitioned' AND occurred_at_ms=?`, cmdRun, testNow+10).Scan(&transitioned); err != nil || transitioned != 1 {
+		t.Fatalf("successful retry run.transitioned events=%d: %v", transitioned, err)
+	}
+	if err := db.db.QueryRow(`SELECT count(*) FROM events WHERE type='command.event'`).Scan(&commandEvents); err != nil || commandEvents < 2 {
+		t.Fatalf("successful retry command.event count=%d, want initial+final: %v", commandEvents, err)
 	}
 	for _, table := range retryProjectionTables {
 		if got := countRows(t, db, table); got == 0 {
@@ -144,15 +157,20 @@ func TestV2RetryProbeSuccessProjection(t *testing.T) {
 }
 
 func TestV2RetryProbeSuccessCrashMatrix(t *testing.T) {
+	// Every write point of probeSucceededTx/spawnNextAttemptTx gets its own
+	// distinguishable trigger condition. The two events INSERTs and the three
+	// attempts UPDATEs are separate real write points; a shared trigger would
+	// always abort the first and leave the later ones untested.
 	families := []struct{ name, table, event, condition string }{
 		{"probe", "attempt_probes", "UPDATE", " WHEN NEW.state='succeeded' AND OLD.state IN ('pending','running')"},
-		// These are two distinct attempts UPDATE write points. A bare BEFORE
-		// UPDATE trigger would always abort resolution and leave release untested.
 		{"old attempt resolution", "attempts", "UPDATE", " WHEN NEW.attempt_resolution='retry_after_absence' AND OLD.attempt_resolution IS NULL"},
 		{"interrupt close", "interrupts", "UPDATE", " WHEN NEW.status='closed' AND OLD.status='open'"},
-		{"run queued event", "events", "INSERT", " WHEN NEW.type='run.transitioned'"},
+		{"run transition", "runs", "UPDATE", " WHEN NEW.status='queued' AND OLD.status='waiting_human'"},
+		{"run transitioned event", "events", "INSERT", " WHEN NEW.type='run.transitioned'"},
+		{"final command event", "events", "INSERT", " WHEN NEW.type='command.event'"},
 		{"final outcome", "command_event_outcomes", "UPDATE", " WHEN NEW.state='final' AND OLD.state='pending'"},
 		{"isolation release", "attempts", "UPDATE", " WHEN NEW.isolation_state='none' AND OLD.isolation_state='frozen'"},
+		{"old attempt orphaned", "attempts", "UPDATE", " WHEN NEW.phase='orphaned' AND OLD.phase IN ('pending','starting','spawning','running')"},
 		{"successor attempt", "attempts", "INSERT", " WHEN NEW.attempt_no=2"},
 		{"successor claim", "attempt_claims", "INSERT", " WHEN NEW.attempt_no=2"},
 		{"launch operation", "outbox_operations", "INSERT", " WHEN NEW.kind='launch_agent'"},
@@ -160,7 +178,7 @@ func TestV2RetryProbeSuccessCrashMatrix(t *testing.T) {
 	}
 	for _, family := range families {
 		t.Run(family.name, func(t *testing.T) {
-			db, _ := openTestDB(t)
+			db, _ := openCrashMatrixDB(t)
 			ctx := context.Background()
 			seedCommandRun(t, db, ctx)
 			interruptID, nonce := emitStartupStallInterrupt(t, db, ctx)
@@ -260,4 +278,61 @@ func countRows(t *testing.T, db *DB, table string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// crashTemplate is a process-wide migrated database image. Under -race a full
+// Open+migrate costs seconds per subtest, which makes the required -count=10
+// matrix runs infeasible; cloning a checkpointed template keeps every subtest
+// on an independent real database without paying migration cost per cell.
+var crashTemplate struct {
+	once sync.Once
+	path string
+	err  error
+}
+
+func openCrashMatrixDB(t *testing.T) (*DB, string) {
+	t.Helper()
+	crashTemplate.once.Do(func() {
+		dir, err := os.MkdirTemp("", "sift-v2-crash-template-")
+		if err != nil {
+			crashTemplate.err = err
+			return
+		}
+		path := filepath.Join(dir, "sift.db")
+		db, err := Open(context.Background(), OpenConfig{Path: path, BinaryVersion: "test-binary", Now: time.UnixMilli(testNow)})
+		if err != nil {
+			crashTemplate.err = err
+			return
+		}
+		if _, err := db.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+			_ = db.Close()
+			crashTemplate.err = err
+			return
+		}
+		if err := db.Close(); err != nil {
+			crashTemplate.err = err
+			return
+		}
+		crashTemplate.path = path
+	})
+	if crashTemplate.err != nil {
+		t.Fatalf("crash matrix template: %v", crashTemplate.err)
+	}
+	path := filepath.Join(t.TempDir(), "sift-home", "sift.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(crashTemplate.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(context.Background(), OpenConfig{Path: path, BinaryVersion: "test-binary", Now: time.UnixMilli(testNow)})
+	if err != nil {
+		t.Fatalf("Open cloned crash template: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db, path
 }
