@@ -14,6 +14,7 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/hooks"
 	"github.com/miaoxiaoyong/sift/internal/policy"
+	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
@@ -36,7 +37,7 @@ func doctor(ctx context.Context, offline bool, home config.Home) map[string]any 
 	} else {
 		cfg = snapshot.Config
 		checks = append(checks, executableChecks(ctx, cfg)...)
-		checks = append(checks, processGroupChecks(cfg)...)
+		checks = append(checks, processGroupChecks(ctx, filepath.Join(home.Path, "sift.db"), cfg)...)
 	}
 	dbPath := filepath.Join(home.Path, "sift.db")
 	checks = append(checks, sqliteCheck(ctx, dbPath))
@@ -98,10 +99,23 @@ func executableChecks(ctx context.Context, cfg *config.Config) []doctorCheck {
 	return checks
 }
 
-func processGroupChecks(cfg *config.Config) []doctorCheck {
+func processGroupChecks(ctx context.Context, dbPath string, cfg *config.Config) []doctorCheck {
 	checks := make([]doctorCheck, 0, len(cfg.Agents))
 	for _, agent := range cfg.Agents {
-		checks = append(checks, doctorCheck{ID: "process-group:" + agent.ID, Level: "warning", Message: "process-group qualification is not verified", Details: map[string]any{"agent_id": agent.ID, "status": "process-group-unverified"}})
+		q, err := runtimepkg.BuildQualification(runtimepkg.QualificationInput{AgentID: agent.ID, Args: agent.Args, TaskTransport: string(agent.TaskTransport), VersionArgs: agent.VersionArgs, Executable: agent.Executable})
+		if err != nil {
+			checks = append(checks, doctorCheck{ID: "process-group:" + agent.ID, Level: "warning", Message: "process-group qualification identity is unavailable", Details: map[string]any{"agent_id": agent.ID, "status": "process-group-unverified", "reason": "identity_incomplete"}})
+			continue
+		}
+		status, reason, statusErr := storage.ReadTopologyQualificationStatus(ctx, dbPath, q.Key)
+		if statusErr != nil {
+			status, reason = "process-group-unverified", "no-record"
+		}
+		level, message := "warning", "process-group qualification is not verified"
+		if status == "process-group-verified" {
+			level, message = "ok", "process-group qualification is verified"
+		}
+		checks = append(checks, doctorCheck{ID: "process-group:" + agent.ID, Level: level, Message: message, Details: map[string]any{"agent_id": agent.ID, "status": status, "reason": reason, "qualification_key": q.Key, "method_version": q.MethodVersion, "executable_path": q.ExecutablePath, "goos": q.GOOS, "goarch": q.GOARCH}})
 	}
 	return checks
 }

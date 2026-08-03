@@ -11,19 +11,20 @@ import (
 // before it performs process IO. It deliberately includes attempts from failed
 // Runs: Run status is not evidence that an execution body is gone.
 type RecoveryAttempt struct {
-	RunID              string
-	RunVersion         int64
-	AttemptNo          int
-	Generation         int
-	Phase              string
-	AgentID            string
-	WrapperPID         int
-	WrapperStartedAtMS int64
-	WrapperExecutable  string
-	WrapperPGID        int
-	ControlNonceHash   string
-	HeartbeatAtMS      int64
-	IsolationState     string
+	RunID                    string
+	RunVersion               int64
+	AttemptNo                int
+	Generation               int
+	Phase                    string
+	AgentID                  string
+	TopologyQualificationKey string
+	WrapperPID               int
+	WrapperStartedAtMS       int64
+	WrapperExecutable        string
+	WrapperPGID              int
+	ControlNonceHash         string
+	HeartbeatAtMS            int64
+	IsolationState           string
 }
 
 type RecoveryLaunchOperation struct {
@@ -189,12 +190,12 @@ func (d *DB) StartupRecoveryPending(ctx context.Context, bootID string) ([]Recov
 }
 
 const recoveryAttemptColumns = `a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.agent_id,
-	COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
+	COALESCE(a.topology_qualification_key,''),COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
 	COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state`
 
 func scanRecoveryAttempt(rows *sql.Rows) (RecoveryAttempt, error) {
 	var a RecoveryAttempt
-	err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState)
+	err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.AgentID, &a.TopologyQualificationKey, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState)
 	return a, err
 }
 

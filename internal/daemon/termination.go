@@ -23,19 +23,20 @@ import (
 // before the storage port; every outcome, including an identity failure, is
 // persisted through RecordTerminationObservation.
 type TerminationCoordinator struct {
-	DB                   *storage.DB
-	Terminator           runtimepkg.Terminator
-	Runtime              config.Runtime
-	ProcessGroupVerified func(agentID string) bool
-	Now                  func() time.Time
-	AttentionDailyQuota  map[storage.InterruptSeverity]int
-	DayTimezone          string
-	DailySummaryAt       string
-	CriticalWindowMS     int64
-	CriticalTotalLimit   int
-	CriticalPerRunLimit  int
-	Channels             []storage.InterruptChannel
-	ControlRoot          string
+	DB                    *storage.DB
+	Terminator            runtimepkg.Terminator
+	Runtime               config.Runtime
+	ProcessGroupVerified  func(agentID string) bool
+	ProcessGroupQualified func(key string) bool
+	Now                   func() time.Time
+	AttentionDailyQuota   map[storage.InterruptSeverity]int
+	DayTimezone           string
+	DailySummaryAt        string
+	CriticalWindowMS      int64
+	CriticalTotalLimit    int
+	CriticalPerRunLimit   int
+	Channels              []storage.InterruptChannel
+	ControlRoot           string
 }
 
 func (c *TerminationCoordinator) Recover(ctx context.Context) error {
@@ -352,7 +353,13 @@ func (c *TerminationCoordinator) terminate(ctx context.Context, attempt storage.
 	if err != nil {
 		return fmt.Errorf("controlled termination: %w", err)
 	}
-	if result.Absent && c.ProcessGroupVerified != nil && c.ProcessGroupVerified(attempt.AgentID) {
+	qualified := false
+	if c.ProcessGroupQualified != nil && attempt.TopologyQualificationKey != "" {
+		qualified = c.ProcessGroupQualified(attempt.TopologyQualificationKey)
+	} else if c.ProcessGroupVerified != nil {
+		qualified = c.ProcessGroupVerified(attempt.AgentID)
+	}
+	if result.Absent && qualified {
 		cmd.Absent, cmd.Evidence = true, "verified process group absent"
 	} else if result.Cause == runtimepkg.TerminationIdentityUnknown {
 		cmd.DiagnosticCause = "process_identity_unknown"

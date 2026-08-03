@@ -204,6 +204,37 @@ func TmuxSocketPath(identity string) string {
 	return filepath.Join(os.TempDir(), "sift-tmux-"+hex.EncodeToString(sum[:12])+".sock")
 }
 
+type BackendSessionState string
+
+const (
+	SessionNotApplicable BackendSessionState = "not_applicable"
+	SessionPresent       BackendSessionState = "present"
+	SessionAbsent        BackendSessionState = "absent"
+	SessionUnknown       BackendSessionState = "unknown"
+)
+
+type BackendSessionObservation struct {
+	Backend        string
+	State          BackendSessionState
+	BindingDigest  string
+	DiagnosticCode string
+}
+
+// ObserveBackendSession returns a diagnostic observation. It never changes
+// durable execution state and never treats a session as ownership evidence.
+func ObserveBackendSession(ctx context.Context, tmuxPath, socketPath, name, digest string) BackendSessionObservation {
+	if tmuxPath == "" {
+		return BackendSessionObservation{Backend: "tmux", State: SessionUnknown, DiagnosticCode: "tmux_unavailable"}
+	}
+	if err := exec.CommandContext(ctx, tmuxPath, "-f", "/dev/null", "-S", socketPath, "has-session", "-t", "="+name).Run(); err != nil {
+		return BackendSessionObservation{Backend: "tmux", State: SessionAbsent, BindingDigest: digest, DiagnosticCode: "session_absent"}
+	}
+	if err := ObserveTmuxSession(ctx, tmuxPath, socketPath, name, digest); err != nil {
+		return BackendSessionObservation{Backend: "tmux", State: SessionUnknown, BindingDigest: digest, DiagnosticCode: "session_binding_mismatch"}
+	}
+	return BackendSessionObservation{Backend: "tmux", State: SessionPresent, BindingDigest: digest, DiagnosticCode: "session_present"}
+}
+
 // ObserveTmuxSession proves that an exact, durably-derived session is live and
 // bound to the expected launch. It never attaches, adopts, or changes tmux.
 func ObserveTmuxSession(ctx context.Context, tmuxPath, socketPath, name, digest string) error {

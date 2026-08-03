@@ -60,7 +60,11 @@ func main() {
 	}
 	termination := &daemon.TerminationCoordinator{
 		DB: db, Terminator: runtime.Terminator{Inspector: runtime.PlatformProcessInspector{}, Signaler: runtime.UnixProcessSignaler{}}, Runtime: snapshot.Config.Runtime,
-		ControlRoot:         home.Path,
+		ControlRoot: home.Path,
+		ProcessGroupQualified: func(key string) bool {
+			ok, err := db.ProcessGroupQualified(ctx, key)
+			return err == nil && ok
+		},
 		AttentionDailyQuota: attentionQuota(snapshot.Config.Attention.DailyQuota), DayTimezone: snapshot.Config.Attention.DayTimezone, DailySummaryAt: snapshot.Config.Attention.DailySummaryAt, CriticalWindowMS: snapshot.Config.Attention.CriticalFuse.Window.Milliseconds(), CriticalTotalLimit: snapshot.Config.Attention.CriticalFuse.TotalLimit, CriticalPerRunLimit: snapshot.Config.Attention.CriticalFuse.PerRunLimit, Channels: interruptChannels(snapshot.Config.Attention), Now: time.Now,
 	}
 	// startup_stall retry probe process-check shares the same process inspector
