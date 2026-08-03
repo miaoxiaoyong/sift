@@ -206,6 +206,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	launch := runtime.HostLaunch{
 		Backend: string(backend), RunID: dispatch.RunID, AttemptNo: dispatch.AttemptNo,
 		Generation: dispatch.Generation, DispatchID: dispatch.DispatchID, BootstrapPath: path,
+		OperationID: claim.ID, LeaseOwner: claim.LeaseOwner, LeaseExpiresAtMS: claim.LeaseExpiresAtMS,
 	}
 	if w.Backends != nil {
 		host, ok := w.Backends[backend]

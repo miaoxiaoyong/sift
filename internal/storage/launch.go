@@ -21,6 +21,29 @@ func (d *DB) RevalidateLaunchLease(ctx context.Context, claim ClaimedOperation, 
 	return err
 }
 
+// VerifyLaunchBinding rechecks the durable launch lease and its immutable
+// attempt binding after an external host has observed an existing session.
+// The tmux observation is not authority on its own: a reclaimed lease or
+// changed dispatch must turn the old host call into a stale-worker error.
+func (d *DB) VerifyLaunchBinding(ctx context.Context, operationID, leaseOwner string, leaseExpiresAtMS int64, runID string, attemptNo, generation int, dispatchID, backend string, nowMS int64) error {
+	if operationID == "" || leaseOwner == "" || leaseExpiresAtMS <= 0 || runID == "" || attemptNo < 1 || generation < 1 || dispatchID == "" || backend == "" || nowMS <= 0 {
+		return ErrRejectedStaleWorker
+	}
+	var one int
+	err := d.db.QueryRowContext(ctx, `SELECT 1
+		FROM outbox_operations o
+		JOIN attempts a ON a.run_id=o.run_id AND a.attempt_no=o.attempt_no
+		JOIN attempt_claims c ON c.run_id=a.run_id AND c.attempt_no=a.attempt_no
+		WHERE o.id=? AND o.kind='launch_agent' AND o.operation_key=? AND o.state='executing'
+		  AND o.lease_owner=? AND o.lease_expires_at_ms=? AND o.lease_expires_at_ms>=?
+		  AND a.run_id=? AND a.attempt_no=? AND a.generation=? AND a.backend=?
+		  AND c.generation=? AND c.dispatch_id=?`, operationID, LaunchOperationKey(runID, attemptNo, generation), leaseOwner, leaseExpiresAtMS, nowMS, runID, attemptNo, generation, backend, generation, dispatchID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrRejectedStaleWorker
+	}
+	return err
+}
+
 // RecordBootstrapDigest binds the durable dispatch to the exact bootstrap
 // bytes written by its lease owner. Recovery must not infer a credential file
 // from hashes alone.

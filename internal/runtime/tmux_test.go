@@ -7,9 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func staticBindingVerifier(context.Context, HostLaunch) error { return nil }
 
 func TestTmuxSessionIdentityIsDigestOnlyAndDeterministic(t *testing.T) {
 	name, err := TmuxSessionName("run with spaces;$(touch pwned)", 2, 7, "dispatch/secret-ish")
@@ -41,7 +44,7 @@ func TestTmuxBackendBindingUsesFrozenHostLaunchNotBootstrap(t *testing.T) {
 	if err := os.WriteFile(bootstrap, []byte(`{"run_id":"replaced","attempt_no":9,"generation":9,"dispatch_id":"replaced"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	backend, err := NewTmuxBackend(tmux, "/wrapper path/sift-agent-wrapper", filepath.Join(dir, "tmux.sock"))
+	backend, err := NewTmuxBackend(tmux, "/wrapper path/sift-agent-wrapper", filepath.Join(dir, "tmux.sock"), staticBindingVerifier)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +92,7 @@ func TestTmuxBackendReclaimConvergesToVerifiedBinding(t *testing.T) {
 	if err := os.WriteFile(tmux, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
-	backend, err := NewTmuxBackend(tmux, wrapper, filepath.Join(dir, "tmux.sock"))
+	backend, err := NewTmuxBackend(tmux, wrapper, filepath.Join(dir, "tmux.sock"), staticBindingVerifier)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +121,72 @@ func TestTmuxBackendReclaimConvergesToVerifiedBinding(t *testing.T) {
 	agentStarts, err := os.ReadFile(bootstrap + ".agent")
 	if err != nil || string(agentStarts) != "agent\n" {
 		t.Fatalf("agent starts = %q, %v; want exactly one", agentStarts, err)
+	}
+}
+
+func TestTmuxBackendReclaimRevalidatesDurableBindingBeforeConvergence(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		drift bool
+	}{
+		{name: "durable_claim_drift", drift: true},
+		{name: "unchanged_binding_converges", drift: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tmux := filepath.Join(dir, "tmux")
+			wrapper := filepath.Join(dir, "wrapper")
+			bootstrap := filepath.Join(dir, "bootstrap.json")
+			launch := HostLaunch{Backend: "tmux", RunID: "run", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", WrapperPath: wrapper, BootstrapPath: bootstrap, OperationID: "op", LeaseOwner: "owner", LeaseExpiresAtMS: 100}
+			name, err := TmuxSessionName(launch.RunID, launch.AttemptNo, launch.Generation, launch.DispatchID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := strings.TrimPrefix(name, "sift-")
+			script := "#!/bin/sh\ncase \"$5\" in\nnew-session) exit 1 ;;\nhas-session) exit 0 ;;\nshow-environment) printf 'SIFT_TMUX_BINDING=" + digest + "\\n' ;;\nlist-panes) printf '0\\n' ;;\nshow-options) printf 'off\\n' ;;\n*) exit 99 ;;\nesac\n"
+			if err := os.WriteFile(tmux, []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(bootstrap, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var claimValid atomic.Bool
+			claimValid.Store(!tc.drift)
+			leaseErr := errors.New("durable launch binding moved")
+			verifier := func(context.Context, HostLaunch) error {
+				close(entered)
+				<-release
+				if !claimValid.Load() {
+					return leaseErr
+				}
+				return nil
+			}
+			backend, err := NewTmuxBackend(tmux, wrapper, filepath.Join(dir, "tmux.sock"), verifier)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := make(chan error, 1)
+			go func() {
+				_, err := backend.Spawn(context.Background(), launch)
+				result <- err
+			}()
+			<-entered
+			if tc.drift {
+				claimValid.Store(false)
+			}
+			close(release)
+			err = <-result
+			if tc.drift {
+				var conflict *TmuxSessionConflictError
+				if !errors.As(err, &conflict) || !errors.Is(err, leaseErr) {
+					t.Fatalf("drifted Spawn error = %v, want typed conflict wrapping lease error", err)
+				}
+			} else if err != nil {
+				t.Fatalf("unchanged Spawn error = %v, want reclaim convergence", err)
+			}
+		})
 	}
 }
 
@@ -164,6 +233,42 @@ func TestTmuxBackendRejectsExistingSessionWithoutExactLiveBinding(t *testing.T) 
 	}
 }
 
+func TestTmuxBackendRejectsRealSessionWithSecondWindow(t *testing.T) {
+	tmux := requireRealTmux(t)
+	dir := t.TempDir()
+	wrapper := filepath.Join(dir, "wrapper")
+	bootstrap := filepath.Join(dir, "bootstrap.json")
+	fixture := "#!/bin/sh\n: > \"$1.ready\"\nsleep 5\n"
+	if err := os.WriteFile(wrapper, []byte(fixture), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bootstrap, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewTmuxBackend(tmux, wrapper, filepath.Join(dir, "tmux.sock"), staticBindingVerifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.command(context.Background(), "kill-server").Run()
+	launch := HostLaunch{Backend: "tmux", RunID: "run", AttemptNo: 1, Generation: 1, DispatchID: "dispatch", WrapperPath: wrapper, BootstrapPath: bootstrap}
+	if _, err := backend.Spawn(context.Background(), launch); err != nil {
+		t.Fatal(err)
+	}
+	waitForTmuxFixture(t, bootstrap+".ready")
+	name, err := TmuxSessionName(launch.RunID, launch.AttemptNo, launch.Generation, launch.DispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := backend.command(context.Background(), "new-window", "-d", "-t", "="+name, "--", "/bin/sh", "-c", "sleep 5").CombinedOutput(); err != nil {
+		t.Fatalf("new-window output=%q: %v", out, err)
+	}
+	_, err = backend.Spawn(context.Background(), launch)
+	var conflict *TmuxSessionConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("second-window Spawn error = %v, want typed tmux session conflict", err)
+	}
+}
+
 func TestTmuxCredentialIsolationAndLiteralWrapperArgv(t *testing.T) {
 	tmux := requireRealTmux(t)
 	dir := t.TempDir()
@@ -179,7 +284,7 @@ func TestTmuxCredentialIsolationAndLiteralWrapperArgv(t *testing.T) {
 	if err := os.WriteFile(bootstrap, []byte(`{"run_token":"`+token+`"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	backend, err := NewTmuxBackend(tmux, wrapper, filepath.Join(dir, "tmux.sock"))
+	backend, err := NewTmuxBackend(tmux, wrapper, filepath.Join(dir, "tmux.sock"), staticBindingVerifier)
 	if err != nil {
 		t.Fatal(err)
 	}

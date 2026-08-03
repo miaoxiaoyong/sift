@@ -3,6 +3,7 @@ package launchworker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,6 +110,78 @@ func TestLaunchDispatchBackendRouting(t *testing.T) {
 				if !strings.Contains(string(call.contents), `"replaced"`) {
 					t.Fatalf("test did not replace bootstrap after digest: %q", call.contents)
 				}
+			}
+		})
+	}
+}
+
+func TestLaunchWorkerTmuxReclaimFencesDurableLeaseDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		drift bool
+	}{
+		{name: "lease_switch_before_convergence", drift: true},
+		{name: "unchanged_lease_converges", drift: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			nowMS := time.Now().Truncate(time.Millisecond).UnixMilli()
+			root := t.TempDir()
+			db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(root, "sift.db"), BinaryVersion: controlplane.Version, Now: time.UnixMilli(nowMS)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if err := db.SeedProjectForTest(ctx, "cfg", "project", nowMS); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.SeedLaunchRunForTest(ctx, "run-1", "project", "cfg", nowMS, "/worktree/baseline"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecForTest(ctx, `UPDATE attempts SET backend='tmux' WHERE run_id='run-1' AND attempt_no=1`); err != nil {
+				t.Fatal(err)
+			}
+			boot, err := db.StartDaemonBoot(ctx, "hash-cfg", controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), nowMS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			completeLaunchRecovery(t, db, boot, nowMS+1, "supervise")
+
+			tmux := filepath.Join(root, "tmux")
+			wrapper := filepath.Join(root, "wrapper")
+			if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			stateScript := "#!/bin/sh\ncase \"$5\" in\nnew-session) printf '%s\\n' \"${10}\" > \"$0.binding\"; exit 1 ;;\nhas-session) exit 0 ;;\nshow-environment) binding=$(sed 's/^SIFT_TMUX_BINDING=//' \"$0.binding\"); printf 'SIFT_TMUX_BINDING=%s\\n' \"$binding\" ;;\nlist-panes) printf '0\\n' ;;\nshow-options) printf 'off\\n' ;;\n*) exit 99 ;;\nesac\n"
+			if err := os.WriteFile(tmux, []byte(stateScript), 0755); err != nil {
+				t.Fatal(err)
+			}
+			verify := func(ctx context.Context, launch runtime.HostLaunch) error {
+				if tc.drift {
+					if _, err := db.ExecForTest(ctx, `UPDATE outbox_operations SET lease_owner='replacement' WHERE id=?`, launch.OperationID); err != nil {
+						return err
+					}
+				}
+				return db.VerifyLaunchBinding(ctx, launch.OperationID, launch.LeaseOwner, launch.LeaseExpiresAtMS, launch.RunID, launch.AttemptNo, launch.Generation, launch.DispatchID, launch.Backend, nowMS+5)
+			}
+			tmuxBackend, err := runtime.NewTmuxBackend(tmux, wrapper, filepath.Join(root, "tmux.sock"), verify)
+			if err != nil {
+				t.Fatal(err)
+			}
+			worker := &Worker{
+				DB: db, BootID: boot, WorkerID: "lease-worker", Root: root, Lease: time.Minute,
+				Now:      func() time.Time { return time.UnixMilli(nowMS + 4) },
+				Backends: BackendRouter{config.BackendTmux: TmuxBackend{Backend: tmuxBackend}},
+				Agents:   []config.Agent{{ID: "agent", Executable: "/bin/echo", Args: []string{"baseline"}, TaskTransport: config.TaskTransportStdin, Backend: config.BackendTmux}},
+			}
+			err = worker.RunOnce(ctx)
+			if tc.drift {
+				var conflict *runtime.TmuxSessionConflictError
+				if !errors.As(err, &conflict) || !errors.Is(err, storage.ErrRejectedStaleWorker) {
+					t.Fatalf("drifted launch error = %v, want tmux conflict wrapping stale lease", err)
+				}
+			} else if err != nil {
+				t.Fatalf("unchanged launch error = %v, want reclaim convergence", err)
 			}
 		})
 	}

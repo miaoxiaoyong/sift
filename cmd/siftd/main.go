@@ -98,7 +98,10 @@ func main() {
 	if usesTmux(snapshot.Config) {
 		// This is the process-level tmux startup probe. Process-only
 		// configurations intentionally never resolve or require tmux.
-		tmux, backendErr := runtime.NewTmuxBackend(tmuxDiagnostics.TmuxPath, backend.WrapperPath(), filepath.Join(home.Path, "tmux.sock"))
+		verifyBinding := func(ctx context.Context, launch runtime.HostLaunch) error {
+			return db.VerifyLaunchBinding(ctx, launch.OperationID, launch.LeaseOwner, launch.LeaseExpiresAtMS, launch.RunID, launch.AttemptNo, launch.Generation, launch.DispatchID, launch.Backend, time.Now().UnixMilli())
+		}
+		tmux, backendErr := runtime.NewTmuxBackend(tmuxDiagnostics.TmuxPath, backend.WrapperPath(), filepath.Join(home.Path, "tmux.sock"), verifyBinding)
 		if backendErr != nil {
 			fatal(backendErr)
 		}
