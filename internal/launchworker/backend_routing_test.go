@@ -3,8 +3,10 @@ package launchworker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -86,8 +88,8 @@ func TestLaunchDispatchBackendRouting(t *testing.T) {
 			if tc.backend == config.BackendTmux {
 				selected, other = tmuxHost, processHost
 			}
-			if len(selected.calls) == 0 {
-				t.Fatalf("%s host was not called", tc.backend)
+			if len(selected.calls) != 1 {
+				t.Fatalf("%s host calls = %d, want exactly 1", tc.backend, len(selected.calls))
 			}
 			if len(other.calls) != 0 {
 				t.Fatalf("%s host calls = %d, want 0", currentBackend, len(other.calls))
@@ -137,20 +139,55 @@ func assertBaselineProcessBootstrap(t *testing.T, call recordingBackendCall, roo
 	if call.path != wantPath {
 		t.Fatalf("process bootstrap path = %q, want %q", call.path, wantPath)
 	}
-	var bootstrap runtime.Bootstrap
-	if err := json.Unmarshal(call.contents, &bootstrap); err != nil {
+	if err := compareProcessBootstrapGolden(call.contents, root, agent); err != nil {
 		t.Fatal(err)
 	}
-	if bootstrap.SchemaVersion != 2 || bootstrap.ProtocolMajor != controlplane.ProtocolMajor || bootstrap.ProtocolMinor != controlplane.ProtocolMinor ||
-		bootstrap.DaemonVersion != controlplane.Version || bootstrap.WrapperVersion != controlplane.Version ||
-		bootstrap.RunID != "run-1" || bootstrap.AttemptNo != 1 || bootstrap.Generation != 1 ||
-		bootstrap.RunDir != filepath.Dir(call.path) || bootstrap.WorktreePath != "/worktree/baseline" ||
-		bootstrap.Agent.ID != agent.ID || bootstrap.Agent.Executable != agent.Executable ||
-		bootstrap.Agent.TaskTransport != string(agent.TaskTransport) ||
-		!argsEqual(bootstrap.Agent.Args, agent.Args) || bootstrap.TaskSpecSnapshotID != "task-run-1" ||
-		string(bootstrap.TaskSpec) != `{"title":"crash-suite"}` || bootstrap.DispatchID == "" || bootstrap.BootstrapNonce == "" || bootstrap.RunToken == "" {
-		t.Fatalf("process bootstrap = %#v, want baseline launch contents", bootstrap)
+}
+
+// TestProcessBootstrapGoldenRejectsByteDrift keeps the regression assertion
+// honest: semantic JSON decoding must not make either kind of byte drift pass.
+func TestProcessBootstrapGoldenRejectsByteDrift(t *testing.T) {
+	root := "/worktree/root"
+	agent := config.Agent{ID: "agent", Executable: "/bin/echo", Args: []string{"baseline bootstrap"}, TaskTransport: config.TaskTransportStdin}
+	golden := processBootstrapGolden(root, agent)
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte) []byte
+	}{
+		{name: "unknown_json_field", mutate: func(b []byte) []byte {
+			return append([]byte(strings.TrimSuffix(string(b), "}")), []byte(`,"unknown":true}`)...)
+		}},
+		{name: "trailing_byte", mutate: func(b []byte) []byte { return append(b, '\n') }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := compareProcessBootstrapGolden(tc.mutate(golden), root, agent); err == nil {
+				t.Fatalf("negative sample unexpectedly matched byte-for-byte golden")
+			}
+		})
 	}
+}
+
+var dynamicBootstrapSlot = regexp.MustCompile(`"(dispatch_id|bootstrap_nonce|run_token)":"[^"]*"`)
+
+func compareProcessBootstrapGolden(contents []byte, root string, agent config.Agent) error {
+	want := processBootstrapGolden(root, agent)
+	got := dynamicBootstrapSlot.ReplaceAll(contents, []byte(`"$1":"<dynamic>"`))
+	want = dynamicBootstrapSlot.ReplaceAll(want, []byte(`"$1":"<dynamic>"`))
+	if string(got) != string(want) {
+		return fmt.Errorf("process bootstrap bytes differ from pre-router golden: got %q, want %q", got, want)
+	}
+	return nil
+}
+
+// processBootstrapGolden is the explicit pre-router wire baseline. Only the
+// three dispatch-generated slots are normalized by compareProcessBootstrapGolden.
+func processBootstrapGolden(root string, agent config.Agent) []byte {
+	quote := func(v string) string {
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
+	args, _ := json.Marshal(agent.Args)
+	return []byte(fmt.Sprintf(`{"schema_version":2,"protocol_major":%d,"protocol_minor":%d,"daemon_version":%s,"wrapper_version":%s,"run_id":"run-1","attempt_no":1,"generation":1,"dispatch_id":"<dynamic>","bootstrap_nonce":"<dynamic>","run_token":"<dynamic>","run_dir":%s,"worktree_path":"/worktree/baseline","agent":{"id":%s,"executable":%s,"args":%s,"task_transport":%s},"task_spec_snapshot_id":"task-run-1","task_spec":{"title":"crash-suite"}}`, controlplane.ProtocolMajor, controlplane.ProtocolMinor, quote(controlplane.Version), quote(controlplane.Version), quote(filepath.Join(root, "runs", "run-1", "attempts", "1")), quote(agent.ID), quote(agent.Executable), args, quote(string(agent.TaskTransport))))
 }
 
 type recordingBackend struct {
