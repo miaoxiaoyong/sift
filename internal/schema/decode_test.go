@@ -17,11 +17,6 @@ type localClosed struct {
 
 type localMode string
 
-const (
-	localModeA localMode = "a"
-	localModeB localMode = "b"
-)
-
 func (localMode) EnumValues() []string { return []string{"a", "b"} }
 
 // localValidated demonstrates the optional Validator hook.

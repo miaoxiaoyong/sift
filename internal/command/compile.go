@@ -1,9 +1,6 @@
 package command
 
-import (
-	"fmt"
-	"sort"
-)
+import "sort"
 
 // CommandOutcome is the closed set of final command outcomes (§6.1 mapping
 // table). It is the "outcome" field of CommandEventV1 and the "disposition" of
@@ -238,7 +235,3 @@ func SortedOptions(options []string) []string {
 	sort.Strings(out)
 	return out
 }
-
-// ErrCompile is reserved for future hard failures; Compile currently returns a
-// CompileResult with a rejection Outcome rather than an error.
-var errCompile = fmt.Errorf("command: compile")

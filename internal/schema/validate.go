@@ -123,10 +123,6 @@ func jsonFieldName(f reflect.StructField) (string, bool) {
 	return name, true
 }
 
-func isRequired(f reflect.StructField) bool {
-	return parseRules(f.Tag.Get("sift")).required
-}
-
 func isNilPointer(v reflect.Value) bool {
 	return v.Kind() == reflect.Pointer && v.IsNil()
 }

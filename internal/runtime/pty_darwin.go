@@ -71,7 +71,10 @@ func NewPTY() (*PTY, error) {
 	return &PTY{Master: os.NewFile(uintptr(masterFD), "/dev/ptmx"), Slave: os.NewFile(uintptr(slaveFD), slaveName)}, nil
 }
 
+// ioctlNoArg is kept as a small compatibility wrapper because x/sys/unix does
+// not expose the Darwin PTY unlock/grant requests as typed operations.
 func ioctlNoArg(fd int, req uintptr) error {
+	//lint:ignore SA1019 Darwin's PTY requests have no x/sys wrapper.
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), req, 0)
 	if errno != 0 {
 		return errno
@@ -79,7 +82,10 @@ func ioctlNoArg(fd int, req uintptr) error {
 	return nil
 }
 
+// ioctlPtr is needed for TIOCPTYGNAME, for which x/sys/unix does not expose a
+// typed Darwin wrapper.
 func ioctlPtr(fd int, req uintptr, arg unsafe.Pointer) error {
+	//lint:ignore SA1019 Darwin's arbitrary-pointer ioctl has no x/sys wrapper.
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), req, uintptr(arg))
 	if errno != 0 {
 		return errno

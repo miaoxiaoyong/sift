@@ -141,7 +141,6 @@ func (o T1Output) Validate() error {
 		return nil // required checks report first
 	}
 	questions := *o.Questions
-	trimmed := make([]string, 0, len(questions))
 	seen := map[string]bool{}
 	for _, q := range questions {
 		if q != strings.TrimSpace(q) {
@@ -151,7 +150,6 @@ func (o T1Output) Validate() error {
 			return errors.New("brain: T1 questions contain duplicates")
 		}
 		seen[q] = true
-		trimmed = append(trimmed, q)
 	}
 	dup := o.PossibleDuplicateRunID.Present && !o.PossibleDuplicateRunID.Null && o.PossibleDuplicateRunID.Value != ""
 	switch *o.Disposition {

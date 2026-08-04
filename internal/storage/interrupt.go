@@ -867,7 +867,7 @@ func chargeAttentionTx(ctx context.Context, tx *sql.Tx, cmd EmitInterruptCmd, s 
 	}
 	id := newID()
 	key := "interrupt-charge:" + mustGenerationKey(cmd)
-	bucket := cmd.NowMS
+	var bucket int64
 	{
 		loc := time.Local
 		if cmd.DayTimezone != "" && cmd.DayTimezone != "local" {

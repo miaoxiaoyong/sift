@@ -646,8 +646,7 @@ func (a *Adapter) FindChangeForCreateOperation(ctx context.Context, p ProjectRef
 		body   string
 	}
 	var candidates []candidate
-	var allErr error
-	allErr = a.pages(ctx, p, path, func(raw []byte) error {
+	allErr := a.pages(ctx, p, path, func(raw []byte) error {
 		var xs []rawChange
 		if json.Unmarshal(raw, &xs) != nil {
 			return &ClassifiedError{Class: ErrContractViolation, Summary: "invalid change list"}

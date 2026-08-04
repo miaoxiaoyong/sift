@@ -52,7 +52,7 @@ func TestRecoveryRowsBackendParameterized(t *testing.T) {
 	for _, backend := range []string{"process", "tmux"} {
 		for _, row := range recoveryRows() {
 			t.Run(backend+"/"+row.name, func(t *testing.T) {
-				db, raw, attempt, now := seedRecoveryCoordinator(t, row.phase, row.heartbeat(time.UnixMilli(10_000)))
+				db, raw, _, now := seedRecoveryCoordinator(t, row.phase, row.heartbeat(time.UnixMilli(10_000)))
 				if _, err := raw.Exec(`UPDATE attempts SET backend=? WHERE run_id='run'`, backend); err != nil {
 					t.Fatal(err)
 				}

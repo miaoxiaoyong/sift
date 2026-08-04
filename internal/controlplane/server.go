@@ -112,9 +112,10 @@ func loadOperatorToken(path string) (string, error) {
 		}
 		name := tmp.Name()
 		defer os.Remove(name)
-		if err := tmp.Chmod(0o600); err == nil {
-			_, err = tmp.WriteString(token + "\n")
+		if err := tmp.Chmod(0o600); err != nil {
+			return "", err
 		}
+		_, err = tmp.WriteString(token + "\n")
 		if err == nil {
 			err = tmp.Sync()
 		}

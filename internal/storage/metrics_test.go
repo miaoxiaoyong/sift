@@ -264,7 +264,6 @@ func TestMetricsGateConfusionAndHITL(t *testing.T) {
 func TestMetricsAttentionQuota(t *testing.T) {
 	db, _ := openTestDB(t)
 	ctx := context.Background()
-	const now = testNow
 	// Two buckets for 'normal'; the later one is current.
 	if _, err := db.ExecForTest(ctx, `INSERT INTO budget_counters(kind,scope,scope_id,bucket_start_ms,bucket_end_ms,limit_value,consumed_value,version,updated_at_ms) VALUES('attention','severity','normal',100,200,5,2,1,100)`); err != nil {
 		t.Fatal(err)
