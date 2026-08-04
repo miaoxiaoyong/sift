@@ -431,11 +431,13 @@ func detachedTopologyObservation(t *testing.T) runtimepkg.ProcessTopologyObserva
 		deadline := time.Now().Add(time.Second)
 		for time.Now().Before(deadline) {
 			if b, err := os.ReadFile(path); err == nil {
-				pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-				if err != nil {
-					t.Fatal(err)
+				raw := string(b)
+				if strings.HasSuffix(raw, "\n") {
+					pid, err := strconv.Atoi(strings.TrimSpace(raw))
+					if err == nil && pid > 0 {
+						return pid
+					}
 				}
-				return pid
 			}
 			time.Sleep(time.Millisecond)
 		}
