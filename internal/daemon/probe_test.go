@@ -166,6 +166,19 @@ func TestProbeTickObserveAbsentDrivesSuccessArm(t *testing.T) {
 	if runStatus != "queued" {
 		t.Fatalf("run status = %s, want queued (ADR-013 retry_after_absence)", runStatus)
 	}
+	var attempts, claims, launches int
+	if err := raw.QueryRow(`SELECT count(*) FROM attempts WHERE run_id=? AND attempt_no>1`, probeRunID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.QueryRow(`SELECT count(*) FROM attempt_claims WHERE run_id=? AND attempt_no>1`, probeRunID).Scan(&claims); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.QueryRow(`SELECT count(*) FROM outbox_operations WHERE run_id=? AND kind='launch_agent'`, probeRunID).Scan(&launches); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 || claims != 1 || launches != 1 {
+		t.Fatalf("success successor attempts/claims/launches=%d/%d/%d", attempts, claims, launches)
+	}
 	var isolation string
 	if err := raw.QueryRow(`SELECT isolation_state FROM attempts WHERE run_id=? AND attempt_no=1`, probeRunID).Scan(&isolation); err != nil {
 		t.Fatal(err)
@@ -186,6 +199,10 @@ func TestProbeTickObserveAbsentDrivesSuccessArm(t *testing.T) {
 func TestProbeTickObservePresentDrivesFailureArm(t *testing.T) {
 	now := time.UnixMilli(20_000)
 	db, raw, interruptID, probeID := seedProbeFixture(t, now)
+	var nonce string
+	if err := raw.QueryRow(`SELECT nonce FROM interrupts WHERE id=?`, interruptID).Scan(&nonce); err != nil {
+		t.Fatal(err)
+	}
 	id := probeIdentity()
 	inspector := &probeInspector{observations: []runtimepkg.ProcessObservation{
 		{Exists: true, ProcessIdentity: runtimepkg.ProcessIdentity{PID: id.PID, PGID: id.PGID, StartedAtMS: id.StartedAtMS, Executable: id.Executable, ControlNonceHash: id.ControlNonceHash}},
@@ -204,15 +221,40 @@ func TestProbeTickObservePresentDrivesFailureArm(t *testing.T) {
 	if state != "failed" {
 		t.Fatalf("probe state = %s, want failed (absence_unconfirmed)", state)
 	}
-	var status, dispatch, closeReason string
-	if err := raw.QueryRow(`SELECT status,dispatch_state,COALESCE(close_reason,'') FROM interrupts WHERE id=?`, interruptID).Scan(&status, &dispatch, &closeReason); err != nil {
+	var status, dispatch, closeReason, nextNonce string
+	var escalation int
+	if err := raw.QueryRow(`SELECT status,dispatch_state,COALESCE(close_reason,''),nonce,escalation_count FROM interrupts WHERE id=?`, interruptID).Scan(&status, &dispatch, &closeReason, &nextNonce, &escalation); err != nil {
 		t.Fatal(err)
 	}
-	if status != "open" || closeReason != "" {
-		t.Fatalf("interrupt = %s/%s, want open/unclosed", status, closeReason)
+	if status != "open" || closeReason != "" || dispatch != "batched" || escalation != 0 || nextNonce == nonce {
+		t.Fatalf("interrupt = status=%s dispatch=%s close=%s escalation=%d nonce_rotated=%v", status, dispatch, closeReason, escalation, nextNonce != nonce)
 	}
-	if dispatch != "batched" {
-		t.Fatalf("dispatch_state = %s, want batched (escalate-able below cap)", dispatch)
+	var resolution string
+	if err := raw.QueryRow(`SELECT COALESCE(attempt_resolution,'') FROM attempts WHERE run_id=? AND attempt_no=1`, probeRunID).Scan(&resolution); err != nil {
+		t.Fatal(err)
+	}
+	if resolution != "" {
+		t.Fatalf("probe failure wrote resolution marker %q", resolution)
+	}
+	var version int64
+	if err := raw.QueryRow(`SELECT version FROM interrupts WHERE id=?`, interruptID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AdvanceInterrupt(context.Background(), storage.AdvanceInterruptCmd{InterruptID: interruptID, ExpectedVersion: version, ExpectedNonce: nextNonce, Kind: storage.AdvanceExpiry, NowMS: now.UnixMilli() + 20}); err != nil {
+		t.Fatal(err)
+	}
+	var heldReason string
+	if err := raw.QueryRow(`SELECT version,nonce FROM interrupts WHERE id=?`, interruptID).Scan(&version, &nextNonce); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AdvanceInterrupt(context.Background(), storage.AdvanceInterruptCmd{InterruptID: interruptID, ExpectedVersion: version, ExpectedNonce: nextNonce, Kind: storage.AdvanceExpiry, NowMS: now.UnixMilli() + 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.QueryRow(`SELECT status,dispatch_state,escalation_count,COALESCE(held_reason,'') FROM interrupts WHERE id=?`, interruptID).Scan(&status, &dispatch, &escalation, &heldReason); err != nil {
+		t.Fatal(err)
+	}
+	if status != "open" || heldReason != "max_escalations" || escalation != 1 {
+		t.Fatalf("cap projection=%s/%s/%d/%s", status, dispatch, escalation, heldReason)
 	}
 	var isolation string
 	if err := raw.QueryRow(`SELECT isolation_state FROM attempts WHERE run_id=? AND attempt_no=1`, probeRunID).Scan(&isolation); err != nil {

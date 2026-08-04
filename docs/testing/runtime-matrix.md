@@ -27,7 +27,7 @@ summary: M6 V2/V4 逐行证据清单
 | V2-11 | 极快退出/result 与 started 交错 | `TestProductionWrapperCrashWindows` fast-exit cases、`TestBackendV2CrashHarness/V2/*/fast-exit`（Agent SIGKILL 后 result 收敛、重放零 spawn） | covered #849 | 两 backend |
 | V2-12 | Interrupt 五件事：Run、Interrupt、charge、event、publication 全有或全无 | `TestV2InterruptFivePartCrashMatrix`（run/charge/interrupt/admission/binding/event/outbox/delivery/target） | covered #849 | backend-neutral，一次；逐写点 SQLite crash injection |
 | V2-13 | `startup_stall` retry success：absence、旧 attempt/resolution/isolation、Interrupt、Run、新 attempt/claim/launch/ack/event 全有或全无 | `TestV2RetryProbeSuccessCrashMatrix`（probe/old attempt resolution/interrupt close/run UPDATE/run.transitioned event/final command.event/final outcome/isolation release/old attempt orphaned/successor/claim/launch/ack 十三个可区分写点）、`TestV2RetryProbeSuccessProjection`、`TestBackendV2OwnerReplacementBarriers`（disappearance→frozen→retry→replacement owner=1 生产路径） | covered #849 | backend-neutral，一次；逐写点 SQLite crash injection |
-| V2-14 | 人工态 started/result 与决定的单事务仲裁 | `TestV4HumanStateInterleavings`、`TestResolveAttemptRace*` | partial → #851 | 两 backend 交错调用图 |
+| V2-14 | 人工态 started/result 与决定的单事务仲裁 | `TestV4HumanStateInterleavings`、`TestV4HumanStateInterleavingsIncludeLateResults`、`TestResolveAttemptRace*` | covered #851 | 两 backend 交错调用图 |
 | V2-15 | hooks baseline/recheck 与诊断写入崩溃重放 | `TestHookCrashReplayRecordsOneStableDrift`、`TestHookRecheckCrashReplayReceiptIsAtomicWithTerminalResult` | existing #848 | backend-neutral |
 
 ## 2. DESIGN §10.1 恢复矩阵逐行
@@ -69,14 +69,14 @@ R01–R19 的 tmux 参数化断言只能读取 wrapper/control/result/process-gr
 | X07 | process group 拒绝消失 | `TestTerminatorEscalatesAndFailsClosedWhenGroupRemains` | partial → #850 exact one Interrupt/waiting_human/frozen |
 | X08 | identity unknown | `TestPlatformProcessInspectorRequiresMatchingControlNonce`、`TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible` | partial → #850 exact convergence |
 | X09 | process/tmux 下 Agent direct child + same PGID，PTY active | `TestProductionWrapperKeepsAgentInWrapperProcessGroup`、`TestProductionTmuxWrapperKeepsAgentInWrapperProcessGroup` | existing | process/tmux production topology；tmux 需显式安装 |
-| X10 | kill 无 successor；retry absence 后仅一个 successor | `TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`、`TestTerminationRetryAfterAbsenceCreatesNewAttempt` | partial → #851 双 backend/并发 |
-| X11 | Interrupt commit 前/后 × started，decision 前/后 × started | `TestV4HumanStateInterleavings` 四格 storage seam | partial → #851 两 backend生产调用图 |
-| X12 | X11 的 late `result.json` 对称重放 | `TestResolveAttemptRacePersistsLateResult`/decision tests，未四格 | planned #851 |
-| X13 | retry probe failure 保持同一 Interrupt、nonce rotate、escalation+1、cap hold、无 marker | `TestStartupStallProbeFailure*`、`TestAdvanceInterruptStartupStallAtLimitHoldsRatherThanAutoRejecting` | partial → #851 生产 discoverer合取 |
-| X14 | retry probe success 原子回 queued + 一个 attempt | happy path + V2-13 单边界 | planned #849（逐写 crash）/#851（双 backend结果） |
+| X10 | kill 无 successor；retry absence 后仅一个 successor | `TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`、`TestTerminationRetryAfterAbsenceCreatesNewAttempt`、`TestProbeTickObserveAbsentDrivesSuccessArm` | covered #851 双 backend/并发 |
+| X11 | Interrupt commit 前/后 × started，decision 前/后 × started | `TestV4HumanStateInterleavings`、`TestV4HumanStateInterleavingsIncludeLateResults` 四格 storage seam | covered #851 两 backend生产调用图 |
+| X12 | X11 的 late `result.json` 对称重放 | `TestV4HumanStateInterleavingsIncludeLateResults`、`TestResolveAttemptRacePersistsLateResult` | covered #851 |
+| X13 | retry probe failure 保持同一 Interrupt、nonce rotate、escalation+1、cap hold、无 marker | `TestProbeTickObservePresentDrivesFailureArm`、`TestStartupStallProbeFailure*`、`TestAdvanceInterruptStartupStallAtLimitHoldsRatherThanAutoRejecting` | covered #851 生产 discoverer合取 |
+| X14 | retry probe success 原子回 queued + 一个 attempt | `TestProbeTickObserveAbsentDrivesSuccessArm`、V2-13 crash matrix | covered #851 双 backend结果；crash cuts #849 |
 | X15 | probe in flight 时合法 started fact wins + invalidation ack | attempt race/command tests局部 | planned #851 |
 | X16 | detached descendant → process-group-unverified，禁自动 retry | 无 production qualification store/gate | planned #847/#850 |
-| X17 | timeout/recovery/kill/retry 四 discoverer 并发 | concurrent Interrupt generation seam局部 | planned #851 |
+| X17 | timeout/recovery/kill/retry 四 discoverer 并发 | `TestV4FourDiscoverersConverge` | covered #851 |
 | X18 | 每个真实 Agent CLI/version topology qualification | 无正式记录 | M7；M6 #847 只交 synthetic mechanism |
 | X19 | observational attach 不参与 adjudication | 无 | planned #846；#852 检视 recovery 零引用 attach/session result |
 | X20 | backend session binding response-loss/同名冲突 | 无 | planned #845/#849 |
