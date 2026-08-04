@@ -127,7 +127,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - [x] CAS 拒绝过期命令；非法转移报错并记审计事件（`ErrRejectedStale` + `auditIllegalTransition`）
 - [x] transactional outbox、稳定 operation key、提交唤醒与退避框架（`internal/storage/outbox.go` + `wakeOutbox` + `BackoffPolicy`）
 - [x] 三组具名调度器与提交唤醒生产接线：`siftd` 分别驱动 Intake / Supervisor / Outbox；事务提交经 `DB.SetOutboxWakeup` 立即推进 outbox，独立时钟只在 `startSchedulers` 集中创建。`cmd/siftd/main_test.go` 以 production wiring factory 逐边验证 Intake 的未到期 `NextPollAtMS` skip、Supervisor/Outbox 不串联，且 outbox startup sweep drained 后 `EnqueueOperation` / `EmitInterrupt` 经 commit wake 到真实 comment worker；该生产接线已由 [#302](https://github.com/miaoxiaoyong/sift/issues/302) 的 [rereview-2 PASS](reviews/2026-07-29-m5-scheduler-wakeup-302-rereview-2-pi-gpt-5.6-sol.md) 核销。`internal/storage/scheduler_test.go` 只覆盖 storage seam 的并发 wake 收敛，不声称 production 职责/步频证据。此前 `scheduler.go` 的 Intake/Reconciler/Supervisor 仅为骨架，不是生产步频证据
-- [ ] V1 与 V2 核心崩溃注入；当前已实现的状态、Forge Run/receipt、Task Spec、Brain trace/token、outbox claim/completion 写入族均以末写入点 abort 注入验证全有或全无（`TestV1RunTransitionGraphAndCAS`、`TestV2TransitionCrashAtomicity`、`TestV2CurrentWritePortsCrashAtomicity`）；项目健康、Forge 收费、Interrupt 推进与 delivery 在各自写端口实现时补入同一门禁，不得以 schema 代替崩溃证据
+- [x] V1 与 V2 核心崩溃注入；当前已实现的状态、Forge Run/receipt、Task Spec、Brain trace/token、outbox claim/completion 写入族均以末写入点 abort 注入验证全有或全无（`TestV1RunTransitionGraphAndCAS`、`TestV2TransitionCrashAtomicity`、`TestV2CurrentWritePortsCrashAtomicity`）；项目健康、Forge 收费、Interrupt 推进与 delivery 在各自写端口实现时补入同一门禁，不得以 schema 代替崩溃证据。M6 继续闭合的 V2-12/V2-13/V2-15 具名证据见 [`docs/testing/runtime-matrix.md`](testing/runtime-matrix.md)：`TestV2InterruptFivePartCrashMatrix`、`TestV2RetryProbeSuccessCrashMatrix`、`TestHookCrashReplayRecordsOneStableDrift` / `TestHookRecheckCrashReplayReceiptIsAtomicWithTerminalResult`。
 
 #### 1.4 配置与启动生命周期
 
@@ -235,7 +235,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - [x] 双平台 fixture 跑同一契约套件：分页、actor 缺失、限流、平台差异、marker、merge CAS
 - [x] intake 评论 worker 的远端成功/本地提交前崩溃重放不重复发送；旧 generation 回复只审计、不推进状态
 - [x] V11 首段：fake/fixture 中让 `waiting_human` Run 的 Change 被外部合并，断言 `done + gate_bypassed`
-- [ ] V11 在 M4 闭合 Gate/审计/Ledger 分类，在 M5 闭合指标分母
+- [x] V11 后续闭合 Gate/审计/Ledger 分类与指标分母（M4/M5 阶段证据；[M5 phase gate](reviews/2026-07-31-m5-phase-gate-835-claude-sonnet.md)；非 M6 推断）
 
 ### 先写 spec
 
@@ -289,7 +289,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 3.4 恢复矩阵与资格门控
 
-- [ ] **逐行实现并逐行测试 DESIGN §10.1 完整恢复矩阵**；本文不复制行级全集
+- [x] 逐行实现并逐行测试 DESIGN §10.1 完整恢复矩阵；M6 双后端具名清单见 [`docs/testing/runtime-matrix.md`](testing/runtime-matrix.md) R01–R19，使用 `TestRecoveryRowsBackendParameterized`。
 - [x] 恢复扫描先于启动 operation lease 回收
 - [x] 凡执行体可能存活却要判 orphaned，必须先走同一受控终止流程
 - [x] 进程身份至少校验 PID + 启动时间 + 可执行路径 + control nonce；不得向不确定 PID 发信号
@@ -328,7 +328,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 #### 3.7 受控终止
 
 - [x] 恢复、operator kill/retry、超时共用：身份确认 → 有界信号升级 → 复核消失
-- [ ] 确认消失后的结局按来源区分：恢复按重试策略、retry 新建 attempt、kill 不新建且 Run failed
+- [x] 确认消失后的结局按来源区分：恢复按重试策略、retry 新建 attempt、kill 不新建且 Run failed；双后端证据见 `TestV4KillRetryBackends`、`TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`、`TestTerminationRetryAfterAbsenceCreatesNewAttempt`。
 - [x] 未确认消失统一进入 §3.6；人的后续 retry/reject/hold 在 M5 接通
 
 > 证据（PR #122 / #120 / #129）：`internal/runtime/termination.go`——唯一终止入口 `Terminator.Terminate` 落「身份确认 → 有界信号升级（TERM→KILL，按 grace）→ 复核消失」核心：先 `Observe` 校验完整身份（PID+启动时间+可执行路径+PGID+control nonce hash，`subtle.ConstantTimeCompare` 常量时间比对），身份不符即 `TerminationIdentityUnknown` 且**绝不发信号**（拒绝把 PID 复用当消失证明），有界 recheck 复核；`UnixProcessSignaler.SignalGroup(-pgid)` 对进程组发信号，wrapper 内 agent 后代一并终止。`internal/storage/termination.go`——`RecordTerminationObservation` 是三源共享的持久化端口，`Source∈{recovery,retry,kill}`：`Absent=true` 时释放隔离并按来源分诊结局（kill→Run `failed`/`operator_kill` 不建新 attempt；recovery/retry 在 `retry_count+1<max_attempts` 时建 pending 新 attempt 并补 launch operation，耗尽则 `attempts_exhausted` failed），落 `termination.absence_confirmed` 事件；`Absent=false` 时走 §3.6 `EmitInterrupt(startup_stall)` + 隔离冻结。覆盖 `TestTerminatorSignalsOnlyVerifiedIdentityAndProvesAbsence`/`TestTerminatorNeverSignalsReusedOrUncertainPID`/`TestTerminatorEscalatesAndFailsClosedWhenGroupRemains`、`TestTerminationUnconfirmedFreezesAndMakesStartupStallVisible`/`TestTerminationKillAfterAbsenceFailsWithoutNewAttempt`/`TestTerminationRetryAfterAbsenceCreatesNewAttempt`。**调用接线（PR #129，闭合原「端口已有、调用未接」）**：`internal/daemon/termination.go` 的 `TerminationCoordinator` 是三源到受控终止的唯一应用层桥——`Recover`（启动期先于 worker）、`Timeout`（supervisor tick 的 stale heartbeat）、`Operator`（`ops.kill`/`ops.retry` 经 `controlplane.SetOperatorAction`）汇入同一 `terminate` → `Terminator.Terminate` → `RecordTerminationObservation`，故 §3.7 的共享调用桥已接；未确认分支生产可达，第 1/3 项勾选，确认消失分诊因下述资格谓词缺口保持 `[ ]`；覆盖 `TestOperatorKillAndRetryDelegateToTerminationCoordinator`、`TestRecoveryAttemptsIncludesNonterminalAttemptRegardlessOfRunState` 及上列 Terminator/termination 测试。
@@ -337,7 +337,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 3.8 hooks 与 doctor
 
-- [ ] hooks 指纹覆盖 `.git/config`、`core.hooksPath` 值和最终目录内容；Agent 结束后复核（`internal/hooks`；doctor 对当前基线做漂移报告）
+- [x] hooks 指纹覆盖 `.git/config`、`core.hooksPath` 值和最终目录内容；Agent 结束后复核（`internal/hooks`；doctor 对当前基线做漂移报告）——#848 `365a9fa` 接通生产基线与完成复核，崩溃重放证据见 `TestHookCrashReplayRecordsOneStableDrift` / `TestHookRecheckCrashReplayReceiptIsAtomicWithTerminalResult`。
 - [x] `doctor` 报 hooks 漂移、隔离 attempt/未回收 worktree、process-group 资格与 `unsafe-local`
 
 > 证据（PR #134）：`internal/hooks/fingerprint.go`——`Capture` 覆盖 `.git/config` 摘要、`core.hooksPath` 取值、effective hooks 目录与目录内容摘要并合成 `Digest`（`TestCaptureIncludesConfigHooksPathAndDirectory`）。`internal/controlplane/doctor.go`——`hookChecks` 经 `hooks.Capture` 取当前指纹、与 `project_hook_baselines` 基线比对报漂移（absent/drifted/match），`processGroupChecks` 对每个 Agent 报 `process-group-unverified`，`attemptChecks` 列 `frozen` 或非终态 attempt（含 worktree 路径），`unsafeLocalCheck` 保留 V10b 边界；`internal/storage/doctor.go` `ReadDoctorState` 只读投影、从不写/迁移。
@@ -550,13 +550,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 ### 任务与门禁
 
-- [ ] tmux 只承载 wrapper；Agent 仍是 wrapper 直接子进程并留在其进程组
-- [ ] PTY 由 wrapper 分配并中继到 pane/agent.log；tmux 会话不是事实源
-- [ ] process/tmux 跑同一 V2/V4 套件
-- [ ] **逐项执行 DESIGN §12 V4 全矩阵**，含同代双 wrapper、permit 重放/暂停、证据缺失、PID/PGID 复用、人工态四组交错、四发现者并发
-- [ ] 构造脱组后代：标 `process-group-unverified`，禁止含糊状态自动 retry
-- [ ] 两后端均证明：旧 wrapper/组未确认消失前无新 owner；kill 不生新 attempt，retry 只生一个
-- [ ] `sift attach <run>` 只提供观察，不参与裁定
+- [x] M6 门禁：V4 双后端完整矩阵与独立阶段门报告已归档（`reviews/2026-08-04-m6-phase-gate-pi-minimax-m3.md`）；真实资格、真实双 Forge、手机与发布证据仍留 M7/M8。
 
 ---
 
