@@ -158,6 +158,19 @@ func TestProductionBackendFreezeRoutingAndInherit(t *testing.T) {
 				t.Fatal(err)
 			}
 			completeLaunchRecovery(t, db, boot, nowMS+3, "supervise")
+			// Model activation's fresh-project hook capture. Once a prior attempt
+			// becomes non-pending, the legacy-baseline gate intentionally blocks
+			// dispatch until this prerequisite exists.
+			if err := db.RecordHookBaseline(ctx, storage.RecordHookBaselineCmd{
+				ProjectID: "project",
+				Snapshot: storage.HookBaselineSnapshot{
+					GitConfigDigest: "routing-config", EffectiveHooksPath: "/routing-hooks",
+					HooksDirectoryDigest: "routing-directory", Digest: "routing-baseline",
+				},
+				CapturedAtMS: nowMS + 3,
+			}); err != nil {
+				t.Fatal(err)
+			}
 
 			// Initial dispatch must ignore the now-opposite current Agent backend.
 			createFrozenRoutingRun(t, ctx, db, "initial", frozenSnapshotID, nowMS+4)
