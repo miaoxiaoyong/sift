@@ -354,6 +354,14 @@ func (d *DB) ResolveAttemptRace(ctx context.Context, cmd AttemptRaceCommand) (st
 					return "", err
 				}
 				disposition = AttemptRaceSupersededByFact
+				// Fact wins against an in-flight probe (X15): the probe is
+				// superseded, the retry outcome finalizes as
+				// superseded_by_fact with exactly one ack. No-op when no
+				// probe is in flight; replay safety comes from the probe
+				// scan (pending|running) being empty after the first CAS.
+				if err = d.finalizeProbeFactWinsTx(ctx, tx, cmd.RunID, cmd.AttemptNo, cmd.NowMS); err != nil {
+					return "", err
+				}
 			}
 		}
 	}

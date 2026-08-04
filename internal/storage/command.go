@@ -1169,6 +1169,57 @@ func writeProbeAckOpTx(ctx context.Context, tx *sql.Tx, eventKey string, outcome
 	return insertOperation(ctx, tx, op, runID, interruptID, nowMS)
 }
 
+// finalizeProbeFactWinsTx is the X15 fact-wins writer (specs/command.md §5,
+// docs/testing/runtime-matrix.md X15). It runs inside the same transaction
+// that closes the startup_stall Interrupt as superseded_by_fact, marks the
+// pending|running retry probe superseded, writes the final command event
+// (stage=final:fact-wins), completes the outcome CAS pending->final, and
+// enqueues exactly one superseded_by_fact command ack. It is a no-op when
+// no probe is in flight.
+//
+// Replay safety: a duplicate ResolveAttemptRace call is rejected by the
+// events.idempotency_key CAS before reaching this helper, so the probe and
+// outcome CAS guards below only matter when two transactions race; the
+// attempt_probes UPDATE state IN (pending,running) and the
+// command_event_outcomes UPDATE state='pending' are both single-shot, and
+// the ack operation key is unique on (operation_key). Even if the helper
+// were called twice in the same transaction, the second invocation finds
+// no pending|running probe and short-circuits.
+func (d *DB) finalizeProbeFactWinsTx(ctx context.Context, tx *sql.Tx, runID string, attemptNo int, nowMS int64) error {
+	var probeID, initialEventID, eventKey, interruptID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT p.id, o.initial_event_id, o.event_key, p.interrupt_id
+		FROM attempt_probes p
+		JOIN command_event_outcomes o ON o.initial_event_id = p.requested_by_event_id
+		WHERE p.run_id = ? AND p.attempt_no = ?
+		  AND p.state IN ('pending', 'running')
+		ORDER BY p.created_at_ms DESC, p.id DESC
+		LIMIT 1`, runID, attemptNo).Scan(&probeID, &initialEventID, &eventKey, &interruptID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// 1. Mark the probe superseded (single-shot CAS: state IN pending|running).
+	res, err := tx.ExecContext(ctx, `UPDATE attempt_probes SET state='superseded', finished_at_ms=? WHERE id=? AND state IN ('pending','running')`, nowMS, probeID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		// Concurrent fact/race already finalized the probe; nothing more to write.
+		return nil
+	}
+	// 2. Final command event (stage final:fact-wins) + outcome CAS pending->final.
+	finalEventID, err := finalizeRetryOutcomeTx(ctx, tx, eventKey, initialEventID, command.OutcomeSupersededByFact, runID, interruptID, "", nowMS, command.StageFinalFactWins)
+	if err != nil {
+		return err
+	}
+	// 3. Exactly one superseded_by_fact command ack.
+	ackKey := command.AckOperationKey(eventKey)
+	return writeProbeAckOpTx(ctx, tx, eventKey, command.OutcomeSupersededByFact, finalEventID, interruptID, runID, ackKey, nowMS)
+}
+
 // RetryProbeCandidate is the immutable snapshot a probe process-check
 // coordinator needs before it performs process IO outside any transaction. It
 // joins attempt_probes with the bound attempt's recorded wrapper identity
