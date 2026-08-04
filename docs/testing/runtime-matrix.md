@@ -35,26 +35,26 @@ summary: M6 V2/V4 逐行证据清单
 | ID | attempt/观测 | 当前精确证据 | 状态/Owner |
 |---|---|---|---|
 | R01 | pending：operation 未派发/lease 过期，无 wrapper/control | `TestRecoveryRowsBackendParameterized/{process,tmux}/R01_pending_no_execution_body` | covered #850 两 backend |
-| R02 | pending：bootstrap 已读/acquire 在途，wrapper 匹配、无 control | `TestRecoveryRowsBackendParameterized/{process,tmux}/R02_pending_prepared_without_control` | covered #850 两 backend |
-| R03 | starting：session owner/control 在、无 permit | `TestRecoveryRowsBackendParameterized/{process,tmux}/R03_starting_owner_unknown` | covered #850 两 backend |
-| R04 | starting：owner 与进程组均不存在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R04_starting_owner_absent` | covered #850 两 backend |
-| R05 | spawning：owner 匹配、Agent identity 未落盘 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R05_spawning_owner_unknown` | covered #850 两 backend |
-| R06 | spawning：Agent identity/live，started 未提交或响应丢失 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R06_spawning_started_not_committed` | covered #850 两 backend |
-| R07 | spawning：Agent 已退出且 identity-matched result 在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R07_spawning_result_missing` | covered #850 两 backend |
-| R08 | spawning：Agent identity 在，process/result 不在；wrapper live/dead 分支 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R08_spawning_process_evidence_unknown` | covered #850 两 backend |
-| R09 | spawning：wrapper 死、进程组存在、Agent identity 缺失/不可信 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R09_spawning_group_residual` | covered #850 两 backend |
-| R10 | spawning：wrapper/进程组均不存在、无 Agent identity | `TestRecoveryRowsBackendParameterized/{process,tmux}/R10_spawning_no_identity` | covered #850 两 backend |
-| R11 | running：result success | `TestRecoveryRowsBackendParameterized/{process,tmux}/R11_running_success_evidence_missing` | covered #850 两 backend |
-| R12 | running：result failed | `TestRecoveryRowsBackendParameterized/{process,tmux}/R12_running_failed_evidence_missing` | covered #850 两 backend |
-| R13 | running：process identity 匹配、heartbeat 新鲜 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R13_running_fresh_identity_unknown` | covered #850 两 backend |
+| R02 | pending：bootstrap 已读/acquire 在途；匹配重派发，identity/PID-PGID reuse 冻结 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R02_pending_preacquire_matched_redispatch`；`R02_pending_preacquire_identity_mismatch_freezes`；`R02_pending_preacquire_pid_pgid_reuse_freezes` | covered #850 两 backend |
+| R03 | starting：session owner/control 在、无 permit | `TestRecoveryRowsBackendParameterized/{process,tmux}/R03_starting_owner_control_without_permit` | covered #850 两 backend |
+| R04 | starting：owner 与进程组均不存在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R04_starting_owner_and_group_absent` | covered #850 两 backend |
+| R05 | spawning：owner 匹配、Agent identity 未落盘 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R05_spawning_owner_without_agent_identity` | covered #850 两 backend |
+| R06 | spawning：durable Agent identity + matched live Agent，started 未提交/响应丢失 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R06_spawning_durable_agent_identity_process_match` | covered #850 两 backend |
+| R07 | spawning：durable Agent identity + identity-matched exited result | `TestRecoveryRowsBackendParameterized/{process,tmux}/R07_spawning_durable_agent_identity_matching_result` | covered #850 两 backend |
+| R08 | spawning：durable Agent identity，process/result 不在；wrapper live/dead 分支 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R08_spawning_durable_agent_identity_wrapper_live`；`R08_spawning_durable_agent_identity_wrapper_dead_verified_absence` | covered #850 两 backend |
+| R09 | spawning：wrapper 死、进程组存在、Agent identity 缺失/不可信；消失/拒绝分支 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R09_spawning_group_disappearance_verified_absence`；`R09_spawning_group_refusal_freezes` | covered #850 两 backend |
+| R10 | spawning：wrapper/进程组均不存在、无 Agent identity；verified/unverified 分支 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R10_spawning_verified_absence_orphans`；`R10_spawning_unverified_absence_freezes` | covered #850 两 backend |
+| R11 | running：result success | `TestRecoveryRowsBackendParameterized/{process,tmux}/R11_running_success_result` | covered #850 两 backend |
+| R12 | running：result failed | `TestRecoveryRowsBackendParameterized/{process,tmux}/R12_running_failed_result` | covered #850 两 backend |
+| R13 | running：process identity 匹配、heartbeat 新鲜 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R13_running_fresh_heartbeat_owner_live` | covered #850 两 backend |
 | R14 | running：process 存在、heartbeat 过期 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R14_running_stale_heartbeat` | covered #850 两 backend |
-| R15 | running：tmux session 在、wrapper 不在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R15_running_tmux_session_present_owner_absent` + session diagnostic tests | covered #850 两 backend |
-| R16 | running：wrapper 在、tmux session 不在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R16_running_owner_present_tmux_session_absent` + session diagnostic tests | covered #850 两 backend |
+| R15 | running：tmux session 在、wrapper 不在；verified absence 失败保留现场/unverified freeze | `TestRecoveryRowsBackendParameterized/{process,tmux}/R15_running_session_present_verified_absence_fails`；`R15_running_session_present_unverified_freezes` | covered #850 两 backend |
+| R16 | running：wrapper 在、tmux session 不在 | `TestRecoveryRowsBackendParameterized/{process,tmux}/R16_running_wrapper_present_tmux_session_absent` | covered #850 两 backend |
 | R17 | 任意：process identity 无法确认，不向不确定 PID 发信号 | `TestRecoveryRowsBackendParameterized/{process,tmux}` + existing inspector tests | covered #850；精确一次 startup_stall/waiting_human/frozen |
 | R18 | 任意：多个 wrapper 竞争同 attempt | `TestHandoffPermitReplayAndStartedEvidence`、handoff security event tests | partial → #849 两 backend |
 | R19 | 任意：旧 generation wrapper 苏醒 | handoff stale/conflict tests与 security event | partial → #849 两 backend |
 
-R01–R19 的 tmux 参数化断言只能读取 wrapper/control/result/process-group 作为裁定证据。R15/R16 的 session observation 只决定诊断分支，不能改变这条规则。任何“absence 后 orphan/new attempt”的行（含 R02/R04/R07/R08/R10/R15）还必须合取 exact `process-group-verified` gate；unverified/unknown 不执行该结局，而按 X07/X08/X16 收敛为单条人工分支。
+R01–R19 的 tmux 参数化断言只能读取 wrapper/control/result/process-group 作为裁定证据。R15/R16 的 session observation 只决定诊断分支，不能改变这条规则。任何“absence 后 orphan/new attempt”的行（含 R04、R08、R09、R10、R15）还必须合取 exact `process-group-verified` gate；unverified/unknown 不执行该结局，而按 X07/X08/X16 收敛为单条人工分支。
 
 ## 3. DESIGN §12 V4 扩展向量
 

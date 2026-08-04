@@ -226,7 +226,7 @@ func TestRecoverStartupRedispatchesPendingAttemptBeforeOpeningBarrier(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator := &TerminationCoordinator{DB: db, Runtime: config.Runtime{HeartbeatStaleAfter: time.Second}, AttentionDailyQuota: recoveryQuota(), Now: func() time.Time { return now }}
+	coordinator := &TerminationCoordinator{DB: db, Terminator: runtimepkg.Terminator{Inspector: recoveryInspector{observation: runtimepkg.ProcessObservation{Exists: true, ProcessIdentity: runtimepkg.ProcessIdentity{PID: attempt.WrapperPID, StartedAtMS: attempt.WrapperStartedAtMS, Executable: attempt.WrapperExecutable, PGID: attempt.WrapperPGID, ControlNonceHash: attempt.ControlNonceHash}}}}, Runtime: config.Runtime{HeartbeatStaleAfter: time.Second}, AttentionDailyQuota: recoveryQuota(), Now: func() time.Time { return now }}
 	if err := coordinator.RecoverStartup(context.Background(), boot); err != nil {
 		t.Fatal(err)
 	}

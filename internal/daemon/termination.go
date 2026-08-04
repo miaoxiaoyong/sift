@@ -159,11 +159,12 @@ func (c *TerminationCoordinator) recoverPreparedDispatch(ctx context.Context, at
 	// bootstrap.json may already have been consumed while acquire is in flight.
 	// That wrapper has no control/session/permit and cannot spawn, but it is a
 	// distinct recovery observation from a dispatch that never left the worker.
-	// Observe it before fencing; regardless of whether it remains live, the
-	// generation bump makes a late acquire fail and redispatch is safe.
+	// Observe it before fencing. A matching live owner has no spawn capability,
+	// so fencing it and redispatching is safe; an absent or mismatched owner is
+	// ambiguous and must stay frozen.
 	if attempt.WrapperPID > 0 && attempt.WrapperStartedAtMS > 0 && attempt.WrapperExecutable != "" && attempt.WrapperPGID > 0 && attempt.ControlNonceHash != "" {
-		_, observeErr := c.ownerIsLive(ctx, attempt)
-		if observeErr != nil {
+		live, observeErr := c.ownerIsLive(ctx, attempt)
+		if observeErr != nil || !live {
 			return "preacquire_owner_unknown", "frozen"
 		}
 		return "preacquire_without_control", "redispatch"
@@ -395,8 +396,14 @@ func (c *TerminationCoordinator) resolveLateFact(ctx context.Context, a storage.
 		if agent.PID == 0 {
 			agent = storage.AgentIdentity{PID: control.AgentPID, StartedAtMS: control.AgentStartedAtMS, Executable: control.AgentExecutable}
 		}
-		if agent.PID <= 0 || agent.StartedAtMS <= 0 || agent.Executable == "" {
+		if agent.PID <= 0 || agent.StartedAtMS <= 0 || agent.Executable == "" || (hasDurableAgent(a) && !matchesDurableAgent(a, agent)) {
 			return "", nil
+		}
+		if a.Phase == "spawning" {
+			live, observeErr := c.agentIsLive(ctx, agent)
+			if observeErr != nil || !live {
+				return "", observeErr
+			}
 		}
 		now := time.Now
 		if c.Now != nil {
@@ -408,13 +415,17 @@ func (c *TerminationCoordinator) resolveLateFact(ctx context.Context, a storage.
 	if c.Now != nil {
 		now = c.Now
 	}
+	agent := storage.AgentIdentity{PID: int64(result.Agent.PID), StartedAtMS: result.Agent.StartedAtMS, Executable: result.Agent.Executable}
+	if hasDurableAgent(a) && !matchesDurableAgent(a, agent) {
+		return "", nil
+	}
 	exit := result.ExitCode
 	fact := "late-result:" + result.Digest
 	disposition, err := c.DB.ResolveAttemptRace(ctx, storage.AttemptRaceCommand{
 		RunID: a.RunID, AttemptNo: a.AttemptNo, ExpectedGeneration: a.Generation,
 		ExpectedRunVersion: a.RunVersion, FactKey: fact, NowMS: now().UnixMilli(),
-		Agent:  &storage.AgentIdentity{PID: int64(result.Agent.PID), StartedAtMS: result.Agent.StartedAtMS, Executable: result.Agent.Executable},
-		Result: &storage.AttemptResult{Agent: storage.AgentIdentity{PID: int64(result.Agent.PID), StartedAtMS: result.Agent.StartedAtMS, Executable: result.Agent.Executable}, ExitCode: exit, Signal: result.Signal, FailureReason: result.FailureReason, FinalHeadSHA: result.FinalHeadSHA, Digest: result.Digest, FinishedAtMS: result.FinishedAt.UnixMilli()},
+		Agent:  &agent,
+		Result: &storage.AttemptResult{Agent: agent, ExitCode: exit, Signal: result.Signal, FailureReason: result.FailureReason, FinalHeadSHA: result.FinalHeadSHA, Digest: result.Digest, FinishedAtMS: result.FinishedAt.UnixMilli()},
 	})
 	if err == nil && c.HookRecheck != nil {
 		// Hooks are audit evidence only. A bad path must not reclassify a
@@ -428,6 +439,28 @@ type attemptIdentityJSON struct {
 	PID         int64  `json:"pid"`
 	StartedAtMS int64  `json:"started_at_ms"`
 	Executable  string `json:"executable"`
+}
+
+func hasDurableAgent(a storage.RecoveryAttempt) bool {
+	return a.AgentPID > 0 && a.AgentStartedAtMS > 0 && a.AgentExecutable != ""
+}
+
+func matchesDurableAgent(a storage.RecoveryAttempt, agent storage.AgentIdentity) bool {
+	return int64(a.AgentPID) == agent.PID && a.AgentStartedAtMS == agent.StartedAtMS && a.AgentExecutable == agent.Executable
+}
+
+// agentIsLive validates the independently persisted Agent identity before a
+// missing started response may be recovered as running. Agent identity has no
+// control nonce: that nonce belongs only to its wrapper.
+func (c *TerminationCoordinator) agentIsLive(ctx context.Context, agent storage.AgentIdentity) (bool, error) {
+	if c.Terminator.Inspector == nil {
+		return false, nil
+	}
+	got, err := c.Terminator.Inspector.Observe(ctx, runtimepkg.ProcessIdentity{PID: int(agent.PID), StartedAtMS: agent.StartedAtMS, Executable: agent.Executable})
+	if err != nil || !got.Exists {
+		return false, err
+	}
+	return got.PID == int(agent.PID) && got.StartedAtMS == agent.StartedAtMS && got.Executable == agent.Executable, nil
 }
 
 func (c *TerminationCoordinator) terminate(ctx context.Context, attempt storage.RecoveryAttempt, source storage.TerminationSource, expectedVersion int64) error {

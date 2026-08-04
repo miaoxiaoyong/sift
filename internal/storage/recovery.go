@@ -26,6 +26,9 @@ type RecoveryAttempt struct {
 	WrapperPGID              int
 	ControlNonceHash         string
 	HeartbeatAtMS            int64
+	AgentPID                 int
+	AgentStartedAtMS         int64
+	AgentExecutable          string
 	IsolationState           string
 }
 
@@ -193,11 +196,11 @@ func (d *DB) StartupRecoveryPending(ctx context.Context, bootID string) ([]Recov
 
 const recoveryAttemptColumns = `a.run_id,r.version,a.attempt_no,a.generation,a.phase,a.backend,a.agent_id,
 	COALESCE(c.dispatch_id,''),COALESCE(a.topology_qualification_key,''),COALESCE(a.wrapper_pid,0),COALESCE(a.wrapper_started_at_ms,0),COALESCE(a.wrapper_executable,''),COALESCE(a.wrapper_pgid,0),
-	COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),a.isolation_state`
+	COALESCE(a.control_nonce_hash,''),COALESCE(a.heartbeat_at_ms,0),COALESCE(a.agent_pid,0),COALESCE(a.agent_started_at_ms,0),COALESCE(a.agent_executable,''),a.isolation_state`
 
 func scanRecoveryAttempt(rows *sql.Rows) (RecoveryAttempt, error) {
 	var a RecoveryAttempt
-	err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.Backend, &a.AgentID, &a.DispatchID, &a.TopologyQualificationKey, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.IsolationState)
+	err := rows.Scan(&a.RunID, &a.RunVersion, &a.AttemptNo, &a.Generation, &a.Phase, &a.Backend, &a.AgentID, &a.DispatchID, &a.TopologyQualificationKey, &a.WrapperPID, &a.WrapperStartedAtMS, &a.WrapperExecutable, &a.WrapperPGID, &a.ControlNonceHash, &a.HeartbeatAtMS, &a.AgentPID, &a.AgentStartedAtMS, &a.AgentExecutable, &a.IsolationState)
 	return a, err
 }
 

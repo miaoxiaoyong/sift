@@ -56,18 +56,12 @@ func TestRecoveryRowsBackendParameterized(t *testing.T) {
 				if _, err := raw.Exec(`UPDATE attempts SET backend=? WHERE run_id='run'`, backend); err != nil {
 					t.Fatal(err)
 				}
-				if row.name == "R01_pending_no_execution_body" || row.name == "R10_spawning_no_owner_or_agent_identity" || row.name == "R15_running_tmux_session_present_wrapper_absent" {
-					if _, err := raw.Exec(`UPDATE attempts SET wrapper_pid=NULL,wrapper_started_at_ms=NULL,wrapper_executable=NULL,wrapper_pgid=NULL,wrapper_instance_id=NULL,control_nonce_hash=NULL WHERE run_id='run'`); err != nil {
-						t.Fatal(err)
-					}
+				if row.setup != nil {
+					row.setup(t, raw)
 				}
-				if row.name == "R08_spawning_agent_missing_wrapper_live" {
-					// R08 has durable Agent identity, but neither result.json nor a
-					// live-Agent observation. The still-live wrapper gets a bounded
-					// chance to write the missing result instead of a second owner.
-					if _, err := raw.Exec(`UPDATE attempts SET agent_pid=11,agent_started_at_ms=1001,agent_executable='/agent' WHERE run_id='run'`); err != nil {
-						t.Fatal(err)
-					}
+				attempt, err := db.RecoveryAttemptForRun(context.Background(), "run")
+				if err != nil {
+					t.Fatal(err)
 				}
 				root := t.TempDir()
 				inspector := &recoverySequenceInspector{observations: row.observations(attempt)}
@@ -105,6 +99,7 @@ type recoveryRow struct {
 	name         string
 	phase        string
 	session      string
+	setup        func(*testing.T, *sql.DB)
 	qualified    func(string) bool
 	heartbeat    func(time.Time) int64
 	observations func(storage.RecoveryAttempt) []runtimepkg.ProcessObservation
@@ -133,15 +128,21 @@ func recoveryRows() []recoveryRow {
 	withAgentControl := func(t *testing.T, root string, a storage.RecoveryAttempt, _ time.Time) {
 		writeRecoveryControl(t, root, a, 11)
 	}
+	durableAgent := func(t *testing.T, raw *sql.DB) {
+		t.Helper()
+		if _, err := raw.Exec(`UPDATE attempts SET agent_pid=11,agent_started_at_ms=1001,agent_executable='/agent' WHERE run_id='run'`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return []recoveryRow{
 		{
-			name: "R01_pending_no_execution_body", phase: "pending", heartbeat: func(time.Time) int64 { return 0 }, observations: absent, files: noFiles,
+			name: "R01_pending_no_execution_body", phase: "pending", setup: clearRecoveryWrapper, heartbeat: func(time.Time) int64 { return 0 }, observations: absent, files: noFiles,
 			assert: func(t *testing.T, raw *sql.DB, boot string, a storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
 				assertRedispatched(t, raw, boot, a, "no bootstrap/control", inspector.calls, 0)
 			},
 		},
 		{
-			name: "R02_pending_prepared_without_control", phase: "pending", heartbeat: func(time.Time) int64 { return 0 }, observations: live, files: noFiles,
+			name: "R02_pending_preacquire_matched_redispatch", phase: "pending", heartbeat: func(time.Time) int64 { return 0 }, observations: live, files: noFiles,
 			assert: func(t *testing.T, raw *sql.DB, boot string, a storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
 				// R02 is deliberately not R01: a durable pre-acquire wrapper is
 				// observed before fencing; it has no session/permit and may be
@@ -150,6 +151,30 @@ func recoveryRows() []recoveryRow {
 				if len(signals.signals) != 0 {
 					t.Fatalf("pre-acquire owner signals=%v", signals.signals)
 				}
+			},
+		},
+		{
+			name: "R02_pending_preacquire_identity_mismatch_freezes", phase: "pending", heartbeat: func(time.Time) int64 { return 0 }, observations: func(a storage.RecoveryAttempt) []runtimepkg.ProcessObservation {
+				o := matchingObservation(a)
+				o.Executable = "/reused-wrapper"
+				return []runtimepkg.ProcessObservation{o}
+			}, files: noFiles,
+			assert: func(t *testing.T, raw *sql.DB, boot string, a storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
+				assertPendingPreacquireFrozen(t, raw, boot, a)
+				assertNoSignals(t, signals)
+				assertObserved(t, inspector, 1)
+			},
+		},
+		{
+			name: "R02_pending_preacquire_pid_pgid_reuse_freezes", phase: "pending", heartbeat: func(time.Time) int64 { return 0 }, observations: func(a storage.RecoveryAttempt) []runtimepkg.ProcessObservation {
+				o := matchingObservation(a)
+				o.PGID = 99
+				return []runtimepkg.ProcessObservation{o}
+			}, files: noFiles,
+			assert: func(t *testing.T, raw *sql.DB, boot string, a storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
+				assertPendingPreacquireFrozen(t, raw, boot, a)
+				assertNoSignals(t, signals)
+				assertObserved(t, inspector, 1)
 			},
 		},
 		{
@@ -177,15 +202,17 @@ func recoveryRows() []recoveryRow {
 			},
 		},
 		{
-			name: "R06_spawning_agent_live_started_not_committed", phase: "spawning", heartbeat: func(time.Time) int64 { return 0 }, observations: live, files: withAgentControl,
+			name: "R06_spawning_durable_agent_identity_process_match", phase: "spawning", setup: durableAgent, heartbeat: func(time.Time) int64 { return 0 }, observations: func(a storage.RecoveryAttempt) []runtimepkg.ProcessObservation {
+				return []runtimepkg.ProcessObservation{matchingAgentObservation(a)}
+			}, files: withAgentControl,
 			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
 				assertStartedRecovered(t, raw, boot)
 				assertNoSignals(t, signals)
-				assertObserved(t, inspector, 0)
+				assertObserved(t, inspector, 1)
 			},
 		},
 		{
-			name: "R07_spawning_agent_exited_matching_result", phase: "spawning", heartbeat: func(time.Time) int64 { return 0 }, observations: absent, files: recoveryResult(7),
+			name: "R07_spawning_durable_agent_identity_matching_result", phase: "spawning", setup: durableAgent, heartbeat: func(time.Time) int64 { return 0 }, observations: absent, files: recoveryResult(7),
 			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
 				assertResultConsumed(t, raw, boot, 7)
 				assertNoSignals(t, signals)
@@ -193,7 +220,7 @@ func recoveryRows() []recoveryRow {
 			},
 		},
 		{
-			name: "R08_spawning_agent_missing_wrapper_live", phase: "spawning", heartbeat: func(time.Time) int64 { return 0 }, observations: live, files: noFiles,
+			name: "R08_spawning_durable_agent_identity_wrapper_live", phase: "spawning", setup: durableAgent, heartbeat: func(time.Time) int64 { return 0 }, observations: live, files: noFiles,
 			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
 				assertSupervised(t, raw, boot, "spawning")
 				assertNoSignals(t, signals)
@@ -201,7 +228,27 @@ func recoveryRows() []recoveryRow {
 			},
 		},
 		{
-			name: "R09_spawning_wrapper_dead_group_residual", phase: "spawning", heartbeat: func(time.Time) int64 { return 0 }, observations: residual, files: control,
+			name: "R08_spawning_durable_agent_identity_wrapper_dead_verified_absence", phase: "spawning", qualified: func(string) bool { return true }, setup: durableAgent, heartbeat: func(time.Time) int64 { return 0 }, observations: absent, files: noFiles,
+			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
+				assertOrphanedSuccessor(t, raw, boot)
+				assertNoSignals(t, signals)
+				assertObserved(t, inspector, 2)
+			},
+		},
+		{
+			name: "R09_spawning_group_disappearance_verified_absence", phase: "spawning", qualified: func(string) bool { return true }, heartbeat: func(time.Time) int64 { return 0 }, observations: func(a storage.RecoveryAttempt) []runtimepkg.ProcessObservation {
+				mismatch := matchingObservation(a)
+				mismatch.Executable = "/dead-wrapper"
+				return []runtimepkg.ProcessObservation{mismatch, matchingObservation(a), {}}
+			}, files: control,
+			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
+				assertOrphanedSuccessor(t, raw, boot)
+				assertTerm(t, signals)
+				assertObserved(t, inspector, 3)
+			},
+		},
+		{
+			name: "R09_spawning_group_refusal_freezes", phase: "spawning", heartbeat: func(time.Time) int64 { return 0 }, observations: residual, files: control,
 			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
 				assertFrozenRecovery(t, raw, boot, "termination_unconfirmed")
 				assertTermKill(t, signals)
@@ -209,11 +256,19 @@ func recoveryRows() []recoveryRow {
 			},
 		},
 		{
-			name: "R10_spawning_no_owner_or_agent_identity", phase: "spawning", heartbeat: func(time.Time) int64 { return 0 }, observations: absent, files: noFiles,
+			name: "R10_spawning_verified_absence_orphans", phase: "spawning", qualified: func(string) bool { return true }, heartbeat: func(time.Time) int64 { return 0 }, observations: absent, files: noFiles,
 			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
-				assertFrozenRecovery(t, raw, boot, "process_identity_unknown")
+				assertOrphanedSuccessor(t, raw, boot)
 				assertNoSignals(t, signals)
-				assertObserved(t, inspector, 0)
+				assertObserved(t, inspector, 2)
+			},
+		},
+		{
+			name: "R10_spawning_unverified_absence_freezes", phase: "spawning", heartbeat: func(time.Time) int64 { return 0 }, observations: absent, files: noFiles,
+			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, _ string) {
+				assertFrozenRecovery(t, raw, boot, "process_group_unverified")
+				assertNoSignals(t, signals)
+				assertObserved(t, inspector, 2)
 			},
 		},
 		{
@@ -249,10 +304,22 @@ func recoveryRows() []recoveryRow {
 			},
 		},
 		{
-			name: "R15_running_tmux_session_present_wrapper_absent", phase: "running", session: "present", heartbeat: func(now time.Time) int64 { return now.UnixMilli() }, observations: absent, files: noFiles,
+			name: "R15_running_session_present_verified_absence_fails", phase: "running", session: "present", qualified: func(string) bool { return true }, setup: exhaustRecoveryAttempts, heartbeat: func(now time.Time) int64 { return now.UnixMilli() }, observations: absent, files: noFiles,
 			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, backend string) {
-				assertFrozenRecovery(t, raw, boot, "process_identity_unknown")
+				assertOrphanedFailure(t, raw, boot)
 				assertNoSignals(t, signals)
+				assertObserved(t, inspector, 2)
+				if backend == "tmux" {
+					assertSessionDiagnostic(t, raw, "backend_session_present_wrapper_absent")
+				}
+			},
+		},
+		{
+			name: "R15_running_session_present_unverified_freezes", phase: "running", session: "present", heartbeat: func(now time.Time) int64 { return now.UnixMilli() }, observations: absent, files: noFiles,
+			assert: func(t *testing.T, raw *sql.DB, boot string, _ storage.RecoveryAttempt, inspector *recoverySequenceInspector, signals *recoverySignals, backend string) {
+				assertFrozenRecovery(t, raw, boot, "process_group_unverified")
+				assertNoSignals(t, signals)
+				assertObserved(t, inspector, 2)
 				if backend == "tmux" {
 					assertSessionDiagnostic(t, raw, "backend_session_present_wrapper_absent")
 				}
@@ -273,6 +340,24 @@ func recoveryRows() []recoveryRow {
 
 func matchingObservation(a storage.RecoveryAttempt) runtimepkg.ProcessObservation {
 	return runtimepkg.ProcessObservation{Exists: true, ProcessIdentity: runtimepkg.ProcessIdentity{PID: a.WrapperPID, StartedAtMS: a.WrapperStartedAtMS, Executable: a.WrapperExecutable, PGID: a.WrapperPGID, ControlNonceHash: a.ControlNonceHash}}
+}
+
+func matchingAgentObservation(a storage.RecoveryAttempt) runtimepkg.ProcessObservation {
+	return runtimepkg.ProcessObservation{Exists: true, ProcessIdentity: runtimepkg.ProcessIdentity{PID: a.AgentPID, StartedAtMS: a.AgentStartedAtMS, Executable: a.AgentExecutable}}
+}
+
+func clearRecoveryWrapper(t *testing.T, raw *sql.DB) {
+	t.Helper()
+	if _, err := raw.Exec(`UPDATE attempts SET wrapper_pid=NULL,wrapper_started_at_ms=NULL,wrapper_executable=NULL,wrapper_pgid=NULL,wrapper_instance_id=NULL,control_nonce_hash=NULL WHERE run_id='run'`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func exhaustRecoveryAttempts(t *testing.T, raw *sql.DB) {
+	t.Helper()
+	if _, err := raw.Exec(`UPDATE runs SET max_attempts=1 WHERE id='run'`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeRecoveryControl(t *testing.T, root string, a storage.RecoveryAttempt, agentPID int64) {
@@ -389,6 +474,21 @@ func assertOrphanedSuccessor(t *testing.T, raw *sql.DB, _ string) {
 	}
 }
 
+func assertOrphanedFailure(t *testing.T, raw *sql.DB, _ string) {
+	t.Helper()
+	var phase, status, worktree string
+	var successors int
+	if err := raw.QueryRow(`SELECT a.phase,r.status,a.worktree_path FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.run_id='run' AND a.attempt_no=1`).Scan(&phase, &status, &worktree); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.QueryRow(`SELECT count(*) FROM attempts WHERE run_id='run' AND attempt_no>1`).Scan(&successors); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "orphaned" || status != "failed" || worktree != "/work" || successors != 0 {
+		t.Fatalf("orphaned failure phase/status/worktree/successors=%s/%s/%s/%d", phase, status, worktree, successors)
+	}
+}
+
 func assertFrozenRecovery(t *testing.T, raw *sql.DB, boot, reason string) {
 	t.Helper()
 	assertSingleFrozenStartupStall(t, raw, boot, reason)
@@ -407,6 +507,13 @@ func assertNoSignals(t *testing.T, s *recoverySignals) {
 		t.Fatalf("unexpected signals=%v pgids=%v", s.signals, s.pgids)
 	}
 }
+func assertTerm(t *testing.T, s *recoverySignals) {
+	t.Helper()
+	if len(s.signals) != 1 || s.signals[0] != syscall.SIGTERM || s.pgids[0] != 10 {
+		t.Fatalf("signals=%v pgids=%v, want TERM to known pgid 10", s.signals, s.pgids)
+	}
+}
+
 func assertTermKill(t *testing.T, s *recoverySignals) {
 	t.Helper()
 	if len(s.signals) != 2 || s.signals[0] != syscall.SIGTERM || s.signals[1] != syscall.SIGKILL || s.pgids[0] != 10 || s.pgids[1] != 10 {
@@ -417,6 +524,25 @@ func assertObserved(t *testing.T, i *recoverySequenceInspector, want int) {
 	t.Helper()
 	if i.calls != want {
 		t.Fatalf("observations=%d, want %d", i.calls, want)
+	}
+}
+
+func assertPendingPreacquireFrozen(t *testing.T, raw *sql.DB, boot string, a storage.RecoveryAttempt) {
+	t.Helper()
+	assertSingleFrozenStartupStall(t, raw, boot, "process_identity_unknown")
+	var generation, launches int
+	var action string
+	if err := raw.QueryRow(`SELECT action FROM startup_recovery_actions WHERE boot_id=? AND candidate_key='attempt:run:1'`, boot).Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.QueryRow(`SELECT generation FROM attempts WHERE run_id='run' AND attempt_no=1`).Scan(&generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.QueryRow(`SELECT count(*) FROM outbox_operations WHERE run_id='run' AND kind='launch_agent'`).Scan(&launches); err != nil {
+		t.Fatal(err)
+	}
+	if action != "frozen" || generation != a.Generation || launches != 0 {
+		t.Fatalf("preacquire freeze action/generation/launches=%s/%d/%d, want frozen/%d/0", action, generation, launches, a.Generation)
 	}
 }
 
