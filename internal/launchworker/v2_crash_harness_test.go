@@ -12,6 +12,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,6 +37,7 @@ func TestBackendV2CrashHarness(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("V2 crash harness requires Unix process groups")
 	}
+	enableTestChildSubreaper(t)
 	if _, err := osexec.LookPath("tmux"); err != nil {
 		t.Fatalf("V2 tmux backend is required: %v", err)
 	}
@@ -179,10 +181,12 @@ func (c *v2Cell) restartBoot(t *testing.T, attemptAction string) string {
 func runV2WorkerCrash(t *testing.T, wrapperPath string, backend config.Backend, point string) {
 	cell := newV2Cell(t, backend)
 	ready := filepath.Join(cell.root, "worker-ready")
+	workerNow := time.Now().UnixMilli()
 	helper := osexec.Command(os.Args[0], "-test.run=^TestV2CrashWorkerHelper$")
 	helper.Env = append(os.Environ(),
 		"SIFT_V2_HELPER=1", "SIFT_V2_ROOT="+cell.root, "SIFT_V2_BOOT="+cell.boot,
-		"SIFT_V2_POINT="+point, "SIFT_V2_WRAPPER="+wrapperPath, "SIFT_V2_READY="+ready)
+		"SIFT_V2_POINT="+point, "SIFT_V2_WRAPPER="+wrapperPath, "SIFT_V2_READY="+ready,
+		"SIFT_V2_NOW="+strconv.FormatInt(workerNow, 10))
 	var output strings.Builder
 	helper.Stdout, helper.Stderr = &output, &output
 	if err := helper.Start(); err != nil {
@@ -274,6 +278,10 @@ func TestV2CrashWorkerHelper(t *testing.T) {
 		}
 		select {}
 	}
+	nowMS, err := strconv.ParseInt(os.Getenv("SIFT_V2_NOW"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
 	hooks := workerHooks{}
 	switch os.Getenv("SIFT_V2_POINT") {
 	case "lease":
@@ -285,7 +293,7 @@ func TestV2CrashWorkerHelper(t *testing.T) {
 	default:
 		t.Fatal("unknown V2 crash boundary")
 	}
-	worker := &Worker{DB: db, BootID: os.Getenv("SIFT_V2_BOOT"), WorkerID: "v2-killed", Root: root, Lease: 50 * time.Millisecond, Backends: router, Agents: launchTestAgents(), hooks: hooks}
+	worker := &Worker{DB: db, BootID: os.Getenv("SIFT_V2_BOOT"), WorkerID: "v2-killed", Root: root, Lease: 50 * time.Millisecond, Now: func() time.Time { return time.UnixMilli(nowMS) }, Backends: router, Agents: launchTestAgents(), hooks: hooks}
 	if err := worker.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -318,6 +326,13 @@ func runV2WrapperCrash(t *testing.T, wrapperPath string, backend config.Backend,
 	}
 	waitForFile(t, ready)
 	dump := v2WaitDump(t, dumpPath, pausePoint)
+	if point == "spawn" || point == "started" {
+		// The wrapper pauses after Agent.Start, not after the shell fixture has
+		// scheduled its marker write. Wait for that real child side effect before
+		// killing the process group so Linux scheduling cannot turn this crash
+		// boundary into an assertion race.
+		waitForLines(t, cell.marker, 1)
+	}
 	instance := v2DumpString(dump, "instance")
 
 	if point == "acquire" {

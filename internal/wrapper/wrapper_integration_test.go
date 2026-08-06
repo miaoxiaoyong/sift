@@ -613,7 +613,13 @@ func TestProductionTmuxWrapperCrashWindows(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			server := newWrapperServer(t, root, c.reject)
+			waitPath := ""
+			if c.name == "started" {
+				// claim.started races Agent.Start. Delay its intentional rejection
+				// until the real shell fixture has recorded the spawn side effect.
+				waitPath = filepath.Join(runDir, "spawn-count")
+			}
+			server := newWrapperServerWaitFor(t, root, c.reject, waitPath)
 			defer server.Close()
 			hostWrapperPath := wrapperPath
 			diagnostic := ""

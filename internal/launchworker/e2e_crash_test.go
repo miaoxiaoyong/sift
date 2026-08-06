@@ -213,6 +213,7 @@ func TestLaunchWorkerKilledAfterRealWrapperSpawn(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups differ on Windows")
 	}
+	enableTestChildSubreaper(t)
 	wrapperPath := buildE2EWrapper(t)
 	for _, tc := range []struct {
 		name, executable, script string
@@ -417,6 +418,7 @@ func waitForGroupAbsent(t *testing.T, pgid int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		reapTestProcessGroup(t, pgid)
 		if err := syscall.Kill(-pgid, 0); err == syscall.ESRCH {
 			return
 		}
