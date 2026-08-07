@@ -1,7 +1,5 @@
 package command
 
-import "sort"
-
 // CommandOutcome is the closed set of final command outcomes (§6.1 mapping
 // table). It is the "outcome" field of CommandEventV1 and the "disposition" of
 // CommandAckV1.
@@ -226,12 +224,4 @@ func decimalGreaterThan(a, b string) bool {
 		return len(a) > len(b)
 	}
 	return a > b
-}
-
-// SortedOptions returns a sorted copy of the option ids for deterministic
-// rendering and tests.
-func SortedOptions(options []string) []string {
-	out := append([]string(nil), options...)
-	sort.Strings(out)
-	return out
 }

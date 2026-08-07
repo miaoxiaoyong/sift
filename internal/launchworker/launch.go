@@ -32,15 +32,6 @@ type Backend interface {
 // attempt. It deliberately has no observer or lifecycle methods.
 type BackendRouter map[config.Backend]Backend
 
-func (r BackendRouter) Spawn(ctx context.Context, launch runtime.HostLaunch) (*os.Process, error) {
-	backend := config.Backend(launch.Backend)
-	host, ok := r[backend]
-	if !ok || host == nil {
-		return nil, fmt.Errorf("launch worker: backend %q is unavailable", backend)
-	}
-	return host.Spawn(ctx, launch)
-}
-
 // ProcessBackend adapts runtime.ProcessBackend without exposing exec.Cmd.
 type ProcessBackend struct{ Backend *runtime.ProcessBackend }
 

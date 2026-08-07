@@ -246,10 +246,6 @@ func ChannelPublishOperationKey(interruptID string, escalation int) string {
 func CommentOperationKey(purpose, subjectID string, generation int) string {
 	return fmt.Sprintf("comment:%s:%s:%d", purpose, subjectID, generation)
 }
-func CommandAckOperationKey(forgeEventID string) string { return "command:" + forgeEventID + ":ack" }
-func LabelsOperationKey(subjectKind, subjectID string, version int) string {
-	return fmt.Sprintf("labels:%s:%s:%d", subjectKind, subjectID, version)
-}
 func AlertOperationKey(kind, subjectID string, generation int) string {
 	return fmt.Sprintf("alert:%s:%s:%d", kind, subjectID, generation)
 }
