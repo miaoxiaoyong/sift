@@ -79,14 +79,6 @@ func NewSupervisorScheduler(run func(context.Context) error) *SupervisorSchedule
 	return &SupervisorScheduler{newScheduler(run)}
 }
 
-// ReconcilerScheduler is retained as a source-compatible name for the old
-// skeleton. Production uses OutboxScheduler, which matches DESIGN §6.1.
-type ReconcilerScheduler = OutboxScheduler
-
-func NewReconcilerScheduler(run func(context.Context) error) *ReconcilerScheduler {
-	return NewOutboxScheduler(run)
-}
-
 // Wakeups groups the three named scheduler entry points; write ports may call
 // the appropriate one after commit, never while a transaction is open.
 type Wakeups struct {
