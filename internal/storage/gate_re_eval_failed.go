@@ -99,6 +99,128 @@ func (d *DB) emitGateReEvalFailedFailureReviewTx(ctx context.Context, tx *sql.Tx
 	return d.emitInterruptInExistingTx(ctx, tx, cmd, false)
 }
 
+type gateReEvalHITLContext struct {
+	cmd       *EmitInterruptCmd
+	row       gateReEvalAttemptRow
+	vf        gateReEvalVerdictFields
+	p         gateReEvalSucceededPayload
+	eventRef  string
+	changeRef string
+}
+
+type gateReEvalHITLHandler func(gateReEvalHITLContext) error
+
+var gateReEvalHITLHandlers = map[string]gateReEvalHITLHandler{
+	"hitl/checks_timeout": func(c gateReEvalHITLContext) error {
+		if c.vf.ExternalURL == "" {
+			return fmt.Errorf("%w: checks_timeout missing external_url", ErrGateReEvaluationContract)
+		}
+		c.cmd.Reason = InterruptFailureReview
+		c.cmd.FailureReviewVariant = FailureReviewAttempt
+		c.cmd.FailureReviewRetryKind = FailureReviewGateRecheck
+		c.cmd.Facts = map[string]string{
+			"failure_class":        "checks_timeout",
+			"failure_evidence_ref": c.vf.ExternalURL,
+			"recommended_action":   "retry",
+		}
+		return nil
+	},
+	"hitl/failure_review": func(c gateReEvalHITLContext) error {
+		if c.vf.ExternalURL == "" || c.vf.Classification == "" {
+			return fmt.Errorf("%w: failure_review missing external_url or classification", ErrGateReEvaluationContract)
+		}
+		c.cmd.Reason = InterruptFailureReview
+		c.cmd.FailureReviewVariant = FailureReviewAttempt
+		c.cmd.FailureReviewRetryKind = FailureReviewGateRecheck
+		c.cmd.Facts = map[string]string{
+			"failure_class":        "checks_" + c.vf.Classification,
+			"failure_evidence_ref": c.vf.ExternalURL,
+			"recommended_action":   "retry",
+		}
+		return nil
+	},
+	"hitl/mergeability_unknown": func(c gateReEvalHITLContext) error {
+		c.cmd.Reason = InterruptFailureReview
+		c.cmd.FailureReviewVariant = FailureReviewAttempt
+		c.cmd.FailureReviewRetryKind = FailureReviewGateRecheck
+		c.cmd.Facts = map[string]string{
+			"failure_class":        "mergeability_unknown",
+			"failure_evidence_ref": c.eventRef,
+			"recommended_action":   "retry",
+		}
+		return nil
+	},
+	"hitl/input_unknown": func(c gateReEvalHITLContext) error {
+		if c.vf.Field == "" {
+			return fmt.Errorf("%w: input_unknown missing field", ErrGateReEvaluationContract)
+		}
+		c.cmd.Reason = InterruptFailureReview
+		c.cmd.FailureReviewVariant = FailureReviewAttempt
+		c.cmd.FailureReviewRetryKind = FailureReviewGateRecheck
+		c.cmd.Facts = map[string]string{
+			"failure_class":        "gate_input_unknown:" + c.vf.Field,
+			"failure_evidence_ref": c.eventRef,
+			"recommended_action":   "retry",
+		}
+		return nil
+	},
+	"hitl/guardrail_violation": func(c gateReEvalHITLContext) error {
+		if c.vf.RuleID == "" || c.vf.MatchedPathsDigest == "" {
+			return fmt.Errorf("%w: guardrail_violation missing rule_id or matched_paths_digest", ErrGateReEvaluationContract)
+		}
+		var proj struct {
+			EffectivePolicyHash string `json:"effective_policy_hash"`
+		}
+		if err := json.Unmarshal([]byte(c.p.GateInputJSON), &proj); err != nil || proj.EffectivePolicyHash == "" {
+			return fmt.Errorf("%w: gate input missing effective_policy_hash", ErrGateReEvaluationContract)
+		}
+		c.cmd.Reason = InterruptGuardrailViolation
+		c.cmd.GuardrailLevel = GuardrailSoft
+		c.cmd.Generation.PolicySnapshotID = proj.EffectivePolicyHash
+		c.cmd.Generation.ViolationCode = c.vf.RuleID
+		c.cmd.Generation.SubjectDigest = c.vf.MatchedPathsDigest
+		c.cmd.Facts = map[string]string{
+			"rule_id":             c.vf.RuleID,
+			"impact_scope":        "matched_paths:" + c.vf.MatchedPathsDigest,
+			"recommended_action":  "approve",
+			"policy_evidence_ref": c.eventRef,
+		}
+		return nil
+	},
+	"hitl/code_review": func(c gateReEvalHITLContext) error {
+		if c.vf.ReviewPolicy == "" {
+			return fmt.Errorf("%w: code_review missing review_policy", ErrGateReEvaluationContract)
+		}
+		policyDigest, err := gateReEvalCodeReviewPolicyDigest(c.p.GateInputHash, c.vf.ReviewPolicy)
+		if err != nil {
+			return err
+		}
+		c.cmd.Reason = InterruptCodeReview
+		c.cmd.Generation.PolicySnapshotID = policyDigest
+		c.cmd.Facts = map[string]string{
+			"change_ref":         c.changeRef,
+			"head_sha":           c.row.op.HeadSHA,
+			"review_requirement": c.vf.ReviewPolicy,
+			"recommended_action": "approve",
+			"diff_ref":           c.eventRef,
+		}
+		return nil
+	},
+	"hitl/merge_conflict": func(c gateReEvalHITLContext) error {
+		c.cmd.Reason = InterruptMergeConflict
+		c.cmd.GatePhase = GateMerge
+		c.cmd.Generation.ConflictDigest = MergeConflictDigest(c.row.op.ChangeID, c.row.op.HeadSHA)
+		c.cmd.Facts = map[string]string{
+			"change_ref":            c.changeRef,
+			"head_sha":              c.row.op.HeadSHA,
+			"conflict_summary":      "mergeability=conflicting",
+			"recommended_action":    "retry",
+			"conflict_evidence_ref": c.eventRef,
+		}
+		return nil
+	},
+}
+
 // gateReEvalFailureReviewCalibrationTx allocates a fresh calibration_entries
 // row tied to the source Interrupt's gate evaluation. The failed arm records no
 // new gate evaluation (it has no VerdictV1), so the failure_review(gate_recheck)
@@ -158,103 +280,12 @@ func (d *DB) emitGateReEvalHITLSuccessorTx(ctx context.Context, tx *sql.Tx, row 
 			HeadSHA:    row.op.HeadSHA,
 		},
 	}
-	switch v.Kind + "/" + v.Code {
-	case "hitl/checks_timeout":
-		if vf.ExternalURL == "" {
-			return Interrupt{}, fmt.Errorf("%w: checks_timeout missing external_url", ErrGateReEvaluationContract)
-		}
-		cmd.Reason = InterruptFailureReview
-		cmd.FailureReviewVariant = FailureReviewAttempt
-		cmd.FailureReviewRetryKind = FailureReviewGateRecheck
-		cmd.Facts = map[string]string{
-			"failure_class":        "checks_timeout",
-			"failure_evidence_ref": vf.ExternalURL,
-			"recommended_action":   "retry",
-		}
-	case "hitl/failure_review":
-		if vf.ExternalURL == "" || vf.Classification == "" {
-			return Interrupt{}, fmt.Errorf("%w: failure_review missing external_url or classification", ErrGateReEvaluationContract)
-		}
-		cmd.Reason = InterruptFailureReview
-		cmd.FailureReviewVariant = FailureReviewAttempt
-		cmd.FailureReviewRetryKind = FailureReviewGateRecheck
-		cmd.Facts = map[string]string{
-			"failure_class":        "checks_" + vf.Classification,
-			"failure_evidence_ref": vf.ExternalURL,
-			"recommended_action":   "retry",
-		}
-	case "hitl/mergeability_unknown":
-		cmd.Reason = InterruptFailureReview
-		cmd.FailureReviewVariant = FailureReviewAttempt
-		cmd.FailureReviewRetryKind = FailureReviewGateRecheck
-		cmd.Facts = map[string]string{
-			"failure_class":        "mergeability_unknown",
-			"failure_evidence_ref": eventRef,
-			"recommended_action":   "retry",
-		}
-	case "hitl/input_unknown":
-		if vf.Field == "" {
-			return Interrupt{}, fmt.Errorf("%w: input_unknown missing field", ErrGateReEvaluationContract)
-		}
-		cmd.Reason = InterruptFailureReview
-		cmd.FailureReviewVariant = FailureReviewAttempt
-		cmd.FailureReviewRetryKind = FailureReviewGateRecheck
-		cmd.Facts = map[string]string{
-			"failure_class":        "gate_input_unknown:" + vf.Field,
-			"failure_evidence_ref": eventRef,
-			"recommended_action":   "retry",
-		}
-	case "hitl/guardrail_violation":
-		if vf.RuleID == "" || vf.MatchedPathsDigest == "" {
-			return Interrupt{}, fmt.Errorf("%w: guardrail_violation missing rule_id or matched_paths_digest", ErrGateReEvaluationContract)
-		}
-		var proj struct {
-			EffectivePolicyHash string `json:"effective_policy_hash"`
-		}
-		if err := json.Unmarshal([]byte(p.GateInputJSON), &proj); err != nil || proj.EffectivePolicyHash == "" {
-			return Interrupt{}, fmt.Errorf("%w: gate input missing effective_policy_hash", ErrGateReEvaluationContract)
-		}
-		cmd.Reason = InterruptGuardrailViolation
-		cmd.GuardrailLevel = GuardrailSoft
-		cmd.Generation.PolicySnapshotID = proj.EffectivePolicyHash
-		cmd.Generation.ViolationCode = vf.RuleID
-		cmd.Generation.SubjectDigest = vf.MatchedPathsDigest
-		cmd.Facts = map[string]string{
-			"rule_id":             vf.RuleID,
-			"impact_scope":        "matched_paths:" + vf.MatchedPathsDigest,
-			"recommended_action":  "approve",
-			"policy_evidence_ref": eventRef,
-		}
-	case "hitl/code_review":
-		if vf.ReviewPolicy == "" {
-			return Interrupt{}, fmt.Errorf("%w: code_review missing review_policy", ErrGateReEvaluationContract)
-		}
-		policyDigest, err := gateReEvalCodeReviewPolicyDigest(p.GateInputHash, vf.ReviewPolicy)
-		if err != nil {
-			return Interrupt{}, err
-		}
-		cmd.Reason = InterruptCodeReview
-		cmd.Generation.PolicySnapshotID = policyDigest
-		cmd.Facts = map[string]string{
-			"change_ref":         changeRef,
-			"head_sha":           row.op.HeadSHA,
-			"review_requirement": vf.ReviewPolicy,
-			"recommended_action": "approve",
-			"diff_ref":           eventRef,
-		}
-	case "hitl/merge_conflict":
-		cmd.Reason = InterruptMergeConflict
-		cmd.GatePhase = GateMerge
-		cmd.Generation.ConflictDigest = MergeConflictDigest(row.op.ChangeID, row.op.HeadSHA)
-		cmd.Facts = map[string]string{
-			"change_ref":            changeRef,
-			"head_sha":              row.op.HeadSHA,
-			"conflict_summary":      "mergeability=conflicting",
-			"recommended_action":    "retry",
-			"conflict_evidence_ref": eventRef,
-		}
-	default:
+	handler, ok := gateReEvalHITLHandlers[v.Kind+"/"+v.Code]
+	if !ok {
 		return Interrupt{}, fmt.Errorf("%w: hitl verdict %s/%s not wired", ErrGateReEvaluationSuccessorNotWired, v.Kind, v.Code)
+	}
+	if err := handler(gateReEvalHITLContext{cmd: &cmd, row: row, vf: vf, p: p, eventRef: eventRef, changeRef: changeRef}); err != nil {
+		return Interrupt{}, err
 	}
 	if cmd.Reason == InterruptFailureReview {
 		factsJSON, err := canonicalJSON(cmd.Facts)

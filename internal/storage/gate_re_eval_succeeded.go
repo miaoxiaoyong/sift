@@ -47,6 +47,22 @@ type gateInputIdentityJSON struct {
 	ChangeID  string `json:"change_id"`
 }
 
+var gateReEvalSucceededVerdicts = map[string]struct{}{
+	"failed/change_not_open":     {},
+	"failed/hard_guardrail":      {},
+	"wait_checks/checks_pending": {},
+	"ready/no_auto_merge":        {},
+	"ready/merge":                {},
+	"retry_checks/flaky_retry":   {},
+	"hitl/checks_timeout":        {},
+	"hitl/failure_review":        {},
+	"hitl/guardrail_violation":   {},
+	"hitl/code_review":           {},
+	"hitl/merge_conflict":        {},
+	"hitl/mergeability_unknown":  {},
+	"hitl/input_unknown":         {},
+}
+
 func (d *DB) completeGateReEvalSucceededTx(ctx context.Context, tx *sql.Tx, claim ClaimedOperation, row gateReEvalAttemptRow, payload json.RawMessage, resultCanon []byte, nowMS int64) error {
 	var p gateReEvalSucceededPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -84,11 +100,7 @@ func (d *DB) completeGateReEvalSucceededTx(ctx context.Context, tx *sql.Tx, clai
 	// The wired succeeded matrix: no-successor verdicts, all HITL arms, plus
 	// ready/merge whose merge_change successor and retry_checks/flaky_retry whose
 	// rerun_checks successor are enqueued below.
-	switch v.Kind + "/" + v.Code {
-	case "failed/change_not_open", "failed/hard_guardrail", "wait_checks/checks_pending", "ready/no_auto_merge", "ready/merge", "retry_checks/flaky_retry",
-		"hitl/checks_timeout", "hitl/failure_review", "hitl/guardrail_violation", "hitl/code_review",
-		"hitl/merge_conflict", "hitl/mergeability_unknown", "hitl/input_unknown":
-	default:
+	if _, ok := gateReEvalSucceededVerdicts[v.Kind+"/"+v.Code]; !ok {
 		return fmt.Errorf("%w: succeeded verdict %s/%s successor not wired", ErrGateReEvaluationSuccessorNotWired, v.Kind, v.Code)
 	}
 	// retry_checks/flaky_retry carries the closed check_run_id and 1-based

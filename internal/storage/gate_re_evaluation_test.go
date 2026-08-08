@@ -53,6 +53,32 @@ func TestGateReEvalFailedResultDigestVectors(t *testing.T) {
 	}
 }
 
+func TestGateReEvalDispatchTablesCoverWiredCases(t *testing.T) {
+	allSucceeded := []string{
+		"failed/change_not_open", "failed/hard_guardrail", "wait_checks/checks_pending",
+		"ready/no_auto_merge", "ready/merge", "retry_checks/flaky_retry",
+		"hitl/checks_timeout", "hitl/failure_review", "hitl/guardrail_violation",
+		"hitl/code_review", "hitl/merge_conflict", "hitl/mergeability_unknown", "hitl/input_unknown",
+	}
+	for _, key := range allSucceeded {
+		t.Run("succeeded/"+key, func(t *testing.T) {
+			if _, ok := gateReEvalSucceededVerdicts[key]; !ok {
+				t.Fatalf("missing succeeded dispatch case %q", key)
+			}
+		})
+	}
+	for _, key := range []string{
+		"hitl/checks_timeout", "hitl/failure_review", "hitl/mergeability_unknown", "hitl/input_unknown",
+		"hitl/guardrail_violation", "hitl/code_review", "hitl/merge_conflict",
+	} {
+		t.Run(key, func(t *testing.T) {
+			if _, ok := gateReEvalHITLHandlers[key]; !ok {
+				t.Fatalf("missing HITL dispatch case %q", key)
+			}
+		})
+	}
+}
+
 func gateReEvalInterruptCfg() GateReEvalInterruptEmission {
 	return GateReEvalInterruptEmission{
 		AttentionDailyQuota: interruptQuota(),

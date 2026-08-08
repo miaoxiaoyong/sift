@@ -150,6 +150,19 @@ func YAMLToJSON(data []byte) ([]byte, error) {
 // enforcing duplicate-key, string-key and alias-cycle rules. path tracks the
 // container nodes currently on the recursion stack so an alias pointing back
 // into them is detected as a cycle.
+type yamlNodeHandler func(*yaml.Node, map[*yaml.Node]bool) (any, error)
+
+var yamlNodeHandlers map[yaml.Kind]yamlNodeHandler
+
+func init() {
+	yamlNodeHandlers = map[yaml.Kind]yamlNodeHandler{
+		yaml.DocumentNode: yamlDocumentValue,
+		yaml.ScalarNode:   yamlScalarValue,
+		yaml.SequenceNode: yamlSequenceValue,
+		yaml.MappingNode:  yamlMappingValue,
+	}
+}
+
 func nodeToValue(n *yaml.Node, path map[*yaml.Node]bool) (any, error) {
 	if n == nil {
 		return nil, nil
@@ -165,52 +178,61 @@ func nodeToValue(n *yaml.Node, path map[*yaml.Node]bool) (any, error) {
 		return nodeToValue(t, path)
 	}
 
-	switch n.Kind {
-	case yaml.DocumentNode:
-		if len(n.Content) == 0 {
-			return map[string]any{}, nil
-		}
-		return nodeToValue(n.Content[0], path)
-	case yaml.ScalarNode:
-		var v any
-		if err := n.Decode(&v); err != nil {
-			return nil, fmt.Errorf("config: decode YAML scalar: %w", err)
-		}
-		return v, nil
-	case yaml.SequenceNode:
-		path[n] = true
-		defer delete(path, n)
-		out := make([]any, 0, len(n.Content))
-		for _, c := range n.Content {
-			cv, err := nodeToValue(c, path)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, cv)
-		}
-		return out, nil
-	case yaml.MappingNode:
-		path[n] = true
-		defer delete(path, n)
-		out := make(map[string]any, len(n.Content)/2)
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			key, err := mapKey(n.Content[i], path)
-			if err != nil {
-				return nil, err
-			}
-			if _, dup := out[key]; dup {
-				return nil, fmt.Errorf("config: duplicate YAML map key %q", key)
-			}
-			vv, err := nodeToValue(n.Content[i+1], path)
-			if err != nil {
-				return nil, err
-			}
-			out[key] = vv
-		}
-		return out, nil
-	default:
+	handler, ok := yamlNodeHandlers[n.Kind]
+	if !ok {
 		return nil, fmt.Errorf("config: unsupported YAML node kind %d", n.Kind)
 	}
+	return handler(n, path)
+}
+
+func yamlDocumentValue(n *yaml.Node, path map[*yaml.Node]bool) (any, error) {
+	if len(n.Content) == 0 {
+		return map[string]any{}, nil
+	}
+	return nodeToValue(n.Content[0], path)
+}
+
+func yamlScalarValue(n *yaml.Node, _ map[*yaml.Node]bool) (any, error) {
+	var v any
+	if err := n.Decode(&v); err != nil {
+		return nil, fmt.Errorf("config: decode YAML scalar: %w", err)
+	}
+	return v, nil
+}
+
+func yamlSequenceValue(n *yaml.Node, path map[*yaml.Node]bool) (any, error) {
+	path[n] = true
+	defer delete(path, n)
+	out := make([]any, 0, len(n.Content))
+	for _, c := range n.Content {
+		cv, err := nodeToValue(c, path)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, cv)
+	}
+	return out, nil
+}
+
+func yamlMappingValue(n *yaml.Node, path map[*yaml.Node]bool) (any, error) {
+	path[n] = true
+	defer delete(path, n)
+	out := make(map[string]any, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key, err := mapKey(n.Content[i], path)
+		if err != nil {
+			return nil, err
+		}
+		if _, dup := out[key]; dup {
+			return nil, fmt.Errorf("config: duplicate YAML map key %q", key)
+		}
+		vv, err := nodeToValue(n.Content[i+1], path)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = vv
+	}
+	return out, nil
 }
 
 // mapKey resolves a mapping key node to a string, rejecting aliases, non-string

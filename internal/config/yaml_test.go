@@ -2,7 +2,10 @@ package config
 
 import (
 	"errors"
+	"reflect"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // YAML→JSON strict bridge (config.md §4 step 2): reject duplicate keys,
@@ -62,6 +65,49 @@ func TestYAMLRejectsMergeKey(t *testing.T) {
 func TestYAMLEmptyRejected(t *testing.T) {
 	if _, err := YAMLToJSON([]byte("   \n")); !errors.Is(err, ErrEmptyConfigFile) {
 		t.Fatalf("expected ErrEmptyConfigFile, got %v", err)
+	}
+}
+
+func TestYAMLNodeDispatchTable(t *testing.T) {
+	tests := []struct {
+		name string
+		node *yaml.Node
+		want any
+	}{
+		{
+			name: "document",
+			node: &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: "value"}}},
+			want: "value",
+		},
+		{
+			name: "scalar",
+			node: &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "value"},
+			want: "value",
+		},
+		{
+			name: "sequence",
+			node: &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: "value"}}},
+			want: []any{"value"},
+		},
+		{
+			name: "mapping",
+			node: &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
+				{Kind: yaml.ScalarNode, Tag: "!!str", Value: "key"},
+				{Kind: yaml.ScalarNode, Tag: "!!str", Value: "value"},
+			}},
+			want: map[string]any{"key": "value"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := nodeToValue(tc.node, map[*yaml.Node]bool{})
+			if err != nil {
+				t.Fatalf("nodeToValue: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %#v, want %#v", got, tc.want)
+			}
+		})
 	}
 }
 
