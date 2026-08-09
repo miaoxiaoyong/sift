@@ -122,7 +122,7 @@ JSON 数字不得为 NaN/Infinity。网络帧无需作为存储 hash 输入；�
 
 ### 3.4 版本握手
 
-每次 RPC 都携完整的四元组：request 的 `(protocol_major, protocol_minor, client_version)` 与 response 的 `server_version`；不能因为调用方是同一归档中的 CLI/wrapper 而省略任一字段。`sift`、`sift-agent-wrapper` 分别以自己的 canonical SemVer 填 `client_version`，daemon 以自己的版本填 `server_version`。服务端按 §3.2 的顺序在鉴权和 params 解码前拒绝不兼容版本；客户端也必须在使用 `result/error` 前校验 response envelope、request id、protocol 版本和 server binary major。
+每次 RPC 都携完整的四元组：request 的 `(protocol_major, protocol_minor, client_version)` 与 response 的 `server_version`；不能因为调用方是同一归档中的 CLI/wrapper 而省略任一字段。`sift`、`sift-agent-wrapper` 分别以自己的 canonical SemVer 填 `client_version`；`sift daemon` 以自己的版本填 `server_version`。服务端按 §3.2 的顺序在鉴权和 params 解码前拒绝不兼容版本；客户端也必须在使用 `result/error` 前校验 response envelope、request id、protocol 版本和 server binary major。
 
 wrapper 还有一段文件到进程的握手：[`bootstrap.json` v2](#71-bootstrapjson-v2) 必须携 `protocol_major`、`protocol_minor`、`daemon_version`、`wrapper_version`。wrapper 先校验自身版本与 `wrapper_version` 完全相等、再校验 daemon/wrapper binary major 与协议版本；失败时 unlink 已读取的 bootstrap、不得调用 acquire、更不得写 control 或 spawn。随后 `claim.acquire` 的 RPC envelope 再以 wrapper 实际版本作为 `client_version` 完成双向校验，文件字段不能替代 RPC 握手。
 

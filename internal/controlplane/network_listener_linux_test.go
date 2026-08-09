@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// TestV10ZeroNetworkListeners proves that starting siftd leaves this process
+// TestV10ZeroNetworkListeners proves that starting `sift daemon` leaves this process
 // with no TCP or UDP socket. Unix sockets are checked separately by V10a.
 func TestV10ZeroNetworkListeners(t *testing.T) {
 	home := testHome(t)
@@ -21,7 +21,7 @@ func TestV10ZeroNetworkListeners(t *testing.T) {
 	defer s.Close()
 
 	if got := networkListenerInodes(t); len(got) != 0 {
-		t.Fatalf("siftd opened TCP/UDP listeners: %v", got)
+		t.Fatalf("`sift daemon` opened TCP/UDP listeners: %v", got)
 	}
 }
 

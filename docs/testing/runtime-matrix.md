@@ -60,7 +60,7 @@ R01–R19 的 tmux 参数化断言只能读取 wrapper/control/result/process-gr
 
 | ID | 向量 | 当前精确证据 | 状态/Owner |
 |---|---|---|---|
-| X01 | kill siftd / wrapper / Agent / backend session | process crash tests覆盖前三类局部；无 tmux | planned #849/#850 |
+| X01 | 停止 `sift daemon` / wrapper / Agent / backend session | process crash tests覆盖前三类局部；无 tmux | planned #849/#850 |
 | X02 | acquire/permit/started replay；permit replay spawn count=1 | `TestProductionWrapperReplaysLostPermitResponseWithSameParameters`、`TestPermitGateConsumesReplayedPermitBeforeSpawn` | partial → #849 双 backend |
 | X03 | permit 后暂停旧 owner；replacement 前存在明确空区间 | `TestPausedExecutionWrapperRecoveryDoesNotOverlapOwner` | partial → #849 双 backend |
 | X04 | spawning 中 operator retry/kill | termination storage/control tests局部 | planned #851 |

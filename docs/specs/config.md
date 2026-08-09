@@ -32,7 +32,7 @@ M5 配额字段的后续契约落点见 [2026-07-29-m5-config-field-review-pi-gp
 
 1. 全局配置是 **closed contract**：未知字段、字段缺失导致的歧义、错误类型和未知枚举一律拒绝。
 2. YAML 先转为 JSON，再经全系统唯一 decode gateway 的 `closed` 策略校验；业务代码不得另开 YAML/JSON 解码入口。
-3. V0 不热加载全局配置。daemon 启动时读取一次、规范化、计算指纹并持久化快照；磁盘变化只告警，不改变有效配置。修改后必须重启 `siftd`。
+3. V0 不热加载全局配置。daemon 启动时读取一次、规范化、计算指纹并持久化快照；磁盘变化只告警，不改变有效配置。修改后必须重启 `sift daemon`。
 4. `config.yaml` 不存 forge token、operator token、run token、bootstrap nonce、wrapper session 或 spawn permit。
 5. 全局配置只给项目策略提供缺省值，不覆盖 base 分支 `.sift/policy.yaml` 的显式声明。
 6. 所有 duration 使用 Go duration 字符串，例如 `500ms`、`15s`、`2h`；禁止裸数字。所有比例是闭区间 `[0,1]` 的 JSON number。

@@ -1,4 +1,4 @@
-// Command sift is the thin operator RPC client.
+// Command sift is the operator CLI and local control-plane daemon.
 package main
 
 import (
@@ -38,6 +38,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	command := args[1]
+	if command == "daemon" {
+		if len(args) != 2 {
+			report(stderr, fmt.Errorf("usage: sift daemon"))
+			return 2
+		}
+		return runDaemonCommand(home, stderr)
+	}
 	if command == "doctor" && len(args) == 3 && args[2] == "--offline" {
 		result := controlplane.OfflineDoctor(home)
 		return emitDoctor(stdout, stderr, result)
@@ -236,7 +243,7 @@ func printJSON(w io.Writer, v any) error {
 }
 func report(w io.Writer, err error) { fmt.Fprintln(w, "sift:", err) }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sift ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|hooks-bootstrap <project-id>|kill|retry|report <kind> --key KEY --payload JSON")
+	fmt.Fprintln(w, "usage: sift daemon|ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|hooks-bootstrap <project-id>|kill|retry|report <kind> --key KEY --payload JSON")
 }
 
 // nullableStringCLI emits nil for an empty string so the RPC param set stays

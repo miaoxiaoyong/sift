@@ -318,7 +318,7 @@ Payload不含任何 capability 明文：
 
 M1 必须完整实现通用 claim/complete、退避、immutable attempts/results 与 `launch_agent`；其他 kind 的 payload decoder、operation key builder 和 fake adapter 契约在 M1 建立，随对应里程碑启用。不得用一个 `map[string]any` payload 占位后绕过 schema。
 
-生产接线由 `cmd/siftd` 的唯一 `startSchedulers` 负责：提交后的 `DB.SetOutboxWakeup` 唤醒独立 Outbox scheduler，启动和 supervisor 时钟只补偿重启后的 durable retry deadline，不能代替提交唤醒。`startSchedulers` 返回前等待 outbox startup sweep 完成，令后续 commit wake 与 startup wake 可判别；`cmd/siftd/main_test.go` 通过 production wiring 和真实 `Daemon.OutboxTick` 覆盖 `EnqueueOperation` 与 `EmitInterrupt` 两条写口，并验证移除 wake hook 后不能由迟到 startup wake 推进。`TestOutboxCommitWakeupClaimsWithoutPeriodicTick` 仍是 storage seam 测试，不单独声称 production wiring。kind/project 过滤后的 claim 先按每个 Run 最近一次 append-only outbox attempt 序位轮转（无 Run 的 operation 自成 identity），再按 due time/id 排序；`outbox_operations_run_fairness` 支撑该查询，避免 hot Run 在持续 backlog 下饿死其他 Run。
+生产接线由 `cmd/sift/daemon.go` 的唯一 `startSchedulers` 负责：提交后的 `DB.SetOutboxWakeup` 唤醒独立 Outbox scheduler，启动和 supervisor 时钟只补偿重启后的 durable retry deadline，不能代替提交唤醒。`startSchedulers` 返回前等待 outbox startup sweep 完成，令后续 commit wake 与 startup wake 可判别；`cmd/sift/daemon_test.go` 通过 production wiring 和真实 `Daemon.OutboxTick` 覆盖 `EnqueueOperation` 与 `EmitInterrupt` 两条写口，并验证移除 wake hook 后不能由迟到 startup wake 推进。`TestOutboxCommitWakeupClaimsWithoutPeriodicTick` 仍是 storage seam 测试，不单独声称 production wiring。kind/project 过滤后的 claim 先按每个 Run 最近一次 append-only outbox attempt 序位轮转（无 Run 的 operation 自成 identity），再按 due time/id 排序；`outbox_operations_run_fairness` 支撑该查询，避免 hot Run 在持续 backlog 下饿死其他 Run。
 
 ## 14. 验收
 

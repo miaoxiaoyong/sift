@@ -43,8 +43,12 @@
 git clone https://github.com/miaoxiaoyong/sift.git
 cd sift
 
-# 构建（后续补充）
-# go build -o sift ./cmd/sift
+# 构建两个发布二进制
+go build -o sift ./cmd/sift
+go build -o sift-agent-wrapper ./cmd/sift-agent-wrapper
+
+# 启动 daemon
+./sift daemon
 ```
 
 ## 开发
@@ -61,8 +65,9 @@ cd sift
 # 运行测试
 go test ./...
 
-# 构建
-go build ./...
+# 构建（含两个发布二进制）
+go build -o sift ./cmd/sift
+go build -o sift-agent-wrapper ./cmd/sift-agent-wrapper
 ```
 
 > 项目尚处早期，以上命令在实现完成后生效。

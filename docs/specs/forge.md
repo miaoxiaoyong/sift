@@ -391,7 +391,7 @@ CreatedAt time.Time
 4. **分页**：列表动词逐页调用 CLI，每个子进程只发一个可计数的 HTTP 请求；穷尽分页前不得返回 `no_match` 或推进游标。禁止用一次 `--paginate` 子进程隐藏多个远端请求而少收费。
 5. **超时**：每次调用带 context deadline，由上层注入。适配器不设自己的全局超时（不同动词的预期延迟不同）。
 6. **stdout/stderr**：响应从 stdout 解析；stderr 截断、脱敏后进入 `Summary`，不得混流。需要 rate-limit header 时显式请求并在边界剥离 header。
-7. **环境**：继承 `siftd` 环境与 CLI 登录态；适配器不得自行落盘 forge 凭证。
+7. **环境**：继承 `sift daemon` 环境与 CLI 登录态；适配器不得自行落盘 forge 凭证。
 
 ## 9. API 预算收费口
 
@@ -455,7 +455,7 @@ M2 fake 不要求模拟 API 预算（收费口测试另用 mock），不要求�
 | [`brain.md`](brain.md) | T1/T3/T5 消费 Forge verb 的输入 |
 | [`storage.md`](storage.md) | `budget_counters` 的 forge API 固定小时桶 |
 | [`outbox.md`](outbox.md) | 评论/Change/merge worker 协议、Forge 收费键与 V0 merge method |
-| [`control-plane.md`](control-plane.md) | 与 forge 无关（siftd 内部控制面） |
+| [`control-plane.md`](control-plane.md) | 与 forge 无关（`sift daemon` 内部控制面） |
 
 ---
 

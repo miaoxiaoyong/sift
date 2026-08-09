@@ -44,7 +44,7 @@ summary: 架构设计：系统结构、关键决策与设计理由
 | C7 | 策略从 base 分支读取；`.sift/**` 与 CI 配置为不可豁免硬护栏 | PRD §13.1、§5.4 |
 | C8 | 驱动性事件必须解析 actor 并校验 allowlist，取不到即忽略 | PRD §9.2 |
 | C9 | 最快闭环优先于架构完备 | PRD A4 |
-| **C10** | **三个同版本、自包含原生二进制组成单归档，macOS / Linux × arm64 / amd64；目标机不装语言运行时** | PRD §9.3 兼容性 / 分发 |
+| **C10** | **两个同版本、自包含原生二进制（`sift` / `sift-agent-wrapper`）组成单归档，macOS / Linux × arm64 / amd64；目标机不装语言运行时** | PRD §9.3 兼容性 / 分发 |
 
 ### 2.2 质量属性场景
 
@@ -52,7 +52,7 @@ summary: 架构设计：系统结构、关键决策与设计理由
 
 | # | 场景 | 判据 |
 |---|------|------|
-| Q1 | 任意时刻 `kill -9 siftd`，重启后系统对世界的认知完全由 DB + 外部实况（forge / 进程）重建 | 无幽灵 running、游标不回退、无重复裁定 |
+| Q1 | 任意时刻停止 `sift daemon`，重启后系统对世界的认知完全由 DB + 外部实况（forge / 进程）重建 | 无幽灵 running、游标不回退、无重复裁定 |
 | Q2 | 同一份 Gate 输入在任意时间重跑得到同一 verdict | 回放集可离线重跑并量化漏放/误拦变化 |
 | Q3 | GitHub 与 GitLab 从第一天共享领域语义 | 双平台适配器跑同一套契约测试 |
 | Q4 | ≥3 Run 并发时打扰不突破注意力配额 | 配额是运行时机制而非验收时的侥幸 |
@@ -79,7 +79,7 @@ summary: 架构设计：系统结构、关键决策与设计理由
 flowchart LR
     Human((Human)) -->|Issue / 指令评论 / 标签| Forge[GitHub / GitLab]
     Human -->|运维命令| CLI[sift CLI]
-    Sift[Sift · siftd] <-->|gh / glab api| Forge
+    Sift[Sift · sift daemon] <-->|gh / glab api| Forge
     Sift -->|claude -p 等| LLM[本机 agent CLI · Brain]
     Sift -->|worktree + wrapper| Agent[外部 coding agent]
     Sift -->|Interrupt| Channel[通知 Channel]
@@ -95,8 +95,8 @@ Sift 不持有 forge 凭证（由 `gh` / `glab` 自身持有），不监听端�
 
 | 进程 | 性质 | 说明 |
 |------|------|------|
-| `siftd` | 常驻，单实例 | 承载全部模块；**唯一的状态写入者** |
-| `sift` | 一次性 | 薄客户端，经运维 socket 与 siftd 通话，不直连数据库 |
+| `sift daemon` | 常驻，单实例 | 承载全部模块；**唯一的状态写入者** |
+| `sift`（其他子命令） | 一次性 | 薄客户端，经运维 socket 与 `sift daemon` 通话，不直连数据库 |
 | `sift-agent-wrapper` | 每 attempt 一个 | 由 Runtime 启动（`tmux` 后端下是在 pane 里启动），再由它启动真实 agent——**agent 由 wrapper 直接 spawn 进其进程组；持续留组是受支持 Agent 的执行契约，与后端无关**（§8.4）；负责 session 绑定的 spawn handoff、启动证据落盘、进程组回收。**同样不直连数据库** |
 
 **两个 socket，两类能力**（不是一个 socket 上放两种权限）：
@@ -118,7 +118,7 @@ Unix domain socket 是文件系统对象，不是网络端口，因此 C3「暴�
 
 ```mermaid
 flowchart TB
-    subgraph siftd
+    subgraph daemon
         IT[Intake tick] --> Rec[Reconciler]
         ST[Supervisor tick] --> Rec
         Rec --> Engine[Run Engine · transition 唯一入口]
@@ -162,7 +162,7 @@ flowchart TB
 
 | # | 议题 | 结论 | 展开 | ADR |
 |---|------|------|------|-----|
-| D1 | 技术栈（PRD §12 #15） | **Go**（`CGO_ENABLED=0`），单模块三二进制，SQLite(WAL) 单库；取代原 Bun + TypeScript 决策 | §5 | [009](decisions/009-tech-stack-go.md) 取代 [001](decisions/001-tech-stack-bun-typescript.md) |
+| D1 | 技术栈（PRD §12 #15） | **Go**（`CGO_ENABLED=0`），单模块两个发布二进制，SQLite(WAL) 单库；取代原 Bun + TypeScript 决策 | §5 | [009](decisions/009-tech-stack-go.md) 取代 [001](decisions/001-tech-stack-bun-typescript.md) |
 | D2 | 调度形态 | 控制循环（reconciler + tick），非事件回调链 | §6.1 | [002](decisions/002-reconciler-and-single-transition-entry.md) |
 | D3 | 状态一致性 | 唯一 `transition()` 入口 + CAS + 状态/事件同事务 | §6.2–6.3 | [002](decisions/002-reconciler-and-single-transition-entry.md) |
 | D4 | 外部副作用 | transactional outbox + 稳定 operation key + 至少一次 + 幂等收敛；merge 另加远端 expected-head CAS，agent 启动另用 operation lease + spawn handoff | §6.4 | [003](decisions/003-transactional-outbox.md)、[010](decisions/010-attempt-spawn-handoff.md)、[011](decisions/011-merge-requires-expected-head-cas.md) |
@@ -194,7 +194,7 @@ flowchart TB
 
 | 层 | 选择 |
 |----|------|
-| 语言 | Go（当前稳定版），`CGO_ENABLED=0`；单模块、三个二进制（`siftd` / `sift` / `sift-agent-wrapper`） |
+| 语言 | Go（当前稳定版），`CGO_ENABLED=0`；单模块、两个发布二进制（`sift` / `sift-agent-wrapper`），daemon 由 `sift daemon` 启动 |
 | 持久化 | SQLite via **`modernc.org/sqlite`（纯 Go）**，WAL + foreign_keys + `busy_timeout`；**写连接池上限 1**；手写 SQL + 版本化迁移文件，不引 ORM |
 | 边界校验 | 结构体为唯一定义 → 反射生成 JSON Schema（入 git）；同一份 schema 用于运行时校验与 LLM 触点的结构化输出约束 |
 | 配置解析 | YAML → JSON 后进入同一个 decode gateway，并显式选择 `closed` 策略；与 Forge 共用入口，不共用 unknown-field 策略 |
@@ -202,7 +202,7 @@ flowchart TB
 | CLI | 手写参数解析或轻量库；指令语法解析器手写（C1，不得用 LLM） |
 | 日志 | 结构化 JSON（系统日志，`log/slog`）+ 每 Run 原始字节流（agent 日志） |
 | 测试 | 标准 `testing` + 属性测试库 + 子进程崩溃注入 |
-| 构建分发 | 交叉编译三个同版本自包含二进制 + GoReleaser（单归档 / manifest / 校验和 / Homebrew tap）；launchd user agent（macOS）/ systemd user unit（Linux） |
+| 构建分发 | 交叉编译两个同版本自包含二进制（`sift` / `sift-agent-wrapper`）+ GoReleaser（单归档 / manifest / 校验和 / Homebrew tap）；launchd user agent（macOS）/ systemd user unit（Linux） |
 
 放弃：**Bun + TypeScript**（[ADR-001](decisions/001-tech-stack-bun-typescript.md)，前提失效见下）；Node LTS（无法稳定产出等价的自包含原生可执行套件）；Rust（风险面不匹配——本项目难点是事务、恢复、fencing、外部 CLI 与权限边界，不是内存安全或性能）；Python（分发依赖解释器）。完整取舍见 [ADR-009](decisions/009-tech-stack-go.md)。
 
@@ -217,7 +217,7 @@ Go 的风险不在长跑，在**边界解码**：`encoding/json` 缺失字段给
 3. **每个边界类型一对 golden test**：封闭契约断言额外字段与必填缺失均被拒；Forge 契约断言无关新增字段被接受、必需字段缺失或变型被拒。fail closed 与前向兼容因此同时成为被测性质——**这条是前两条的执行保障，缺了它前两条就只是约定**。
 4. **禁止把定时器当调度器**：唯一的时间驱动来源是 §6.1 的三组 tick，不得散落零散 ticker。
 
-**监督权威仍不在 runtime API 上**（进程存活、退出码、完成证据一律取自 wrapper 落盘文件，§8.4）。这条从 D0.3 继承，但**理由已经变了**：原先它兼任「对冲 runtime bug」，现在它的唯一理由是 `siftd` 重启后必须能判断上一次 agent 是死是活——那与语言无关，因此 [ADR-005](decisions/005-execution-backend-and-wrapper-contract.md) 不因换语言而失效。
+**监督权威仍不在 runtime API 上**（进程存活、退出码、完成证据一律取自 wrapper 落盘文件，§8.4）。这条从 D0.3 继承，但**理由已经变了**：原先它兼任「对冲 runtime bug」，现在它的唯一理由是 `sift daemon` 重启后必须能判断上一次 agent 是死是活——那与语言无关，因此 [ADR-005](decisions/005-execution-backend-and-wrapper-contract.md) 不因换语言而失效。
 
 **退出条件（触发即追加 ADR，但都不换语言）**：`modernc.org/sqlite` 在长生命周期 + WAL 下出现正确性问题 → 切 CGO 驱动并接受交叉编译成本（影响面限于存储模块与发布链）；反射生成的 schema 无法表达某个边界契约 → 改为手写 schema 为唯一定义、结构体由其生成（校验语义不变）；某平台常驻托管无法稳定 → 缩减支持矩阵并在 PRD §9.3 如实降级。**三条逃生舱都在 Go 内部且各自隔离在一个模块**——这与 ADR-001「切 Node」那条跨 runtime 的退路是本质区别。
 
@@ -450,7 +450,7 @@ D0.2 写的「按 `(base, head branch)` 查是否已存在**开启的** Change�
 
 这条必须裁死，因为**整条 `spawning` 证据链只挂在一个观测原语上——「已登记 wrapper 仍活着，或其进程组仍存在」**。若 tmux 后端让 agent 成为 tmux server 的子进程，该原语在 tmux 下失效：wrapper 崩溃后进程组不存在、Agent 身份缺失，恢复会按 §10.1 判 `orphaned` 并新开 attempt，而会话里的 agent 还活着——本轮协议消灭的双写窗口换个后端就复活了。同时 wrapper 契约第 7 条（以进程组回收子进程）与下面启动协议第 7 步（spawn 到已记录的进程组）对该后端也一并不成立。**裁决拓扑比新增一个后端中性的「执行句柄」更小**：前者让原语天然后端中性，后者要求恢复矩阵维护两套观测语义，而其中一套（按会话名探测）正是本模块开头拒绝依赖的东西。
 
-代价如实写：**真 PTY 由 wrapper 分配**（自建 pty，中继到 pane 与 `agent.log`），不靠继承 tmux 的 pane tty。于是 PTY 与后端选择解耦——`tmux` 的价值收窄为 attach 与「siftd 重启后仍有一个可见的宿主」两项，不再是「需要真 PTY 才选它」（ADR-005 已同步改写这条理由）。
+代价如实写：**真 PTY 由 wrapper 分配**（自建 pty，中继到 pane 与 `agent.log`），不靠继承 tmux 的 pane tty。于是 PTY 与后端选择解耦——`tmux` 的价值收窄为 attach 与「`sift daemon` 重启后仍有一个可见的宿主」两项，不再是「需要真 PTY 才选它」（ADR-005 已同步改写这条理由）。
 
 **进程组证据有明确适用前提**：Agent 及会继续写 worktree 的后代不得主动 `setsid` / 二次 fork 脱离 wrapper 进程组。直接父子关系只保证 spawn 时刻，不是永久的 OS 强制边界。V0 对恶意同 UID 逃逸不闭合（归 TM6）；对正常支持组合，必须按 agent CLI + 版本跑拓扑资格测试并由 `sift doctor` 报告。未验证或已观察到脱组的组合标为 `process-group-unverified`，旧执行体身份含糊时不得自动 retry，只能保持隔离并转人工（ADR-012）。
 
@@ -490,7 +490,7 @@ claim 仍由 daemon 在 attempt 事务内建立，wrapper 从不写 DB；但 **D
 - **`running` 只承认 Agent 启动证据。** `control.json` 在 spawn 前只能证明 wrapper 存在；只有 spawn 成功后写入的 Agent 身份 + `claim:started` 才能推进 attempt / Run。若 wrapper 在 spawn 成功后、写 Agent 身份前崩溃，恢复把仍存在的进程组视为“可能已启动”，先终止并确认消失，再将本 attempt `orphaned`；绝不在证据不全时补 `running` 或重放同一 operation。
 - **bootstrap nonce、wrapper session 与 run token 生命周期分离。** bootstrap nonce 只用于 acquire；session / permit 只在 wrapper 内存与 daemon DB；run token 写进 `control.json` 给 Agent 上报。Agent 拿不到启动凭据，run token 也调用不了三个启动动词。
 
-凭据不经环境变量与 argv 下发（理由同 §8.9：`ps e` 与 `/proc/<pid>/environ` 可读）。用文件而非继承 fd，是因为**后端可能夹在 siftd 与 wrapper 之间**（`tmux` 在 pane 里重开会话，fd 不保证传递）；代价是凭据在磁盘上存在一个短窗口，由 0600 + 读后立即 unlink + 一次性代次三者限制。注意方向：后端在 wrapper 之上，不在 wrapper 与 agent 之间（见本节拓扑裁决）。
+凭据不经环境变量与 argv 下发（理由同 §8.9：`ps e` 与 `/proc/<pid>/environ` 可读）。用文件而非继承 fd，是因为**后端可能夹在 `sift daemon` 与 wrapper 之间**（`tmux` 在 pane 里重开会话，fd 不保证传递）；代价是凭据在磁盘上存在一个短窗口，由 0600 + 读后立即 unlink + 一次性代次三者限制。注意方向：后端在 wrapper 之上，不在 wrapper 与 agent 之间（见本节拓扑裁决）。
 
 #### attempt 生命周期
 
@@ -632,7 +632,7 @@ PRD §5.6 要求预判写在人做决定**之前**。实现约束：**当 reconc
 
 **结论：V0 的上报通道是 `sift report` CLI，不是 MCP。**
 
-链路与凭据：Sift 只向 agent 环境注入**非机密的** `SIFT_RUN_DIR`；run token 存在该目录下的 `control.json`（0600），由 `sift report` 读取。**token 不进环境变量**——环境变量会出现在 `ps e` 与 `/proc/<pid>/environ` 里，是一条白送出去的暴露面。`sift report` 只连 `run.sock`（§3.2），siftd 校验 token 属于当前 attempt。attempt 已 `running` 才接收报告；若该 attempt 仍是已签 permit 的 `spawning`，服务端返回可识别的 `not_ready`，CLI 在有界时限内退避重试，以覆盖 Agent 刚启动而 `claim:started` 尚未提交的瞬间竞态；跨 Run、过期 attempt 或进入其他阶段一律不可重试地拒绝。
+链路与凭据：Sift 只向 agent 环境注入**非机密的** `SIFT_RUN_DIR`；run token 存在该目录下的 `control.json`（0600），由 `sift report` 读取。**token 不进环境变量**——环境变量会出现在 `ps e` 与 `/proc/<pid>/environ` 里，是一条白送出去的暴露面。`sift report` 只连 `run.sock`（§3.2），`sift daemon` 校验 token 属于当前 attempt。attempt 已 `running` 才接收报告；若该 attempt 仍是已签 permit 的 `spawning`，服务端返回可识别的 `not_ready`，CLI 在有界时限内退避重试，以覆盖 Agent 刚启动而 `claim:started` 尚未提交的瞬间竞态；跨 Run、过期 attempt 或进入其他阶段一律不可重试地拒绝。
 
 理由：目标用户是 coding agent，跑 shell 命令是其本职（与 `git` / `gh` 同），`--help` 自带文档；与 PRD §5.2「CLI 即已鉴权传输层」、§3.2「不绑定 harness」是同一集成哲学——对外集成面统一为 CLI，无第二种协议。反过来，各 harness 的 MCP 配置形态互不相同（`--mcp-config` / 配置文件 / 内置注册），**为 MCP 做适配本身就是一种 harness 绑定**，且多一个 shim 进程与一条 JSON-RPC 转发链。
 
@@ -681,7 +681,7 @@ MCP 保留为未来某 harness 明显受益时的第二种前端，接入点是 
 | TM5 注意力耗尽 | Report 入口确定性限流去重 + 每 Run Interrupt 子配额 + 发射器侧总配额与 critical 熔断 | §8.7、§8.9 |
 | TM6 worktree 之外无保护（**含本地控制面**） | **V0 不闭合**，见下 | 本节 |
 
-补充机制：敏感配置（allowlist、配额、agent 定义、全局缺省策略）启动期一次性读入 + 指纹校验，运行期不热加载（PRD §13.1）——**改这些配置必须重启 `siftd`，这是设计不是 bug**（PRD §9.1 已预警实现阶段会有人来「修」它）。
+补充机制：敏感配置（allowlist、配额、agent 定义、全局缺省策略）启动期一次性读入 + 指纹校验，运行期不热加载（PRD §13.1）——**改这些配置必须重启 `sift daemon`，这是设计不是 bug**（PRD §9.1 已预警实现阶段会有人来「修」它）。
 
 **全局配置「重启生效」与项目策略「每次评估从 base 重读」的不对称是刻意的，不是待定项**（评审 R7-P2-3）。两者服从同一条原则——**提权必须留痕**——只是留痕的方式不同：全局敏感配置是本地文件，热加载等于把「改一个文件就扩大 allowlist / 提高配额」变成一条无人复核的提权路径，所以代价定为一次显式重启；项目策略走 git，改动到 base 才生效，本身就有 diff、有作者、有历史，留痕由版本控制提供，因此可以每次重读。TM2 的语义正建立在后半句上：策略读取源是 base（§8.4），worktree 里的改动无论何时重读都不生效。指纹对象是**解析后的有效 hooks 配置**：`core.hooksPath` 的取值、其最终指向目录的内容、以及 `.git/config` 本身；每次 agent 结束后复核，发现变更即记安全事件并按严重度停 Run 或转 HITL。
 
@@ -760,7 +760,7 @@ PRD §10.2 的全部指标（当前九项）均从事件流与账本派生，V0 
 
 ### 10.1 启动期恢复矩阵
 
-`siftd` 启动后**先停止新摄入并暂停 outbox 重放**，然后扫描**全部非终态 attempt 与全部未完成的启动 operation**——不是只扫 `running` 的 Run。attempt 恢复先于 operation lease 回收：否则 worker 可能在 daemon 尚未识别旧 wrapper / 进程组时重放启动 operation，亲手制造第二个 owner。
+`sift daemon` 启动后**先停止新摄入并暂停 outbox 重放**，然后扫描**全部非终态 attempt 与全部未完成的启动 operation**——不是只扫 `running` 的 Run。attempt 恢复先于 operation lease 回收：否则 worker 可能在 daemon 尚未识别旧 wrapper / 进程组时重放启动 operation，亲手制造第二个 owner。
 
 | attempt 阶段 | 观测 | 恢复动作 |
 |-------------|------|----------|
@@ -854,17 +854,17 @@ PRD §10.2 的全部指标（当前九项）均从事件流与账本派生，V0 
 
 **单机单实例，但可分发给多台机器各自单实例**——PRD §9.3 的「单机单实例」约束的是一个安装内的形态，不是安装数量；C4（不做分布式）因此不受分发影响，两个实例之间没有任何协调关系。
 
-交叉编译出三个同版本、自包含原生二进制（`siftd` / `sift` / `sift-agent-wrapper`，`CGO_ENABLED=0`），以**一个带 manifest 与校验和的归档**发布，目标机不装语言 runtime。`siftd` 只从自己的安装目录解析同版本 wrapper，不从 `PATH` 猜；CLI / daemon / wrapper 的协议握手均带版本，主版本不一致拒绝执行并由 `sift doctor` 报错。日志落 `~/.sift/logs/`。无监听端口；控制面是两个属主 only 的 Unix socket（运维 / 上报，§3.2）。
+交叉编译出两个同版本、自包含原生二进制（`sift` / `sift-agent-wrapper`，`CGO_ENABLED=0`），以**一个带 manifest 与校验和的归档**发布，目标机不装语言 runtime。`sift daemon` 只从自身 `sift` 二进制所在目录解析同版本 wrapper，不从 `PATH` 猜；CLI / daemon / wrapper 的协议握手均带版本，主版本不一致拒绝执行并由 `sift doctor` 报错。日志落 `~/.sift/logs/`。无监听端口；控制面是两个属主 only 的 Unix socket（运维 / 上报，§3.2）。
 
 | 项 | macOS | Linux |
 |----|-------|-------|
-| 常驻托管 | launchd **user agent**（非 system daemon——它必须以用户身份跑才能用得上用户的 `gh` / agent CLI 登录态） | systemd **user unit**（同理，非 system service；需 `loginctl enable-linger` 才能在未登录时常驻）；无 systemd 的发行版仍支持 `siftd --foreground`，但 V0 不承诺自动常驻 |
+| 常驻托管 | launchd **user agent**（非 system daemon——它必须以用户身份跑才能用得上用户的 `gh` / agent CLI 登录态） | systemd **user unit**（同理，非 system service；需 `loginctl enable-linger` 才能在未登录时常驻）；无 systemd 的发行版仍支持 `sift daemon` 前台运行，但 V0 不承诺自动常驻 |
 | 架构 | arm64 / amd64 | amd64 / arm64 |
 | 安装 | Homebrew tap / Release 归档 | Release 归档（包管理器按需后补） |
 
 **平台差异只允许出现在两处**：托管单元的生成与探测，以及沙箱后端（§9.1）。其余一切——路径（统一 `~/.sift/`，§7）、socket、文件契约、恢复逻辑——两平台同码同行为，因此 §10.1 的恢复矩阵不按平台分叉。
 
-**升级以整套三二进制为原子单位**：先把同一 manifest 的三文件安装到版本目录，校验完成后原子切换 `current`（Homebrew 由 Cellar 链接承担），再重启托管单元；禁止逐文件覆盖正在使用的安装。迁移只能前向执行，daemon 自带迁移脚本，遇到比自己新的库版本拒绝启动（§7）。这条在自用时无所谓，在分发后是硬要求——用户会跳版本升级。
+**升级以整套两个发布二进制为原子单位**：先把同一 manifest 的两个文件安装到版本目录，校验完成后原子切换 `current`（Homebrew 由 Cellar 链接承担），再重启托管单元；禁止逐文件覆盖正在使用的安装。迁移只能前向执行，daemon 自带迁移脚本，遇到比自己新的库版本拒绝启动（§7）。这条在自用时无所谓，在分发后是硬要求——用户会跳版本升级。
 
 **启动期探测分两级。** D0.2 把「项目策略」和 SQLite 等全局能力一起列入「任一失败即拒绝启动」，与 §9.4 的「拒绝接入该项目」矛盾——按前者实现，一个坏仓库会停掉全部健康项目，也与 §8.2 每项目独立调度的方向相反：
 
@@ -886,7 +886,7 @@ forge CLI 探测留在进程级不是本文的取舍，是 PRD §9.3 的明文�
 | V1 | 状态机属性测试 | 所有非法转移被拒；终态不可复活；recommendation 无法直接改状态 | C1 |
 | V2 | 事务与崩溃注入 | 在状态/事件/outbox 每个边界注入崩溃；attempt 启动覆盖 lease、acquire、permit、spawn、started 与极快退出；人工态打扰事务逐点崩溃；**retry 探测成功事务**逐点断言消失证据、旧 attempt、隔离、Interrupt、Run `waiting_human→queued`、新 attempt/claim、启动与回执 operation、事件要么全有要么全无 | Q1、Q5 |
 | V3 | Forge 契约测试 | 双平台同一套断言；覆盖分页、actor 缺失、限流、平台差异、Change marker 跨全状态唯一查找与同 base/head 冲突、merge 的远端 expected-head CAS | Q3 |
-| V4 | Runtime 故障注入 | 杀 siftd / wrapper / Agent / 后端会话；恢复矩阵逐行断言；确定性交错覆盖同代双 wrapper、acquire/permit/started 重放、**permit 响应重放时 spawn adapter 调用计数仍为 1**、permit 后暂停旧 owner、`spawning` 中人工 retry/kill、spawn 后证据缺失与进程组残留；断言新 owner 只在旧 wrapper / 组消失后出现，并覆盖 PID/PGID 复用防护；**构造「进程组拒绝消失」与「进程身份不可确认」两例，断言受控终止流程有界收敛为一次 Interrupt + Run `waiting_human`，不允许 Run 静默停在 `queued`**；**两个后端跑同一套断言**，并断言 `tmux` 下 agent 仍是 wrapper 的直接子进程且在其进程组内（拓扑一旦被实现改坏，`spawning` 证据链在该后端失效）；`kill` 后不得出现新 attempt、`retry` 后必须出现；**人工态四组交错**——打扰事务提交前 / 后收到合法 `started`、人的决定提交前 / 后收到 `started`，以及对迟到 `result.json` 重放同一组，断言不出现活着但无人监督的 Agent、悬空 Interrupt、部分投影提交或第二个 owner；**`retry` 两段式**：探测失败后仍是同一条待决 Interrupt、升级计数 +1、nonce 已轮换、无第二条打扰，达上限后落 `hold`、不写 marker、不关闭事实窗口，迟到 `started` 仍事实优先；探测成功则原子回 `queued` 并创建且仅创建一个新 attempt；探测在途收到合法 `started` 则按事实优先收敛并给出作废回执；**进程拓扑资格**覆盖每个真实 agent CLI / 版本，构造脱组后代时必须标 `process-group-unverified` 且禁止自动 retry；**四个发现者（超时扫描 / 恢复扫描 / `kill` / `retry`）并发**时始终只有一条待决 Interrupt、一次配额消耗、一条可重放的发布 operation | Q1、A3 |
+| V4 | Runtime 故障注入 | 停止 `sift daemon` / wrapper / Agent / 后端会话；恢复矩阵逐行断言；确定性交错覆盖同代双 wrapper、acquire/permit/started 重放、**permit 响应重放时 spawn adapter 调用计数仍为 1**、permit 后暂停旧 owner、`spawning` 中人工 retry/kill、spawn 后证据缺失与进程组残留；断言新 owner 只在旧 wrapper / 组消失后出现，并覆盖 PID/PGID 复用防护；**构造「进程组拒绝消失」与「进程身份不可确认」两例，断言受控终止流程有界收敛为一次 Interrupt + Run `waiting_human`，不允许 Run 静默停在 `queued`**；**两个后端跑同一套断言**，并断言 `tmux` 下 agent 仍是 wrapper 的直接子进程且在其进程组内（拓扑一旦被实现改坏，`spawning` 证据链在该后端失效）；`kill` 后不得出现新 attempt、`retry` 后必须出现；**人工态四组交错**——打扰事务提交前 / 后收到合法 `started`、人的决定提交前 / 后收到 `started`，以及对迟到 `result.json` 重放同一组，断言不出现活着但无人监督的 Agent、悬空 Interrupt、部分投影提交或第二个 owner；**`retry` 两段式**：探测失败后仍是同一条待决 Interrupt、升级计数 +1、nonce 已轮换、无第二条打扰，达上限后落 `hold`、不写 marker、不关闭事实窗口，迟到 `started` 仍事实优先；探测成功则原子回 `queued` 并创建且仅创建一个新 attempt；探测在途收到合法 `started` 则按事实优先收敛并给出作废回执；**进程拓扑资格**覆盖每个真实 agent CLI / 版本，构造脱组后代时必须标 `process-group-unverified` 且禁止自动 retry；**四个发现者（超时扫描 / 恢复扫描 / `kill` / `retry`）并发**时始终只有一条待决 Interrupt、一次配额消耗、一条可重放的发布 operation | Q1、A3 |
 | V5 | Gate 安全测试 | `.sift/**`、CI 配置、base 策略与 context 读取源、head SHA 变化必须 fail closed | C7 |
 | V6 | Gate 回放测试 | 同一输入快照重跑得同一 verdict；导出→重跑闭环；**同一 `head_sha` 下 Checks / review / mergeability / riskScore 任一变化必须 cache miss**；认证版本变化后旧缓存失效；缓存与回放集引用同一快照 ID | Q2 |
 | V7 | 幂等测试 | 逐类副作用按 §6.4 断言；创建 Change 覆盖跨全状态 marker 命中与冲突；**Gate(A) 写 merge(A) 后 head 变 B，旧 operation 必须 stale/no-op，远端 CAS 必须拒绝，B 只有重新过 Gate 才能合并** | Q5 |
@@ -932,7 +932,7 @@ PRD §10.1 的成功标准里有依赖真实设备与人的项目，把它们混
 | 5 | Brain T4/T6/T7 + Interrupt 智能化/调度、Command、Report、首个 Channel + **推送失败的 forge 兜底告警**、三类预算集成、超时与升级 |
 | 6 | `tmux` 后端（**只换 wrapper 的宿主，不引入第二条证据链**，§8.4 拓扑裁决）、attach、故障注入验证（V2 / V4 全矩阵，两个后端同一套断言） |
 | 7 | 真实 agent、双平台 PoC 验收、凭证形态 spike（按 OS）与进程组拓扑资格测试（按 agent CLI + 版本） |
-| 8 | **发布链**：三二进制单归档、四组合构建/冒烟、版本握手与原子升级、托管单元（launchd / systemd user）、foreground fallback、Homebrew tap、干净机安装验收（V15） |
+| 8 | **发布链**：两个发布二进制单归档、四组合构建/冒烟、版本握手与原子升级、托管单元（launchd / systemd user）、foreground fallback、Homebrew tap、干净机安装验收（V15） |
 
 第 4 片的五项**必须同片交付**——这是 PRD §10.3「回放集不得延后」的排期表达，认证投影加入其中的理由见 §8.5（没有它，`auto_merge` 的证据门槛没有数据来源）。tmux 不阻塞首个闭环；若首个 agent 的非交互模式不稳定，把第 6 片提前到第 3 片，但 wrapper 契约不变。
 
@@ -1102,7 +1102,7 @@ D0.4 收到 review-09～12 的连续阻断评审；本节以用户指定的 [rev
 | R9/R10/R11/R12：`running` 在真实 Agent spawn 前落库 | P1 | attempt 增加 `spawning`；control 分 wrapper / Agent 两组身份；仅 Agent 身份落盘且 started 验证成功后推进 attempt / Run；`run.sock` 的授权声明收窄到“run token 的 Report 动词不改状态”，不再把整个端点说成只读 | §3.2、§7、§8.4、§8.9、§10.1、V2/V4、ADR-008/010 |
 | R9-F3 / R11-F3：Brain trace 被强制绑定 Gate 快照 | P2 | trace 改用独立调用身份；实际参与 Gate 的 T3/T5 通过不可变多对多表关联 snapshot，terminal call 不回写单 FK；Gate 缓存 / 影子记录 / Gate 回放仍共用同一 ID | §7、`specs/storage.md` 范围 |
 | R11-F4：统一拒绝 unknown field 会让 Forge 无关新增字段触发 fail closed | P2 | 保留单一 gateway，但显式分 `closed` / `open-envelope`；前者拒额外字段，Forge 后者允许无关扩展、对必需语义继续 fail closed。review-12 认为原 gateway 已足够，本版采纳 review-11 的更细边界，因为两种 unknown 的安全含义确实不同 | §5.2、§8.1、§9.4、V14、ADR-009 |
-| R11-F5：PRD“单文件”与三二进制冲突；四组合只构建、未逐组合运行 | P2 | PRD 裁决为“三个同版本自包含二进制 + 单归档”；版本目录 + `current` 原子切换；每组合跑二进制级冒烟、每 OS 跑完整恢复；无 systemd Linux 提供 foreground fallback | PRD §9.3、§5、§11、V15、ADR-009 |
+| R11-F5：PRD“单文件”与二进制归档冲突；四组合只构建、未逐组合运行 | P2 | PRD 裁决为“两个同版本自包含二进制 + 单归档”；版本目录 + `current` 原子切换；每组合跑二进制级冒烟、每 OS 跑完整恢复；无 systemd Linux 提供 foreground fallback | PRD §9.3、§5、§11、V15、ADR-009 |
 | R12-N1：outbox 表提前宣称未兑现的 effectively-once | P2（随 P1） | agent 启动行改为 operation lease + session + permit + handoff 的现行协议，明确保证口径为“每 attempt 一个 permit、任一时刻一个存活 writer” | §6.4 |
 | R12-N2：恢复矩阵缺 claim 未确认但 wrapper 在 | P3 | 新增 pending / acquire 在途行；旧 dispatch 先失效，旧 wrapper 因无 session / permit 不具 spawn 能力 | §10.1 |
 | R9-F5 / R11-F7：README 1200 行阈值无理由 | P3 | README 补阈值语义与理由，CHANGELOG 留痕 | README、CHANGELOG |
@@ -1208,7 +1208,7 @@ D0.9 自查本身的结论保留：`retry` 是非终局探测请求，探测失�
 | `specs/outbox.md` | 逐类副作用的幂等协议：operation key 传播、Change marker 对账、merge stale/no-op、启动 operation 的 CAS / lease / 恢复顺序、证据冲突处置 |
 | `specs/control-plane.md` | socket 协议、两个端点的动词集与授权规则、operator capability 的生成与轮换；attempt 的 acquire / permit-spawn / started 字段、幂等重放与拒绝语义 |
 | `specs/config.md` 增补 | 开放数值的确定性默认值表（§14.2，含启动协议的五个时限）、受控终止流程的信号升级序列与复核次数、`SIFT_HOME` 与路径解析、两平台托管单元模板 |
-| `dev/release.md` | 三二进制 manifest / 单归档、四组合构建与冒烟、`CGO_ENABLED=0` 门禁、原子升级、GoReleaser / Homebrew、干净机验收（§11、V15） |
+| `dev/release.md` | 两个发布二进制 manifest / 单归档、四组合构建与冒烟、`CGO_ENABLED=0` 门禁、原子升级、GoReleaser / Homebrew、干净机验收（§11、V15） |
 | `WBS.md` | 里程碑与验收。四条硬约束：回放集 + 认证投影与 Gate 同片（PRD §10.3、§8.5）、影子门禁随 Gate 落地即常驻（PRD §3.4）、控制面授权在第 1 片定形、交叉编译从第 1 片起进 CI（§13）；另含凭证形态 spike（按 OS 分别结论） |
 
 本文已到 docs/README.md 的单文件提醒线（约 1200 行）。D0.10 只补安全不变量及其追溯，暂保留完整因果链；**后续新增主题前必须先拆分**。首选拆分候选：§8.1 Forge、§8.7 Attention、§9.1 安全——三者均已有对应 spec 承接点，拆分时正文只留结构与理由。

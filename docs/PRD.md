@@ -54,7 +54,7 @@ Sift 不是通用任务管理系统，也不是又一个 coding agent IDE。它�
 |----|------|
 | 产品名 | **Sift** |
 | 含义 | 筛查、分辨优劣后再放行 |
-| CLI / 守护进程 | `sift` / `siftd` |
+| CLI / 守护进程 | `sift`（含 `sift daemon`） |
 | 配置与数据目录 | `~/.sift/`（两平台同一约定，可由 `SIFT_HOME` 覆盖；见 DESIGN §7） |
 | **Forge** | 代码托管平台的统称：GitHub、GitLab |
 | **Change** | MR / PR 的中性称呼；平台原生词只出现在发给 forge 的文案里 |
@@ -759,7 +759,7 @@ TM1–TM5 管住的都是「Agent 经由 Change 与 forge 施加影响」的路�
 
 V0 缓解措施（都不闭合，只提高代价与可见性）：
 
-- 敏感配置（allowlist、配额、Agent 定义、全局策略）**启动期一次性读入并做指纹校验，运行期不热加载**；发现磁盘变更即告警并拒绝生效。**隐含代价要写明：改这些配置必须重启 `siftd` 才生效**——单用户 V0 完全可接受，但实现阶段容易被当成 bug 去「修」。
+- 敏感配置（allowlist、配额、Agent 定义、全局策略）**启动期一次性读入并做指纹校验，运行期不热加载**；发现磁盘变更即告警并拒绝生效。**隐含代价要写明：改这些配置必须重启 `sift daemon` 才生效**——单用户 V0 完全可接受，但实现阶段容易被当成 bug 去「修」。
 - **hooks 指纹的对象是「解析后的有效 hooks 配置」，不是默认目录。** 只对 `.git/hooks/` 做指纹会被一种手法绕过：Agent 不动目录内容，改 `.git/config` 把 `core.hooksPath` 指向别处——旧路径的指纹纹丝不动，新路径下的恶意 hook 完全不在监控内。因此指纹必须覆盖 `core.hooksPath` 的**取值**、其**最终指向目录的内容**，以及 `.git/config` 本身。每次 Agent 结束后复核。
 - `~/.sift/` 权限收紧到仅属主——但要清楚它防的是**别的用户**，防不了**同属主的 Agent 进程**。
 
@@ -800,7 +800,7 @@ Agent 能力边界（V0 实际状态）：Sift 不向 Agent 传递 forge 凭证�
 |----|------|
 | 部署 | 单机单实例守护进程（每个安装一个实例，实例间无协调，§2.1）。macOS 由 launchd user agent 托管；采用 systemd 的 Linux 由 systemd user unit 托管；无 systemd 的 Linux 仍须支持前台运行，但 V0 不承诺自动常驻 |
 | **兼容性** | **macOS 与 Linux，arm64 与 amd64 四种运行组合**，不能只证明“能编译”。每组合至少跑安装与二进制级冒烟，每个 OS 至少跑一次完整闭环与恢复矩阵。平台差异只允许出现在常驻托管与沙箱后端两处；路径、文件契约、恢复逻辑两平台同行为 |
-| **分发** | `siftd`、`sift`、`sift-agent-wrapper` **三个同版本、自包含的原生二进制组成一个发布归档**，附版本 manifest 与校验和，目标机不需要安装语言运行时；Homebrew tap 与 Release 归档两条安装路径。安装与升级以整套归档为原子单位，校验后切换版本目录并重启托管单元；禁止逐文件覆盖。迁移只能前向执行，遇到比自己新的库版本拒绝启动 |
+| **分发** | `sift`、`sift-agent-wrapper` **两个同版本、自包含的原生二进制组成一个发布归档**，附版本 manifest 与校验和，目标机不需要安装语言运行时；Homebrew tap 与 Release 归档两条安装路径。安装与升级以整套归档为原子单位，校验后切换版本目录并重启托管单元；禁止逐文件覆盖。迁移只能前向执行，遇到比自己新的库版本拒绝启动 |
 | 依赖 | **被已配置项目引用到的** forge CLI 需已安装并登录；未被引用的不作要求。探测不通过则拒绝启动 |
 | 持久化 | 进程重启不丢 Run 状态与轮询游标；重启后核对 running 进程 / worktree |
 | 安全 | 无监听端口；Sift 自身不落盘 **forge 凭证**（由 `gh` / `glab` 持有）；本地 operator / run / bootstrap capability 的落盘、权限与生命周期见 DESIGN，且同属主 Agent 可读取的边界归 TM6；驱动性事件一律 actor 鉴权（§9.2）；默认硬护栏不可豁免（§5.4）；敏感配置不热加载 + 指纹校验（§9.1 TM6）。**权限收紧防的是别的用户，防不了同属主的 Agent——该边界 V0 不闭合** |
@@ -828,8 +828,8 @@ Agent 能力边界（V0 实际状态）：Sift 不向 Agent 传递 forge 凭证�
 | 门禁 | **Sift 发起的合并**中，硬护栏违规任务一律不得合并（因此不进入 `done`）。人在 forge 上手工合并是 Sift 管不到的外部事实，以 `gate_bypassed` 审计属性与指标反映，**不作为本条的失败**——把 Sift 控制不了的事写成验收标准，只会换来一条永远无法诚实勾选的项 |
 | 注意力 | 至少一类 HITL 能推送并通过一条 forge 评论完成审批（含手机端验证一次） |
 | 多 Agent | 配置中存在 ≥2 个 Agent 定义且均通过校验；其中 1 个真实跑通 |
-| 恢复 | 杀死 `siftd` 后重启，不出现「幽灵 running」，轮询游标不回退不丢事件 |
-| **发布** | 在干净的 macOS 与采用 systemd 的 Linux 机器上分别从发布归档安装整套三二进制并跑通一次；四种 OS/架构组合均有安装与冒烟证据 |
+| 恢复 | 重启 `sift daemon` 后不出现「幽灵 running」，轮询游标不回退不丢事件 |
+| **发布** | 在干净的 macOS 与采用 systemd 的 Linux 机器上分别从发布归档安装整套两个二进制并跑通一次；四种 OS/架构组合均有安装与冒烟证据 |
 
 > **「负样本」在本文有两个不同含义，别混。** 这里的 PoC 负样本是**演示门禁会拦**，一次即可；§5.6 影子门禁生效条件里的负样本绝对数量下限是**统计意义上的阈值认证**，需要几十个量级。**PoC 拦下一次 ≠ `auto_merge` 可以开了**；开启 `auto_merge` 永远只看 §5.6 的硬门槛。
 
@@ -906,7 +906,7 @@ Agent 能力边界（V0 实际状态）：Sift 不向 Agent 传递 forge 凭证�
 | 12 | critical 熔断的窗口与阈值 | 首次 ≥3 Run 并发前 | 开放 |
 | 13 | **TM6 的收口方案**：候选含「完全沙箱」与「**最小凭证沙箱**」（只挂 agent CLI 凭证、不挂 forge 凭证，§9.1）。需一并回答共享 `.git` 如何处置、以及哪些 Agent 的鉴权形态可挂载 | DESIGN | **已结案（[DESIGN §9.1](DESIGN.md) / [ADR-007](decisions/007-tm6-minimal-credential-sandbox-direction.md)）**：方向定为最小凭证沙箱，**V0 不实施**，只留 launcher 接缝并如实声明；共享 `.git` 的处置（沙箱内完整 clone）随沙箱立项再答；凭证形态 spike 是本方向的证伪条件。§5.2「零凭证管理」已加星号 |
 | 14 | `max_escalations` 的取值与达上限后各 reason 的默认去向 | 实现状态机时 | 开放（§4.2） |
-| 15 | 技术栈（倾向 Bun + TypeScript 单进程，可推翻） | DESIGN 文档 | **已结案（[ADR-009](decisions/009-tech-stack-go.md)）**：**Go** + SQLite(WAL)，单模块三二进制。原结案为 Bun + TypeScript（[ADR-001](decisions/001-tech-stack-bun-typescript.md)，已 `superseded`）；推翻原因是本次新增的分发与多平台需求（§9.3）使原决策的前提与其风险退路同时失效 |
+| 15 | 技术栈（倾向 Bun + TypeScript 单进程，可推翻） | DESIGN 文档 | **已结案（[ADR-009](decisions/009-tech-stack-go.md)）**：**Go** + SQLite(WAL)，单模块两个发布二进制（`sift` / `sift-agent-wrapper`）。原结案为 Bun + TypeScript（[ADR-001](decisions/001-tech-stack-bun-typescript.md)，已 `superseded`）；推翻原因是本次新增的分发与多平台需求（§9.3）使原决策的前提与其风险退路同时失效 |
 
 ---
 

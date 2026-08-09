@@ -70,7 +70,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 - ADR-010 决策 6 前已增加 ADR-013 名称修订指针
 - 新规范名称确定为 `attempt_resolution`，V0 枚举为 `reject | retry_after_absence`
-- 创建单 Go module 与三个命令：`siftd`、`sift`、`sift-agent-wrapper`
+- 创建单 Go module 与两个发布命令：`sift`（含 `daemon` 子命令）与 `sift-agent-wrapper`
 
 ### 任务
 
@@ -97,7 +97,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 - `Recommendation → DomainCommand → Transition` 类型隔离；只有 `transition()` 写 Run 状态
 - CAS 拒绝过期命令；非法转移报错并记审计事件（`ErrRejectedStale` + `auditIllegalTransition`）
 - transactional outbox、稳定 operation key、提交唤醒与退避框架
-- 三组具名调度器与提交唤醒生产接线：`siftd` 分别驱动 Intake / Supervisor / Outbox；事务提交经 `DB.SetOutboxWakeup` 立即推进 outbox，独立时钟只在 `startSchedulers` 集中创建。`cmd/siftd/main_test.go` 以 production wiring factory 逐边验证 Intake 的未到期 `NextPollAtMS` skip、Supervisor/Outbox 不串联，且 outbox startup sweep drained 后 `EnqueueOperation` / `EmitInterrupt` 经 commit wake 到真实 comment worker；该生产接线已由 [#302](https://github.com/miaoxiaoyong/sift/issues/302) 的 rereview-2 PASS 核销。`internal/storage/scheduler_test.go` 只覆盖 storage seam 的并发 wake 收敛，不声称 production 职责/步频证据。此前 `scheduler.go` 的 Intake/Reconciler/Supervisor 仅为骨架，不是生产步频证据
+- 三组具名调度器与提交唤醒生产接线：`sift daemon` 分别驱动 Intake / Supervisor / Outbox；事务提交经 `DB.SetOutboxWakeup` 立即推进 outbox，独立时钟只在 `startSchedulers` 集中创建。`cmd/sift/daemon_test.go` 以 production wiring factory 逐边验证 Intake 的未到期 `NextPollAtMS` skip、Supervisor/Outbox 不串联，且 outbox startup sweep drained 后 `EnqueueOperation` / `EmitInterrupt` 经 commit wake 到真实 comment worker；该生产接线已由 [#302](https://github.com/miaoxiaoyong/sift/issues/302) 的 rereview-2 PASS 核销。`internal/storage/scheduler_test.go` 只覆盖 storage seam 的并发 wake 收敛，不声称 production 职责/步频证据。此前 `scheduler.go` 的 Intake/Reconciler/Supervisor 仅为骨架，不是生产步频证据
 - V1 与 V2 核心崩溃注入；当前已实现的状态、Forge Run/receipt、Task Spec、Brain trace/token、outbox claim/completion 写入族均以末写入点 abort 注入验证全有或全无；项目健康、Forge 收费、Interrupt 推进与 delivery 在各自写端口实现时补入同一门禁，不得以 schema 代替崩溃证据。M6 继续闭合的 V2-12/V2-13/V2-15 具名证据见 [`docs/testing/runtime-matrix.md`]：`TestV2InterruptFivePartCrashMatrix`、`TestV2RetryProbeSuccessCrashMatrix`、`TestHookCrashReplayRecordsOneStableDrift` / `TestHookRecheckCrashReplayReceiptIsAtomicWithTerminalResult`。
 
 #### 1.4 配置与启动生命周期
@@ -536,7 +536,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 8.1 发布归档与升级
 
-- GoReleaser 产出同版本三二进制单归档、manifest、校验和
+- GoReleaser 产出同版本两个发布二进制（`sift` / `sift-agent-wrapper`）单归档、manifest、校验和
 - 四组合运行安装、版本握手、SQLite、双 socket、wrapper handoff 冒烟
 - 安装到版本目录，校验后原子切换 `current`；禁止逐文件覆盖
 - CLI/daemon/wrapper 主版本不一致拒绝并由 doctor 报错
@@ -605,7 +605,7 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 | A6 | Sift 不合并硬护栏违规 | V5b/V6/V7 | M4 自动化即正式证据 |
 | A7 | 推送 + 一条 forge 指令审批，含手机 | V10a | M7 |
 | A8 | ≥2 Agent 定义通过、其中 1 个真实跑通 | M1 配置测试 | M7 |
-| A9 | kill siftd 恢复无幽灵、游标不丢 | V4 | M7 可追加真实记录，自动门禁不得缺 |
+| A9 | 重启 `sift daemon` 恢复无幽灵、游标不丢 | V4 | M7 可追加真实记录，自动门禁不得缺 |
 | A10 | 干净 macOS/systemd Linux 安装跑通 | V15 | M8 |
 
 ---

@@ -1,8 +1,9 @@
 name: build
 
 # WBS M1 §1.1: CGO_ENABLED=0 four-way build (H7) + decode gateway schema drift
-# gate (V14). This workflow proves the module and the three command binaries
-# cross-build on darwin/linux × amd64/arm64, and that the generated JSON
+# gate (V14). This workflow proves the module and the two release binaries
+# (`sift` and `sift-agent-wrapper`) cross-build on darwin/linux × amd64/arm64,
+# and that the generated JSON
 # Schemas (internal/schema/artifacts) never drift from their struct definitions.
 #
 # The decode gateway (internal/schema) is pure stdlib, so every combo builds
@@ -44,8 +45,11 @@ jobs:
         with:
           go-version: stable
           cache: true
-      - name: build (CGO_ENABLED=0)
-        run: go build ./...
+      - name: build release binaries (CGO_ENABLED=0)
+        run: |
+          go build -o "$RUNNER_TEMP/sift" ./cmd/sift
+          go build -o "$RUNNER_TEMP/sift-agent-wrapper" ./cmd/sift-agent-wrapper
+          go build ./...
 
   schema-drift:
     # V14 schema invariant: structs are the single source of truth and the

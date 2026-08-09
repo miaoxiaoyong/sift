@@ -49,7 +49,7 @@ summary: PRD §10.2 九项指标、CLI 与事件时间线的派生口径
 
 ## 3. CLI 与只读 RPC 面
 
-`sift ps` / `logs` / `metrics` / `timeline` 只连接 `siftd.sock` 并读 operator token，envelope 与授权见 [`control-plane.md` §6](control-plane.md)。新增的 `ops.metrics` 与 `ops.timeline` 是 §5.7 bootstrap 的只读方法，加入 `control-plane.md` §6.1 方法全集与 §6.2 schema。
+`sift ps` / `sift logs` / `sift metrics` / `sift timeline` 只连接 `siftd.sock` 并读 operator token，envelope 与授权见 [`control-plane.md` §6](control-plane.md)。新增的 `ops.metrics` 与 `ops.timeline` 是 §5.7 bootstrap 的只读方法，加入 `control-plane.md` §6.1 方法全集与 §6.2 schema。
 
 - `sift ps [--run ID] [--project ID] [--status S] [--limit N] [--after-run-id ID]`：Run/attempt、今日注意力余量（按 severity 的 `limit−consumed`）、开放 Interrupt / pending outbox 计数、隔离状态与 Channel 推送故障（durable delivery/episode 投影）。
 - `sift logs <run-id> [--attempt N] [--offset B] [--limit B]`：该 attempt `agent.log` 的有界 base64 读取；轮转导致 offset 不可达时返回 `not_found`，不从当前文件偷偷回零。

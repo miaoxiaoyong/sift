@@ -1,9 +1,10 @@
-// Command siftd runs the local Sift control-plane daemon.
+// Command sift's daemon subcommand runs the local Sift control-plane daemon.
 package main
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,34 +20,41 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
-func main() {
-	home, err := config.ResolveHome()
-	if err != nil {
-		fatal(err)
+func runDaemonCommand(home config.Home, stderr io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runDaemon(ctx, home); err != nil {
+		fmt.Fprintln(stderr, "sift daemon:", err)
+		return 1
 	}
+	return 0
+}
+
+// runDaemon assembles and serves the production daemon. The executable path is
+// intentionally resolved here, from the running sift process, so the wrapper
+// is still selected from the same release directory as the daemon binary.
+func runDaemon(ctx context.Context, home config.Home) error {
 	snapshot, err := config.Load(home, time.Now())
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	tmuxDiagnostics := config.NewDiagnostics()
-	if err := config.TmuxProbe(snapshot.Config, tmuxDiagnostics).Run(context.Background()); err != nil {
-		fatal(err)
+	if err := config.TmuxProbe(snapshot.Config, tmuxDiagnostics).Run(ctx); err != nil {
+		return err
 	}
 	if hasEnabledProjects(snapshot.Config) {
 		if _, err := runtime.ResolveInstalledWrapper(controlplane.Version); err != nil {
-			fatal(err)
+			return err
 		}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	now := time.Now()
 	db, err := storage.Open(ctx, storage.OpenConfig{Path: filepath.Join(home.Path, "sift.db"), BinaryVersion: controlplane.Version, Now: now})
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	defer db.Close()
 	if err := db.ActivateConfig(ctx, snapshot, controlplane.Version, now.UnixMilli()); err != nil {
-		fatal(err)
+		return err
 	}
 	// All production Interrupt sources, including startup recovery, share this
 	// single Brain shell. T4 and T6 both run outside EmitInterrupt's write
@@ -56,7 +64,7 @@ func main() {
 	db.SetInterruptT6(shell.CallT6)
 	bootID, err := db.StartDaemonBoot(ctx, snapshot.Hash, controlplane.Version, controlplane.ProtocolMajor, os.Getpid(), now.UnixMilli())
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	termination := &daemon.TerminationCoordinator{
 		DB: db, Terminator: runtime.Terminator{Inspector: runtime.PlatformProcessInspector{}, Signaler: runtime.UnixProcessSignaler{}}, Runtime: snapshot.Config.Runtime,
@@ -80,26 +88,26 @@ func main() {
 	// evidence deliberately fails closed and becomes a visible startup_stall
 	// instead of allowing a launch lease to be reclaimed.
 	if err := termination.RecoverStartup(ctx, bootID); err != nil {
-		fatal(err)
+		return err
 	}
 	// Recover result evidence before deciding whether this is a clean
 	// activation. Capture remains before the launch gate and is audit-only.
 	daemon.CaptureHookBaselines(ctx, db, snapshot.Config, time.Now)
 	if err := db.CompleteStartupRecovery(ctx, bootID, time.Now().UnixMilli()); err != nil {
-		fatal(err)
+		return err
 	}
 	workers, err := daemon.Assemble(db, snapshot.Config, time.Now)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	workers.SetT7Scheduler(&brain.T7Scheduler{DB: db, Shell: shell, Now: time.Now, Limit: snapshot.Config.Scheduler.PerClassTickLimit})
 	daemonPath, err := os.Executable()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	backend, err := runtime.NewProcessBackend(daemonPath, controlplane.Version)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	backends := launchworker.BackendRouter{
 		config.BackendProcess: launchworker.ProcessBackend{Backend: backend},
@@ -112,7 +120,7 @@ func main() {
 		}
 		tmux, backendErr := runtime.NewTmuxBackend(tmuxDiagnostics.TmuxPath, backend.WrapperPath(), filepath.Join(home.Path, "tmux.sock"), verifyBinding)
 		if backendErr != nil {
-			fatal(backendErr)
+			return backendErr
 		}
 		backends[config.BackendTmux] = launchworker.TmuxBackend{Backend: tmux}
 	}
@@ -123,7 +131,7 @@ func main() {
 	})
 	s, err := controlplane.Start(home, db)
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	defer s.Close()
 	s.SetOperatorAction(func(ctx context.Context, method, runID string, version int64) error {
@@ -137,12 +145,10 @@ func main() {
 		s.SetTmuxObserver(tmuxDiagnostics.TmuxPath, runtime.TmuxSocketPath(filepath.Join(home.Path, "tmux.sock")))
 	}
 	if err := startSchedulers(ctx, db, workers, termination, probeCheck, snapshot.Config.Scheduler); err != nil {
-		fatal(err)
+		return err
 	}
 	defer db.SetOutboxWakeup(nil)
-	if err := s.Serve(ctx); err != nil {
-		fatal(err)
-	}
+	return s.Serve(ctx)
 }
 func usesTmux(cfg *config.Config) bool {
 	if cfg.Runtime.Backend == config.BackendTmux {
@@ -175,7 +181,7 @@ func attentionQuotaStrings(q config.DailyQuota) map[string]int {
 	return map[string]int{"low": q.Low, "normal": q.Normal, "high": q.High}
 }
 
-// startSchedulers is the sole owner of siftd's three DESIGN §6.1 clocks.
+// startSchedulers is the sole owner of sift daemon's three DESIGN §6.1 clocks.
 // Intake's cursor still determines whether a poll is due; the supervisor
 // interval also bounds recovery of persisted outbox retry deadlines.
 func interruptChannels(attention config.Attention) []storage.InterruptChannel {
@@ -316,10 +322,8 @@ func minIntakeInterval(cfg config.Scheduler) time.Duration {
 func reportSchedulerError(name string, run func(context.Context) error) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if err := run(ctx); err != nil && ctx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "siftd: %s scheduler: %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "sift daemon: %s scheduler: %v\n", name, err)
 		}
 		return nil
 	}
 }
-
-func fatal(err error) { fmt.Fprintln(os.Stderr, "siftd:", err); os.Exit(1) }

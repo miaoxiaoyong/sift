@@ -29,7 +29,7 @@ Brain 字段级评审 [2026-07-28-brain-review-pi-gpt-5.6-sol.md](../reviews/202
 ## 1. 存储不变量
 
 1. 单库：`$SIFT_HOME/sift.db`，SQLite WAL，`modernc.org/sqlite`，不引 ORM。
-2. `siftd` 是唯一业务写者；`sift` 与 `sift-agent-wrapper` 不直连数据库。
+2. `sift daemon` 是唯一业务写者；`sift` 的其他子命令与 `sift-agent-wrapper` 不直连数据库。
 3. 写连接池 `MaxOpenConns=1`；读连接不得升级为写事务。
 4. `runs.status` 只能由存储端口的 `transition()` 路径更新。代码中不存在通用 `UpdateRun` 或暴露裸事务的接口。
 5. 状态投影、append-only 事件、必要 outbox、预算/游标/幂等记录在同一事务提交。
