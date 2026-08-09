@@ -9,15 +9,22 @@ import (
 	"errors"
 	"time"
 
+	"github.com/miaoxiaoyong/sift/internal/brain"
 	"github.com/miaoxiaoyong/sift/internal/forge"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
 
 type Project struct {
 	ID                string
+	Repo              string
 	Ref               forge.ProjectRef
 	TriggerLabel      string
 	OperatorAllowlist []string
+	// T2Agents is the immutable startup snapshot of agents eligible for this
+	// project. The evaluator passes these facts to Brain; the storage write
+	// port still freezes the backend from the Run's config snapshot.
+	T2Agents      []brain.T2AgentCandidate
+	AgentBackends map[string]string
 }
 type Poller struct {
 	DB                 *storage.DB

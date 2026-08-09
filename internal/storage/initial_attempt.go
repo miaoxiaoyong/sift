@@ -58,7 +58,8 @@ func insertInitialAttemptTx(ctx context.Context, tx *sql.Tx, runID, agentID, tas
 		runID, key, nowMS, nowMS); err != nil {
 		return fmt.Errorf("storage: create initial attempt claim: %w", err)
 	}
-	if err := insertOperation(ctx, tx, Operation{Key: key, Kind: OperationLaunchAgent, RunID: runID, AttemptNo: intPtr(1), Payload: []byte(`{"schema_version":1}`)}, runID, "", nowMS); err != nil {
+	payload, _ := json.Marshal(map[string]any{"schema_version": 1, "run_id": runID, "agent_id": agentID, "backend": backend})
+	if err := insertOperation(ctx, tx, Operation{Key: key, Kind: OperationLaunchAgent, RunID: runID, AttemptNo: intPtr(1), Payload: payload}, runID, "", nowMS); err != nil {
 		return err
 	}
 	return nil

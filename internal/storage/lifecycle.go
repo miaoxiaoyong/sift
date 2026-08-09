@@ -18,9 +18,8 @@ import (
 // transaction. The Run stays in (or is already in) the queued status — it is
 // not exposed as launchable before the assignment is committed (brain.md §8.3).
 //
-// The full CommitT2Assignment (hitl=true → design_approval Interrupt in the same
-// transaction) lands in M3 with the Interrupt emission core; this M1 port
-// covers exactly the skeleton chain's hitl=false path.
+// HITL/design-approval handling remains owned by the later command path; this
+// M1 port covers the skeleton chain's hitl=false Task Spec path.
 type SetInitialTaskSpecCmd struct {
 	RunID           string
 	ExpectedVersion int64
@@ -36,6 +35,96 @@ type SetInitialTaskSpecCmd struct {
 	InitialAttempt *InitialAttemptSpec
 	SourceEventID  string // optional provenance event
 	OccurredAtMS   int64
+}
+
+// CommitT2Assignment commits the production intake assignment and its launch
+// operation in one transaction. Callers invoke it only after a valid T2 result;
+// T2 fallback therefore leaves the queued Run untouched.
+type CommitT2AssignmentCmd struct {
+	RunID           string
+	ExpectedVersion int64
+	Kind            string
+	AgentID         string
+	HITLBeforeStart bool
+	Backend         string
+	TaskSpecID      string
+	TaskSpecJSON    []byte
+	TaskSpecDigest  string
+	InitialAttempt  *InitialAttemptSpec
+	NowMS           int64
+}
+
+func (d *DB) CommitT2Assignment(ctx context.Context, cmd CommitT2AssignmentCmd) (Run, error) {
+	if cmd.RunID == "" || cmd.ExpectedVersion < 1 || cmd.Kind == "" || cmd.AgentID == "" || cmd.NowMS <= 0 {
+		return Run{}, errors.New("storage: incomplete T2 assignment")
+	}
+	if cmd.Backend != "process" && cmd.Backend != "tmux" {
+		return Run{}, fmt.Errorf("storage: invalid T2 backend %q", cmd.Backend)
+	}
+	if cmd.InitialAttempt != nil {
+		if err := cmd.InitialAttempt.validate(); err != nil {
+			return Run{}, err
+		}
+		if cmd.TaskSpecID == "" || len(cmd.TaskSpecJSON) == 0 || cmd.TaskSpecDigest == "" || !json.Valid(cmd.TaskSpecJSON) {
+			return Run{}, errors.New("storage: T2 launch requires a valid task spec")
+		}
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Run{}, err
+	}
+	defer tx.Rollback()
+	var status string
+	var version int64
+	var snapshotJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT r.status,r.version,s.canonical_json FROM runs r JOIN config_snapshots s ON s.id=r.config_snapshot_id WHERE r.id=?`, cmd.RunID).Scan(&status, &version, &snapshotJSON); err != nil {
+		return Run{}, err
+	}
+	if version != cmd.ExpectedVersion {
+		return Run{}, ErrRejectedStale
+	}
+	if status != string(RunQueued) {
+		return Run{}, fmt.Errorf("%w: T2 assignment requires queued, got %s", ErrIllegalTransition, status)
+	}
+	if cmd.InitialAttempt != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO task_spec_snapshots(id,run_id,version,schema_version,canonical_json,content_digest,created_at_ms) VALUES(?,?,1,1,?,?,?)`, cmd.TaskSpecID, cmd.RunID, string(cmd.TaskSpecJSON), cmd.TaskSpecDigest, cmd.NowMS); err != nil {
+			return Run{}, err
+		}
+	}
+	currentTaskSpec := any(nil)
+	if cmd.TaskSpecID != "" {
+		currentTaskSpec = cmd.TaskSpecID
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET kind=?,agent_id=?,hitl_before_start=?,current_task_spec_id=?,version=version+1,updated_at_ms=? WHERE id=? AND version=? AND status='queued'`, cmd.Kind, cmd.AgentID, boolInt(cmd.HITLBeforeStart), currentTaskSpec, cmd.NowMS, cmd.RunID, cmd.ExpectedVersion); err != nil {
+		return Run{}, err
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"schema_version":    1,
+		"run_id":            cmd.RunID,
+		"agent_id":          cmd.AgentID,
+		"backend":           cmd.Backend,
+		"hitl_before_start": cmd.HITLBeforeStart,
+	})
+	if cmd.InitialAttempt != nil {
+		if err := insertInitialAttemptTx(ctx, tx, cmd.RunID, cmd.AgentID, cmd.TaskSpecID, snapshotJSON, cmd.InitialAttempt, cmd.NowMS); err != nil {
+			return Run{}, err
+		}
+	} else if err := insertOperation(ctx, tx, Operation{
+		Key: LaunchOperationKey(cmd.RunID, 1, 1), Kind: OperationLaunchAgent,
+		RunID: cmd.RunID, AttemptNo: intPtr(1), Payload: payload,
+	}, cmd.RunID, "", cmd.NowMS); err != nil {
+		return Run{}, err
+	}
+	assignment, _ := json.Marshal(map[string]any{"kind": cmd.Kind, "agent": cmd.AgentID, "hitl_before_start": cmd.HITLBeforeStart})
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(id,run_id,type,source,payload_schema_version,payload_json,occurred_at_ms,recorded_at_ms) VALUES(?,?, 'run.assigned','system',1,?,?,?)`, newID(), cmd.RunID, string(assignment), cmd.NowMS, cmd.NowMS); err != nil {
+		return Run{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Run{}, err
+	}
+	d.wakeOutbox()
+	return d.Run(ctx, cmd.RunID)
 }
 
 // SetInitialTaskSpec commits the initial Task Spec and Run assignment. When

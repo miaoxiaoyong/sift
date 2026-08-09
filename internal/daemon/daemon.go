@@ -194,7 +194,8 @@ func assemble(db *storage.DB, cfg *config.Config, now func() time.Time, runner f
 		if err := adapter.ProbeAndRecordAutoMergeCapability(probeCtx, p.ID, ref, db, now()); err != nil {
 			return nil, fmt.Errorf("project %s: record auto-merge capability: %w", p.ID, err)
 		}
-		project := intake.Project{ID: p.ID, Ref: ref, TriggerLabel: cfg.Labels.Trigger, OperatorAllowlist: operators(cfg.Operators, ref.Kind)}
+		t2Agents, agentBackends := t2ProjectAgents(*cfg, p)
+		project := intake.Project{ID: p.ID, Repo: p.Repo, Ref: ref, TriggerLabel: cfg.Labels.Trigger, OperatorAllowlist: operators(cfg.Operators, ref.Kind), T2Agents: t2Agents, AgentBackends: agentBackends}
 		evaluator := &intake.T1Evaluator{DB: db, Brain: brain.NewShell(db, cfg.Brain, brain.SubprocessProvider{Executable: cfg.Brain.Executable, Args: cfg.Brain.Args}, now), Now: now}
 		poller := &intake.Poller{DB: db, Forge: adapter, Projects: []intake.Project{project}, Now: now, Idle: cfg.Scheduler.IntakeIdleInterval, Active: cfg.Scheduler.IntakeActiveInterval, Slow: cfg.Forge.SlowPollInterval, HourlyLimit: int64(cfg.Forge.HourlyAPILimit), WarningRatio: cfg.Forge.WarningRatio, OnIssue: evaluator.EvaluateIssue}
 		d.Pollers = append(d.Pollers, poller)
@@ -266,6 +267,23 @@ func (d *Daemon) AddChannelWorker(w *channelworker.Worker) {
 	if w != nil {
 		d.Channels = append(d.Channels, w)
 	}
+}
+
+func t2ProjectAgents(cfg config.Config, project config.Project) ([]brain.T2AgentCandidate, map[string]string) {
+	allowed := make(map[string]bool, len(project.Agents))
+	for _, id := range project.Agents {
+		allowed[id] = true
+	}
+	candidates := make([]brain.T2AgentCandidate, 0, len(cfg.Agents))
+	backends := make(map[string]string, len(cfg.Agents))
+	for _, agent := range cfg.Agents {
+		if len(allowed) != 0 && !allowed[agent.ID] {
+			continue
+		}
+		candidates = append(candidates, brain.T2AgentCandidate{ID: agent.ID, Capabilities: []string{}})
+		backends[agent.ID] = string(agent.Backend)
+	}
+	return candidates, backends
 }
 
 func interruptChannels(attention config.Attention) []storage.InterruptChannel {
