@@ -247,7 +247,13 @@ func (a *Adapter) call(ctx context.Context, p ProjectRef, path, method string, i
 	}
 	return nil
 }
-func pathPart(s string) string { return url.PathEscape(s) }
+func pathPart(s string) string {
+	parts := strings.Split(s, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
+}
 func (a *Adapter) base(p ProjectRef) string {
 	if a.Kind == KindGitHub {
 		return "/repos/" + pathPart(p.ProjectKey)
