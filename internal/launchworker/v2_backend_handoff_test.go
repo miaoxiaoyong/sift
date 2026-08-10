@@ -37,7 +37,7 @@ func v2MakeRouter(root, wrapperPath string, db *storage.DB) (BackendRouter, func
 	if err := os.WriteFile(daemonPath, nil, 0700); err != nil {
 		return nil, nil, err
 	}
-	processRuntime, err := runtimepkg.NewProcessBackend(daemonPath, controlplane.Version)
+	processRuntime, err := runtimepkg.NewProcessBackend(daemonPath, controlplane.Version, controlplane.ProtocolMajor)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -284,7 +284,7 @@ func v2OwnerRouter(t *testing.T, root, wrapperPath string, db *storage.DB) (laun
 	if err := os.WriteFile(daemonPath, nil, 0700); err != nil {
 		t.Fatal(err)
 	}
-	processRuntime, err := runtimepkg.NewProcessBackend(daemonPath, controlplane.Version)
+	processRuntime, err := runtimepkg.NewProcessBackend(daemonPath, controlplane.Version, controlplane.ProtocolMajor)
 	if err != nil {
 		t.Fatal(err)
 	}

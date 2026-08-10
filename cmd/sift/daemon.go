@@ -43,7 +43,7 @@ func runDaemon(ctx context.Context, home config.Home) error {
 		return err
 	}
 	if hasEnabledProjects(snapshot.Config) {
-		if _, err := runtime.ResolveInstalledWrapper(controlplane.Version); err != nil {
+		if _, err := runtime.ResolveInstalledWrapper(controlplane.Version, controlplane.ProtocolMajor); err != nil {
 			return err
 		}
 	}
@@ -105,7 +105,7 @@ func runDaemon(ctx context.Context, home config.Home) error {
 	if err != nil {
 		return err
 	}
-	backend, err := runtime.NewProcessBackend(daemonPath, controlplane.Version)
+	backend, err := runtime.NewProcessBackend(daemonPath, controlplane.Version, controlplane.ProtocolMajor)
 	if err != nil {
 		return err
 	}

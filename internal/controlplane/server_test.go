@@ -74,7 +74,7 @@ func TestV10aEndpointCapabilitiesAndSockets(t *testing.T) {
 	}
 }
 
-func TestDoctorOnlineHandshakeMismatchReportsDaemonVersion(t *testing.T) {
+func TestDoctorClientDaemonProtocolMismatch(t *testing.T) {
 	home := testHome(t)
 	s, err := Start(home)
 	if err != nil {

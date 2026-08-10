@@ -22,6 +22,9 @@ const (
 // injected through ldflags (internal/version.Release), separate from the wire
 // protocol version (ProtocolMajor/Minor) and from the config file protocol
 // version (config.Version). control-plane.md §3.4 defines the handshake.
+// It is a variable so integration tests can rewrite version.Release to
+// assemble a genuinely different client release; the wire contract
+// (ProtocolMajor/Minor) stays constant.
 var Version = version.Release
 
 var requestID = regexp.MustCompile(`^[0-9a-f]{32}$`)

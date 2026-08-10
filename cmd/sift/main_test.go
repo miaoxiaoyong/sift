@@ -8,8 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -56,6 +58,14 @@ func withDatabase(t *testing.T, home string) {
 
 func installDoctorWrapper(t *testing.T) {
 	t.Helper()
+	installDoctorWrapperVersion(t, controlplane.Version, controlplane.ProtocolMajor)
+}
+
+// installDoctorWrapperVersion installs a wrapper fixture next to the test
+// binary reporting the given release version and wire protocol major, so
+// in-process doctor probes observe a controlled wrapper pairing.
+func installDoctorWrapperVersion(t *testing.T, version string, protocolMajor int) {
+	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +86,8 @@ func installDoctorWrapper(t *testing.T) {
 		}
 		_ = os.Remove(wrapper)
 	})
-	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf '"+controlplane.Version+"\\n'\n"), 0o700); err != nil {
+	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n'; fi\nif [ \"$1\" = \"--protocol-major\" ]; then printf '%d\\n'; fi\n", version, protocolMajor)
+	if err := os.WriteFile(wrapper, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -243,7 +254,7 @@ func TestDaemonResolvesWrapperAlongsideSiftExecutable(t *testing.T) {
 		}
 		_ = os.Remove(wrapper)
 	})
-	content := []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '" + controlplane.Version + "'; fi\n")
+	content := []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '" + controlplane.Version + "'; fi\nif [ \"$1\" = \"--protocol-major\" ]; then printf '%d\\n' '" + fmt.Sprint(controlplane.ProtocolMajor) + "'; fi\n")
 	if err := os.WriteFile(wrapper, content, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -402,6 +413,71 @@ func TestRunDoctorOnlineExitsOneWhenDaemonUnavailable(t *testing.T) {
 	if !bytes.Contains(stderr.Bytes(), []byte("daemon unavailable")) {
 		t.Fatalf("stderr = %q, want daemon unavailable message", stderr.String())
 	}
+}
+
+// TestDoctorDaemonVersionMismatchExitsTwo drives the real CLI binary over the
+// real operator socket against a daemon compiled at a different release and
+// asserts the doctor's version:daemon error projects to process exit 2
+// (config.md §7). The CLI is built with the release version stamped
+// (internal/version.Release, which controlplane.Version derives from), so the
+// wire handshake observes a genuine client/daemon binary-major mismatch — no
+// direct operatorRequest call and no fabricated boot row.
+func TestDoctorDaemonVersionMismatchExitsTwo(t *testing.T) {
+	home := freshHome(t)
+	withDatabase(t, home)
+	// The daemon side (this process) stays at the compile-time release; the
+	// wrapper fixture pairs with the mismatched CLI release so version:daemon
+	// is the asserted error under test.
+	installDoctorWrapperVersion(t, "2.0.0", controlplane.ProtocolMajor)
+
+	cli := filepath.Join(t.TempDir(), "sift")
+	_, file, _, _ := runtime.Caller(0)
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
+	build := exec.Command("go", "build", "-o", cli, "-ldflags", "-X github.com/miaoxiaoyong/sift/internal/version.Release=2.0.0", "./cmd/sift")
+	build.Dir = root
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build mismatched CLI: %v\n%s", err, output)
+	}
+
+	s, err := controlplane.Start(config.Home{Path: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Serve(ctx) }()
+	waitSocket(t, filepath.Join(home, "siftd.sock"))
+
+	cmd := exec.Command(cli, "doctor")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("mismatched doctor exited 0; output:\n%s", output)
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 2 {
+		t.Fatalf("exit code = %d, want 2; output:\n%s", code, output)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(output, &response); err != nil {
+		t.Fatalf("unmarshal response: %v; output:\n%s", err, output)
+	}
+	if ok, _ := response["ok"].(bool); !ok {
+		t.Fatalf("RPC ok = false; output:\n%s", output)
+	}
+	result := response["result"].(map[string]any)
+	if result["exit_code"] != float64(2) {
+		t.Fatalf("doctor exit_code = %v, want 2", result["exit_code"])
+	}
+	for _, check := range result["checks"].([]any) {
+		m := check.(map[string]any)
+		if m["id"] == "version:daemon" {
+			if m["level"] != "error" {
+				t.Fatalf("version:daemon = %v, want error", m)
+			}
+			return
+		}
+	}
+	t.Fatal("missing version:daemon error")
 }
 
 func waitSocket(t *testing.T, path string) {

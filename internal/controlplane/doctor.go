@@ -456,11 +456,11 @@ func versionChecks(ctx context.Context, dbPath, clientVersion string, clientProt
 		daemon, active, dbErr = storage.ReadDoctorDaemonVersion(ctx, dbPath)
 	}
 	checks := []doctorCheck{}
-	wrapper, err := resolveInstalledWrapper(clientVersion)
+	wrapper, err := resolveInstalledWrapper(clientVersion, clientProtocolMajor)
 	if err != nil {
 		checks = append(checks, errorCheck("version:wrapper", err))
 	} else {
-		checks = append(checks, doctorCheck{ID: "version:wrapper", Level: "ok", Message: "CLI and wrapper versions match", Details: map[string]any{"cli_version": clientVersion, "wrapper_path": wrapper, "wrapper_version": clientVersion, "protocol_major": ProtocolMajor}})
+		checks = append(checks, doctorCheck{ID: "version:wrapper", Level: "ok", Message: "CLI and wrapper protocol major versions match", Details: map[string]any{"cli_version": clientVersion, "cli_protocol_major": clientProtocolMajor, "wrapper_path": wrapper, "wrapper_version": clientVersion, "wrapper_protocol_major": clientProtocolMajor}})
 	}
 	if dbErr != nil {
 		checks = append(checks, errorCheck("version:daemon", dbErr))

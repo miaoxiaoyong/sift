@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,9 +20,9 @@ func TestResolveWrapperUsesDaemonDirectoryAndRequiresExactVersion(t *testing.T) 
 	if err := os.WriteFile(daemon, nil, 0755); err != nil {
 		t.Fatal(err)
 	}
-	writeWrapper(t, dir, "0.1.0")
+	writeWrapper(t, dir, "0.1.0", 1)
 
-	got, err := ResolveWrapper(daemon, "0.1.0")
+	got, err := ResolveWrapper(daemon, "0.1.0", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,10 +30,26 @@ func TestResolveWrapperUsesDaemonDirectoryAndRequiresExactVersion(t *testing.T) 
 		t.Fatalf("wrapper = %q", got)
 	}
 
-	writeWrapper(t, dir, "0.2.0")
-	_, err = ResolveWrapper(daemon, "0.1.0")
+	writeWrapper(t, dir, "0.2.0", 1)
+	_, err = ResolveWrapper(daemon, "0.1.0", 1)
 	if !errors.Is(err, ErrWrapperVersion) {
 		t.Fatalf("version mismatch error = %v", err)
+	}
+}
+
+func TestResolveWrapperProtocolMismatch(t *testing.T) {
+	dir := t.TempDir()
+	daemon := filepath.Join(dir, "siftd")
+	if err := os.WriteFile(daemon, nil, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Same SemVer as the daemon but a different wire protocol major: the
+	// resolver must probe --protocol-major and fail closed instead of pairing.
+	writeWrapper(t, dir, "0.1.0", 2)
+
+	_, err := ResolveWrapper(daemon, "0.1.0", 1)
+	if !errors.Is(err, ErrWrapperProtocolMajor) {
+		t.Fatalf("protocol mismatch error = %v", err)
 	}
 }
 
@@ -43,9 +60,9 @@ func TestResolveWrapperDoesNotUsePATH(t *testing.T) {
 		t.Fatal(err)
 	}
 	pathDir := t.TempDir()
-	writeWrapper(t, pathDir, "0.1.0")
+	writeWrapper(t, pathDir, "0.1.0", 1)
 	t.Setenv("PATH", pathDir)
-	if _, err := ResolveWrapper(daemon, "0.1.0"); err == nil {
+	if _, err := ResolveWrapper(daemon, "0.1.0", 1); err == nil {
 		t.Fatal("wrapper found only through PATH must be rejected")
 	}
 }
@@ -142,10 +159,10 @@ func TestWriteControlFileIsPrivateAndReplacesContents(t *testing.T) {
 	}
 }
 
-func writeWrapper(t *testing.T, dir, version string) {
+func writeWrapper(t *testing.T, dir, version string, protocolMajor int) {
 	t.Helper()
 	path := filepath.Join(dir, wrapperName)
-	body := "#!/bin/sh\nprintf '%s\\n' '" + version + "'\n"
+	body := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n'; fi\nif [ \"$1\" = \"--protocol-major\" ]; then printf '%d\\n'; fi\n", version, protocolMajor)
 	if err := os.WriteFile(path, []byte(body), 0755); err != nil {
 		t.Fatal(err)
 	}

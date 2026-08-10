@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -32,10 +33,16 @@ func WrapperVersion(wrapper string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// ErrWrapperProtocolMajor reports that the installed wrapper reports a wire
+// protocol major different from the daemon's, even though its SemVer matched.
+var ErrWrapperProtocolMajor = errors.New("runtime: wrapper protocol major mismatch")
+
 // ResolveWrapper finds the wrapper next to daemonPath. It never consults PATH:
 // release archives install the daemon and wrapper together, so choosing a
-// wrapper elsewhere could pair incompatible binaries.
-func ResolveWrapper(daemonPath, daemonVersion string) (string, error) {
+// wrapper elsewhere could pair incompatible binaries. It probes both the
+// wrapper's SemVer (must match daemonVersion exactly) and its wire protocol
+// major (must match daemonProtocolMajor); either mismatch fails closed.
+func ResolveWrapper(daemonPath, daemonVersion string, daemonProtocolMajor int) (string, error) {
 	if !filepath.IsAbs(daemonPath) {
 		return "", fmt.Errorf("runtime: daemon path must be absolute")
 	}
@@ -58,6 +65,14 @@ func ResolveWrapper(daemonPath, daemonVersion string) (string, error) {
 	if reported != daemonVersion {
 		return "", fmt.Errorf("%w: daemon %s, wrapper %s", ErrWrapperVersion, daemonVersion, reported)
 	}
+	protocolOut, err := exec.Command(wrapper, "--protocol-major").Output()
+	if err != nil {
+		return "", fmt.Errorf("runtime: probe wrapper %q protocol major: %w", wrapper, err)
+	}
+	protocolMajor, err := strconv.Atoi(strings.TrimSpace(string(protocolOut)))
+	if err != nil || protocolMajor != daemonProtocolMajor {
+		return "", fmt.Errorf("%w: daemon %d, wrapper %s", ErrWrapperProtocolMajor, daemonProtocolMajor, strings.TrimSpace(string(protocolOut)))
+	}
 	return wrapper, nil
 }
 
@@ -71,12 +86,12 @@ func WrapperPathNextTo(daemonPath string) string {
 // ResolveInstalledWrapper resolves the wrapper for the currently running
 // daemon. It is deliberately separate from ResolveWrapper to keep launch tests
 // independent of the test binary's location.
-func ResolveInstalledWrapper(daemonVersion string) (string, error) {
+func ResolveInstalledWrapper(daemonVersion string, daemonProtocolMajor int) (string, error) {
 	daemon, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("runtime: locate daemon executable: %w", err)
 	}
-	return ResolveWrapper(daemon, daemonVersion)
+	return ResolveWrapper(daemon, daemonVersion, daemonProtocolMajor)
 }
 
 // ProcessBackend starts only the wrapper. The wrapper, not this backend, is
@@ -86,9 +101,10 @@ type ProcessBackend struct {
 }
 
 // NewProcessBackend verifies and records the same-version wrapper installed
-// alongside daemonPath.
-func NewProcessBackend(daemonPath, daemonVersion string) (*ProcessBackend, error) {
-	wrapper, err := ResolveWrapper(daemonPath, daemonVersion)
+// alongside daemonPath. The wrapper must also report the daemon's wire protocol
+// major; a protocol-generation mismatch fails closed before any launch.
+func NewProcessBackend(daemonPath, daemonVersion string, daemonProtocolMajor int) (*ProcessBackend, error) {
+	wrapper, err := ResolveWrapper(daemonPath, daemonVersion, daemonProtocolMajor)
 	if err != nil {
 		return nil, err
 	}
