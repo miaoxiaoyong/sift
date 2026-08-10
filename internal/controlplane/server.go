@@ -296,7 +296,7 @@ func (s *Server) operatorRequest(req Request) Response {
 		if !onlyKeys(req.Params) {
 			return failure(req.RequestID, "invalid_request", "invalid params", false)
 		}
-		result := doctor(context.Background(), false, s.Home)
+		result := doctorWithVersions(context.Background(), false, s.Home, req.ClientVersion, req.ProtocolMajor, &storage.DoctorDaemonVersion{BinaryVersion: Version, ProtocolMajor: ProtocolMajor})
 		if s.db != nil {
 			projections, err := s.db.ChannelDiagnostics(context.Background())
 			if err != nil {

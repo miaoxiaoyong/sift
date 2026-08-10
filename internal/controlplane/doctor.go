@@ -29,6 +29,10 @@ type doctorCheck struct {
 var resolveInstalledWrapper = runtimepkg.ResolveInstalledWrapper
 
 func doctor(ctx context.Context, offline bool, home config.Home) map[string]any {
+	return doctorWithVersions(ctx, offline, home, Version, ProtocolMajor, nil)
+}
+
+func doctorWithVersions(ctx context.Context, offline bool, home config.Home, clientVersion string, clientProtocolMajor int, liveDaemon *storage.DoctorDaemonVersion) map[string]any {
 	// Dependency probes are independent checks; a slow or unavailable command
 	// must not consume the entire budget for the later SQLite and projection checks.
 	ctx, cancel := context.WithTimeout(ctx, 15*deadline)
@@ -47,7 +51,7 @@ func doctor(ctx context.Context, offline bool, home config.Home) map[string]any 
 	}
 	dbPath := filepath.Join(home.Path, "sift.db")
 	checks = append(checks, sqliteCheck(ctx, dbPath))
-	checks = append(checks, versionChecks(ctx, dbPath)...)
+	checks = append(checks, versionChecks(ctx, dbPath, clientVersion, clientProtocolMajor, liveDaemon)...)
 	checks = append(checks, outboxChecks(ctx, dbPath)...)
 	if cfg != nil {
 		checks = append(checks, hookChecks(ctx, dbPath, cfg)...)
@@ -442,27 +446,35 @@ func permissionCheck(path, name string, want os.FileMode, required bool) doctorC
 	return doctorCheck{ID: "permissions:" + name, Level: "ok", Message: "permissions are owner-only", Details: map[string]any{"path": path, "mode": fmt.Sprintf("%04o", info.Mode().Perm())}}
 }
 
-func versionChecks(ctx context.Context, dbPath string) []doctorCheck {
-	daemon, active, err := storage.ReadDoctorDaemonVersion(ctx, dbPath)
-	if err != nil {
-		return []doctorCheck{{ID: "version:daemon", Level: "warning", Message: err.Error(), Details: map[string]any{}}}
+func versionChecks(ctx context.Context, dbPath, clientVersion string, clientProtocolMajor int, liveDaemon *storage.DoctorDaemonVersion) []doctorCheck {
+	var daemon storage.DoctorDaemonVersion
+	var active bool
+	var dbErr error
+	if liveDaemon != nil {
+		daemon, active = *liveDaemon, true
+	} else {
+		daemon, active, dbErr = storage.ReadDoctorDaemonVersion(ctx, dbPath)
 	}
 	checks := []doctorCheck{}
-	wrapper, err := resolveInstalledWrapper(Version)
+	wrapper, err := resolveInstalledWrapper(clientVersion)
 	if err != nil {
 		checks = append(checks, errorCheck("version:wrapper", err))
 	} else {
-		checks = append(checks, doctorCheck{ID: "version:wrapper", Level: "ok", Message: "CLI and wrapper versions match", Details: map[string]any{"cli_version": Version, "wrapper_path": wrapper, "wrapper_version": Version, "protocol_major": ProtocolMajor}})
+		checks = append(checks, doctorCheck{ID: "version:wrapper", Level: "ok", Message: "CLI and wrapper versions match", Details: map[string]any{"cli_version": clientVersion, "wrapper_path": wrapper, "wrapper_version": clientVersion, "protocol_major": ProtocolMajor}})
+	}
+	if dbErr != nil {
+		checks = append(checks, errorCheck("version:daemon", dbErr))
+		return checks
 	}
 	if !active {
-		checks = append(checks, doctorCheck{ID: "version:daemon", Level: "ok", Message: "no active daemon version record", Details: map[string]any{"cli_version": Version, "protocol_major": ProtocolMajor}})
+		checks = append(checks, doctorCheck{ID: "version:daemon", Level: "ok", Message: "no active daemon version record", Details: map[string]any{"cli_version": clientVersion, "protocol_major": clientProtocolMajor}})
 		return checks
 	}
-	if daemon.ProtocolMajor != ProtocolMajor || majorVersion(daemon.BinaryVersion) != majorVersion(Version) {
-		checks = append(checks, doctorCheck{ID: "version:daemon", Level: "error", Message: "CLI and daemon protocol major versions differ", Details: map[string]any{"cli_version": Version, "cli_protocol_major": ProtocolMajor, "daemon_version": daemon.BinaryVersion, "daemon_protocol_major": daemon.ProtocolMajor}})
+	if daemon.ProtocolMajor != clientProtocolMajor || majorVersion(daemon.BinaryVersion) != majorVersion(clientVersion) {
+		checks = append(checks, doctorCheck{ID: "version:daemon", Level: "error", Message: "CLI and daemon protocol major versions differ", Details: map[string]any{"cli_version": clientVersion, "cli_protocol_major": clientProtocolMajor, "daemon_version": daemon.BinaryVersion, "daemon_protocol_major": daemon.ProtocolMajor}})
 		return checks
 	}
-	checks = append(checks, doctorCheck{ID: "version:daemon", Level: "ok", Message: "CLI and daemon protocol major versions match", Details: map[string]any{"cli_version": Version, "cli_protocol_major": ProtocolMajor, "daemon_version": daemon.BinaryVersion, "daemon_protocol_major": daemon.ProtocolMajor}})
+	checks = append(checks, doctorCheck{ID: "version:daemon", Level: "ok", Message: "CLI and daemon protocol major versions match", Details: map[string]any{"cli_version": clientVersion, "cli_protocol_major": clientProtocolMajor, "daemon_version": daemon.BinaryVersion, "daemon_protocol_major": daemon.ProtocolMajor}})
 	return checks
 }
 
@@ -476,17 +488,38 @@ func majorVersion(version string) string {
 func outboxChecks(ctx context.Context, dbPath string) []doctorCheck {
 	outbox, err := storage.ReadDoctorOutbox(ctx, dbPath)
 	if err != nil {
-		return []doctorCheck{errorCheck("outbox", err)}
+		return []doctorCheck{errorCheck("outbox:backlog", err), errorCheck("outbox:push-failures", err)}
 	}
 	backlog := doctorCheck{ID: "outbox:backlog", Level: "ok", Message: "outbox has no pending operations", Details: map[string]any{"pending_count": outbox.Pending}}
 	if outbox.Pending > 0 {
 		backlog.Level, backlog.Message = "warning", "outbox operations remain pending"
 	}
-	failures := doctorCheck{ID: "outbox:push-failures", Level: "ok", Message: "outbox has no terminal delivery failures", Details: map[string]any{"failed_count": len(outbox.Failed), "failures": outbox.Failed}}
-	if len(outbox.Failed) > 0 {
-		failures.Level, failures.Message = "error", "outbox contains terminal delivery failures"
+	pushFailures := make([]storage.DoctorOutboxFailure, 0, len(outbox.Failed))
+	for _, failure := range outbox.Failed {
+		if isRemoteDeliveryKind(failure.Kind) {
+			pushFailures = append(pushFailures, failure)
+		}
 	}
-	return []doctorCheck{backlog, failures}
+	generic := doctorCheck{ID: "outbox:failures", Level: "ok", Message: "outbox has no terminal failures", Details: map[string]any{"failed_count": len(outbox.Failed), "failures": outbox.Failed}}
+	if len(outbox.Failed) > 0 {
+		generic.Level, generic.Message = "error", "outbox contains terminal failures"
+	}
+	push := doctorCheck{ID: "outbox:push-failures", Level: "ok", Message: "outbox has no terminal delivery failures", Details: map[string]any{"failed_count": len(pushFailures), "failures": pushFailures}}
+	if len(pushFailures) > 0 {
+		push.Level, push.Message = "error", "outbox contains terminal delivery failures"
+	}
+	return []doctorCheck{backlog, generic, push}
+}
+
+func isRemoteDeliveryKind(kind string) bool {
+	switch storage.OperationKind(kind) {
+	case storage.OperationForgeComment, storage.OperationForgeLabels, storage.OperationCreateChange,
+		storage.OperationMergeChange, storage.OperationRerunChecks, storage.OperationChannelPublish,
+		storage.OperationCommandAck, storage.OperationForgeAlert:
+		return true
+	default:
+		return false
+	}
 }
 
 func platformPostureChecks() []doctorCheck {

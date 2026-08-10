@@ -95,10 +95,16 @@ func matchesToken(actual, presented string) bool {
 }
 
 func validateEnvelope(r Request) (string, string) {
-	if r.ProtocolMajor != ProtocolMajor || r.ProtocolMinor > ProtocolMinor {
+	// doctor is the one read-only endpoint that must remain callable across a
+	// release boundary: it reports the mismatch instead of hiding it behind a
+	// handshake rejection. All other methods retain strict envelope gating.
+	if r.Method != "ops.doctor" && (r.ProtocolMajor != ProtocolMajor || r.ProtocolMinor > ProtocolMinor) {
 		return "unsupported_protocol", "protocol version is not supported"
 	}
-	if len(r.ClientVersion) < 3 || r.ClientVersion[0] != '0' || r.ClientVersion[1] != '.' {
+	if len(r.ClientVersion) < 3 || r.ClientVersion[0] < '0' || r.ClientVersion[0] > '9' || r.ClientVersion[1] != '.' {
+		return "unsupported_binary", "binary version is invalid"
+	}
+	if r.Method != "ops.doctor" && majorVersion(r.ClientVersion) != majorVersion(Version) {
 		return "unsupported_binary", "binary major version differs"
 	}
 	if !requestID.MatchString(r.RequestID) {

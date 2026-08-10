@@ -74,6 +74,33 @@ func TestV10aEndpointCapabilitiesAndSockets(t *testing.T) {
 	}
 }
 
+func TestDoctorOnlineHandshakeMismatchReportsDaemonVersion(t *testing.T) {
+	home := testHome(t)
+	s, err := Start(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	response := s.operatorRequest(Request{
+		ProtocolMajor: ProtocolMajor + 1, ClientVersion: "2.0.0",
+		RequestID: "0123456789abcdef0123456789abcdef", Method: "ops.doctor",
+		Auth: Auth{Kind: "operator", Token: s.operatorToken}, Params: map[string]any{},
+	})
+	if !response.OK {
+		t.Fatalf("mismatched doctor request = %#v", response)
+	}
+	result := response.Result.(map[string]any)
+	for _, check := range result["checks"].([]doctorCheck) {
+		if check.ID == "version:daemon" {
+			if check.Level != "error" {
+				t.Fatalf("daemon check = %#v", check)
+			}
+			return
+		}
+	}
+	t.Fatal("missing version:daemon check")
+}
+
 // TestV10bUnsafeLocalAttackReproduces verifies the deliberately unclosed V0
 // boundary as an Agent would exploit it: same-UID code reads operator.token
 // and uses it to invoke an operator RPC successfully.

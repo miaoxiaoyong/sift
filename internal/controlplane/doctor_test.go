@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,6 +162,59 @@ func TestDoctorReportsTM6PlatformsOutboxAndExitContract(t *testing.T) {
 	}
 	if checks["outbox:backlog"].Level != "warning" || checks["outbox:push-failures"].Level != "error" {
 		t.Fatalf("outbox checks = %#v", checks)
+	}
+}
+
+func TestDoctorMissingDatabaseKeepsIndependentVersionAndOutboxChecks(t *testing.T) {
+	home := testHome(t)
+	previous := resolveInstalledWrapper
+	resolveInstalledWrapper = func(string) (string, error) { return "", fmt.Errorf("wrapper mismatch") }
+	t.Cleanup(func() { resolveInstalledWrapper = previous })
+	result := doctor(context.Background(), true, home)
+	checks := doctorChecks(t, result)
+	for _, id := range []string{"version:wrapper", "version:daemon", "outbox:backlog", "outbox:push-failures"} {
+		if check, ok := checks[id]; !ok || check.Level == "ok" {
+			t.Fatalf("%s = %#v, want independent error", id, check)
+		}
+	}
+	if checks["version:wrapper"].Level != "error" {
+		t.Fatalf("wrapper mismatch = %#v", checks["version:wrapper"])
+	}
+}
+
+func TestDoctorCorruptDatabaseKeepsIndependentChecks(t *testing.T) {
+	home := testHome(t)
+	if err := os.WriteFile(filepath.Join(home.Path, "sift.db"), []byte("not sqlite"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checks := doctorChecks(t, doctor(context.Background(), true, home))
+	for _, id := range []string{"version:wrapper", "version:daemon", "outbox:backlog", "outbox:push-failures"} {
+		if check, ok := checks[id]; !ok || check.Level == "ok" {
+			t.Fatalf("%s = %#v, want independent non-ok result", id, check)
+		}
+	}
+}
+
+func TestDoctorReportsPushFailuresByKind(t *testing.T) {
+	stubDoctorWrapper(t)
+	home := testHome(t)
+	db, err := storage.Open(context.Background(), storage.OpenConfig{Path: filepath.Join(home.Path, "sift.db"), BinaryVersion: Version, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecForTest(context.Background(), `INSERT INTO outbox_operations (id,operation_key,kind,state,payload_schema_version,payload_json,payload_digest,attempt_count,next_attempt_at_ms,created_at_ms,updated_at_ms) VALUES ('local','local-key','launch_agent','failed',1,'{}','d',1,0,0,0), ('remote','remote-key','channel_publish','failed',1,'{}','d',1,0,0,0)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checks := doctorChecks(t, doctor(context.Background(), true, home))
+	if checks["outbox:push-failures"].Details["failed_count"] != 1 {
+		t.Fatalf("push failures = %#v", checks["outbox:push-failures"])
+	}
+	if checks["outbox:failures"].Details["failed_count"] != 2 {
+		t.Fatalf("generic failures = %#v", checks["outbox:failures"])
 	}
 }
 
