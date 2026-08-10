@@ -416,19 +416,18 @@ func TestRunDoctorOnlineExitsOneWhenDaemonUnavailable(t *testing.T) {
 }
 
 // TestDoctorDaemonVersionMismatchExitsTwo drives the real CLI binary over the
-// real operator socket against a daemon compiled at a different release and
-// asserts the doctor's version:daemon error projects to process exit 2
-// (config.md §7). The CLI is built with the release version stamped
-// (internal/version.Release, which controlplane.Version derives from), so the
-// wire handshake observes a genuine client/daemon binary-major mismatch — no
-// direct operatorRequest call and no fabricated boot row.
+// real operator socket against a daemon compiled at a different release. The
+// daemon handshake stays fail-closed (unsupported_binary), and the CLI must
+// surface that rejection as a synthesized version:daemon error — built from
+// the observed response envelope, never by consuming an incompatible success
+// result — and exit 2 (config.md §7, control-plane.md §3.4). The CLI is
+// built with the release version stamped (internal/version.Release, which
+// controlplane.Version derives from), so the wire handshake observes a
+// genuine client/daemon binary-major mismatch — no direct operatorRequest
+// call and no fabricated boot row.
 func TestDoctorDaemonVersionMismatchExitsTwo(t *testing.T) {
 	home := freshHome(t)
 	withDatabase(t, home)
-	// The daemon side (this process) stays at the compile-time release; the
-	// wrapper fixture pairs with the mismatched CLI release so version:daemon
-	// is the asserted error under test.
-	installDoctorWrapperVersion(t, "2.0.0", controlplane.ProtocolMajor)
 
 	cli := filepath.Join(t.TempDir(), "sift")
 	_, file, _, _ := runtime.Caller(0)
@@ -457,27 +456,81 @@ func TestDoctorDaemonVersionMismatchExitsTwo(t *testing.T) {
 	if code := cmd.ProcessState.ExitCode(); code != 2 {
 		t.Fatalf("exit code = %d, want 2; output:\n%s", code, output)
 	}
-	var response map[string]any
-	if err := json.Unmarshal(output, &response); err != nil {
-		t.Fatalf("unmarshal response: %v; output:\n%s", err, output)
+	var result map[string]any
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("unmarshal doctor output: %v; output:\n%s", err, output)
 	}
-	if ok, _ := response["ok"].(bool); !ok {
-		t.Fatalf("RPC ok = false; output:\n%s", output)
+	if ok, _ := result["ok"].(bool); ok {
+		t.Fatalf("doctor consumed a success response across a major boundary; output:\n%s", output)
 	}
-	result := response["result"].(map[string]any)
 	if result["exit_code"] != float64(2) {
 		t.Fatalf("doctor exit_code = %v, want 2", result["exit_code"])
 	}
 	for _, check := range result["checks"].([]any) {
 		m := check.(map[string]any)
-		if m["id"] == "version:daemon" {
-			if m["level"] != "error" {
-				t.Fatalf("version:daemon = %v, want error", m)
-			}
-			return
+		if m["id"] != "version:daemon" {
+			continue
 		}
+		if m["level"] != "error" {
+			t.Fatalf("version:daemon = %v, want error", m)
+		}
+		details, _ := m["details"].(map[string]any)
+		if details["cli_version"] != "2.0.0" {
+			t.Fatalf("cli_version = %v, want the CLI release 2.0.0", details["cli_version"])
+		}
+		if details["daemon_version"] != controlplane.Version || details["daemon_protocol_major"] != float64(controlplane.ProtocolMajor) {
+			t.Fatalf("daemon details = %v, want the actual daemon values observed on the wire", details)
+		}
+		return
 	}
 	t.Fatal("missing version:daemon error")
+}
+
+// TestDoctorWrapperUniqueOnline drives the online doctor end to end and
+// asserts version:wrapper appears exactly once, graded ok by the actual
+// daemon-side wrapper probe.
+func TestDoctorWrapperUniqueOnline(t *testing.T) {
+	installDoctorWrapper(t)
+	home := freshHome(t)
+	withDatabase(t, home)
+
+	s, err := controlplane.Start(config.Home{Path: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Serve(ctx) }()
+	waitSocket(t, filepath.Join(home, "siftd.sock"))
+
+	var out bytes.Buffer
+	if code := run([]string{"sift", "doctor"}, &out, io.Discard); code != 1 {
+		t.Fatalf("exit code = %d, want 1 (unsafe-local warning only); output:\n%s", code, out.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	result, _ := response["result"].(map[string]any)
+	var wrappers []map[string]any
+	for _, check := range result["checks"].([]any) {
+		m := check.(map[string]any)
+		if m["id"] == "version:wrapper" {
+			wrappers = append(wrappers, m)
+		}
+	}
+	if len(wrappers) != 1 {
+		t.Fatalf("version:wrapper count = %d, want exactly 1: %v", len(wrappers), wrappers)
+	}
+	check := wrappers[0]
+	if check["level"] != "ok" {
+		t.Fatalf("version:wrapper = %v, want ok", check)
+	}
+	details, _ := check["details"].(map[string]any)
+	if details["wrapper_version"] != controlplane.Version || details["wrapper_protocol_major"] != float64(controlplane.ProtocolMajor) {
+		t.Fatalf("details = %v, want actual probed wrapper values", details)
+	}
 }
 
 func waitSocket(t *testing.T, path string) {

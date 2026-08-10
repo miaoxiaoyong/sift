@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,7 +27,10 @@ type doctorCheck struct {
 	Details map[string]any `json:"details"`
 }
 
-var resolveInstalledWrapper = runtimepkg.ResolveInstalledWrapper
+// doctorExecutable locates the running sift binary whose sibling wrapper is
+// probed; it is a variable so tests can point the probe at a fabricated
+// install directory.
+var doctorExecutable = os.Executable
 
 func doctor(ctx context.Context, offline bool, home config.Home) map[string]any {
 	return doctorWithVersions(ctx, offline, home, Version, ProtocolMajor, nil)
@@ -38,7 +42,7 @@ func doctorWithVersions(ctx context.Context, offline bool, home config.Home, cli
 	ctx, cancel := context.WithTimeout(ctx, 15*deadline)
 	defer cancel()
 	checks := []doctorCheck{runtimeCheck(), versionCheck(), permissionCheck(home.Path, "home", 0o700, true)}
-	if daemon, err := os.Executable(); err == nil {
+	if daemon, err := doctorExecutable(); err == nil {
 		checks = append(checks, wrapperVersionChecks(ctx, daemon)...)
 	}
 	var cfg *config.Config
@@ -93,8 +97,10 @@ func versionCheck() doctorCheck {
 	}
 }
 
-// wrapperVersionChecks surfaces the wrapper/daemon release-version handshake
-// to the doctor (WBS §8.1). The daemon refuses to start on a mismatch, so this
+// wrapperVersionChecks surfaces the wrapper/daemon release-version and
+// protocol-major handshake to the doctor (WBS §8.1). It is the only emitter
+// of version:wrapper and grades solely on the actual daemon-side probe:
+// details carry the observed wrapper values, never client-reported input. The daemon refuses to start on a mismatch, so this
 // is the visibility side of the invariant; the offline doctor (run from the
 // sift binary in the same install directory) is the path that sees it.
 // daemonPath is the running sift binary (os.Executable); it is a parameter so
@@ -116,7 +122,15 @@ func wrapperVersionChecks(ctx context.Context, daemonPath string) []doctorCheck 
 	if reported != version.Release {
 		return []doctorCheck{errorCheck("version:wrapper", fmt.Errorf("%w: sift %s, wrapper %s", runtimepkg.ErrWrapperVersion, version.Release, reported))}
 	}
-	return []doctorCheck{{ID: "version:wrapper", Level: "ok", Message: "wrapper matches the release version", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release, "wrapper_version": reported}}}
+	protocolOut, _, err := runtimepkg.ProbeVersion(ctx, wrapper, []string{"--protocol-major"}, 0)
+	if err != nil {
+		return []doctorCheck{{ID: "version:wrapper", Level: "warning", Message: "cannot probe the installed wrapper protocol major", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release, "wrapper_version": reported, "error": err.Error()}}}
+	}
+	reportedMajor, err := strconv.Atoi(strings.TrimSpace(string(protocolOut)))
+	if err != nil || reportedMajor != ProtocolMajor {
+		return []doctorCheck{errorCheck("version:wrapper", fmt.Errorf("%w: sift %d, wrapper %s", runtimepkg.ErrWrapperProtocolMajor, ProtocolMajor, strings.TrimSpace(string(protocolOut))))}
+	}
+	return []doctorCheck{{ID: "version:wrapper", Level: "ok", Message: "wrapper matches the release version and protocol major", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release, "daemon_protocol_major": ProtocolMajor, "wrapper_version": reported, "wrapper_protocol_major": reportedMajor}}}
 }
 
 func executableChecks(ctx context.Context, cfg *config.Config) []doctorCheck {
@@ -446,6 +460,12 @@ func permissionCheck(path, name string, want os.FileMode, required bool) doctorC
 	return doctorCheck{ID: "permissions:" + name, Level: "ok", Message: "permissions are owner-only", Details: map[string]any{"path": path, "mode": fmt.Sprintf("%04o", info.Mode().Perm())}}
 }
 
+// versionChecks emits the single version:daemon check: it pairs the client's
+// self-reported envelope values with the daemon's actual version record (live
+// values online, the durable boot row offline). The wrapper is deliberately
+// not paired here; version:wrapper is emitted exactly once by
+// wrapperVersionChecks from the actual daemon-side probe, never from client
+// input.
 func versionChecks(ctx context.Context, dbPath, clientVersion string, clientProtocolMajor int, liveDaemon *storage.DoctorDaemonVersion) []doctorCheck {
 	var daemon storage.DoctorDaemonVersion
 	var active bool
@@ -456,12 +476,6 @@ func versionChecks(ctx context.Context, dbPath, clientVersion string, clientProt
 		daemon, active, dbErr = storage.ReadDoctorDaemonVersion(ctx, dbPath)
 	}
 	checks := []doctorCheck{}
-	wrapper, err := resolveInstalledWrapper(clientVersion, clientProtocolMajor)
-	if err != nil {
-		checks = append(checks, errorCheck("version:wrapper", err))
-	} else {
-		checks = append(checks, doctorCheck{ID: "version:wrapper", Level: "ok", Message: "CLI and wrapper protocol major versions match", Details: map[string]any{"cli_version": clientVersion, "cli_protocol_major": clientProtocolMajor, "wrapper_path": wrapper, "wrapper_version": clientVersion, "wrapper_protocol_major": clientProtocolMajor}})
-	}
 	if dbErr != nil {
 		checks = append(checks, errorCheck("version:daemon", dbErr))
 		return checks

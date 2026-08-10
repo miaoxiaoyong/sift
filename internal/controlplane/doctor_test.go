@@ -14,7 +14,7 @@ import (
 )
 
 func TestDoctorBaselineChecksConfiguredDependencies(t *testing.T) {
-	stubDoctorWrapper(t)
+	stubDoctorInstall(t, Version, ProtocolMajor)
 	home := testHome(t)
 	bin := filepath.Join(home.Path, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
@@ -139,7 +139,6 @@ func TestDoctorRejectsNonSocketAtSocketPath(t *testing.T) {
 }
 
 func TestDoctorReportsTM6PlatformsOutboxAndExitContract(t *testing.T) {
-	stubDoctorWrapper(t)
 	home := testHome(t)
 	db, err := storage.Open(context.Background(), storage.OpenConfig{Path: filepath.Join(home.Path, "sift.db"), BinaryVersion: Version, Now: time.Now()})
 	if err != nil {
@@ -168,9 +167,7 @@ func TestDoctorReportsTM6PlatformsOutboxAndExitContract(t *testing.T) {
 
 func TestDoctorMissingDatabaseKeepsIndependentVersionAndOutboxChecks(t *testing.T) {
 	home := testHome(t)
-	previous := resolveInstalledWrapper
-	resolveInstalledWrapper = func(string, int) (string, error) { return "", fmt.Errorf("wrapper mismatch") }
-	t.Cleanup(func() { resolveInstalledWrapper = previous })
+	stubDoctorInstall(t, "9.9.9-other", ProtocolMajor)
 	result := doctor(context.Background(), true, home)
 	checks := doctorChecks(t, result)
 	for _, id := range []string{"version:wrapper", "version:daemon", "outbox:backlog", "outbox:push-failures"} {
@@ -197,7 +194,6 @@ func TestDoctorCorruptDatabaseKeepsIndependentChecks(t *testing.T) {
 }
 
 func TestDoctorReportsPushFailuresByKind(t *testing.T) {
-	stubDoctorWrapper(t)
 	home := testHome(t)
 	db, err := storage.Open(context.Background(), storage.OpenConfig{Path: filepath.Join(home.Path, "sift.db"), BinaryVersion: Version, Now: time.Now()})
 	if err != nil {
@@ -220,7 +216,6 @@ func TestDoctorReportsPushFailuresByKind(t *testing.T) {
 }
 
 func TestDoctorReportsDaemonProtocolMismatch(t *testing.T) {
-	stubDoctorWrapper(t)
 	home := testHome(t)
 	db, err := storage.Open(context.Background(), storage.OpenConfig{Path: filepath.Join(home.Path, "sift.db"), BinaryVersion: Version, Now: time.Now()})
 	if err != nil {
@@ -241,37 +236,13 @@ func TestDoctorReportsDaemonProtocolMismatch(t *testing.T) {
 	}
 }
 
-// TestDoctorWrapperProtocolMismatch proves version:wrapper pairs only when the
-// installed wrapper actually reports the daemon's protocol major: a fixture
-// wrapper with the same SemVer but a different --protocol-major must surface
-// as an error through the real ResolveInstalledWrapper probe, not the daemon
-// constant.
+// TestDoctorWrapperProtocolMismatch proves version:wrapper pairs only when
+// the installed wrapper actually reports the daemon's protocol major: a
+// fixture wrapper with the same SemVer but a different --protocol-major must
+// surface as an error through the actual probe, not a daemon constant.
 func TestDoctorWrapperProtocolMismatch(t *testing.T) {
 	home := testHome(t)
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrapper := filepath.Join(filepath.Dir(executable), "sift-agent-wrapper")
-	old, readErr := os.ReadFile(wrapper)
-	oldInfo, statErr := os.Stat(wrapper)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		t.Fatal(readErr)
-	}
-	if statErr != nil && !os.IsNotExist(statErr) {
-		t.Fatal(statErr)
-	}
-	t.Cleanup(func() {
-		if readErr == nil {
-			_ = os.WriteFile(wrapper, old, oldInfo.Mode().Perm())
-			return
-		}
-		_ = os.Remove(wrapper)
-	})
-	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n'; fi\nif [ \"$1\" = \"--protocol-major\" ]; then printf '%d\\n'; fi\n", Version, ProtocolMajor+1)
-	if err := os.WriteFile(wrapper, []byte(content), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	stubDoctorInstall(t, Version, ProtocolMajor+1)
 
 	checks := doctorChecks(t, doctor(context.Background(), true, home))
 	if checks["version:wrapper"].Level != "error" {
@@ -280,6 +251,82 @@ func TestDoctorWrapperProtocolMismatch(t *testing.T) {
 	if !strings.Contains(checks["version:wrapper"].Message, "protocol major") {
 		t.Fatalf("wrapper check message = %q, want protocol major mismatch", checks["version:wrapper"].Message)
 	}
+}
+
+// TestDoctorWrapperUniqueAndPairing proves version:wrapper is emitted exactly
+// once per doctor run and is graded by the actual daemon↔wrapper probe, never
+// by client-reported envelope values. Three fixtures: a matching install, a
+// client that differs from the daemon (the wrapper check must still pair
+// daemon↔wrapper and stay ok without backfilling client input), and a wrapper
+// that matches the stale client but not the daemon (a single error, never an
+// error/ok conflict under the same ID).
+func TestDoctorWrapperUniqueAndPairing(t *testing.T) {
+	home := testHome(t)
+
+	wrapperChecks := func(result map[string]any) []doctorCheck {
+		t.Helper()
+		checks, ok := result["checks"].([]doctorCheck)
+		if !ok {
+			t.Fatalf("checks type = %T", result["checks"])
+		}
+		var matches []doctorCheck
+		for _, check := range checks {
+			if check.ID == "version:wrapper" {
+				matches = append(matches, check)
+			}
+		}
+		return matches
+	}
+
+	t.Run("matching install emits one ok check with probed values", func(t *testing.T) {
+		stubDoctorInstall(t, Version, ProtocolMajor)
+		matches := wrapperChecks(doctorWithVersions(context.Background(), true, home, Version, ProtocolMajor, nil))
+		if len(matches) != 1 {
+			t.Fatalf("version:wrapper count = %d, want exactly 1: %#v", len(matches), matches)
+		}
+		check := matches[0]
+		if check.Level != "ok" {
+			t.Fatalf("version:wrapper = %#v, want ok", check)
+		}
+		if check.Details["wrapper_version"] != Version || check.Details["wrapper_protocol_major"] != ProtocolMajor {
+			t.Fatalf("details = %v, want actual probed wrapper values", check.Details)
+		}
+	})
+
+	t.Run("client differs from daemon keeps daemon wrapper pairing", func(t *testing.T) {
+		stubDoctorInstall(t, Version, ProtocolMajor)
+		matches := wrapperChecks(doctorWithVersions(context.Background(), true, home, "2.0.0", ProtocolMajor+1, nil))
+		if len(matches) != 1 {
+			t.Fatalf("version:wrapper count = %d, want exactly 1: %#v", len(matches), matches)
+		}
+		check := matches[0]
+		if check.Level != "ok" {
+			t.Fatalf("version:wrapper = %#v, want ok: daemon and wrapper are paired", check)
+		}
+		if check.Details["wrapper_version"] != Version || check.Details["wrapper_protocol_major"] != ProtocolMajor {
+			t.Fatalf("details = %v, want actual daemon-side probe, not client input", check.Details)
+		}
+		for key, value := range check.Details {
+			if value == "2.0.0" || value == ProtocolMajor+1 {
+				t.Fatalf("details[%q] = %v, client input must not backfill wrapper details", key, value)
+			}
+		}
+	})
+
+	t.Run("wrapper matching stale client but not daemon is one error", func(t *testing.T) {
+		stubDoctorInstall(t, "2.0.0", ProtocolMajor+1)
+		matches := wrapperChecks(doctorWithVersions(context.Background(), true, home, "2.0.0", ProtocolMajor+1, nil))
+		if len(matches) != 1 {
+			t.Fatalf("version:wrapper count = %d, want exactly 1 (no error/ok conflict): %#v", len(matches), matches)
+		}
+		check := matches[0]
+		if check.Level != "error" {
+			t.Fatalf("version:wrapper = %#v, want error: wrapper does not pair with the daemon", check)
+		}
+		if !strings.Contains(check.Message, "2.0.0") {
+			t.Fatalf("message = %q, want the actual probed wrapper version", check.Message)
+		}
+	})
 }
 
 func initDoctorRepo(t *testing.T, repo, policy string) {
@@ -314,11 +361,23 @@ func writeDoctorExecutable(t *testing.T, dir, name string) {
 	}
 }
 
-func stubDoctorWrapper(t *testing.T) {
+// stubDoctorInstall points the doctor's wrapper probe at a fabricated install
+// directory whose wrapper answers --version/--protocol-major with the given
+// values.
+func stubDoctorInstall(t *testing.T, wrapperVersion string, wrapperProtocolMajor int) {
 	t.Helper()
-	previous := resolveInstalledWrapper
-	resolveInstalledWrapper = func(string, int) (string, error) { return "/fixture/sift-agent-wrapper", nil }
-	t.Cleanup(func() { resolveInstalledWrapper = previous })
+	dir := t.TempDir()
+	daemon := filepath.Join(dir, "sift")
+	if err := os.WriteFile(daemon, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n'; fi\nif [ \"$1\" = \"--protocol-major\" ]; then printf '%d\\n'; fi\n", wrapperVersion, wrapperProtocolMajor)
+	if err := os.WriteFile(filepath.Join(dir, "sift-agent-wrapper"), []byte(content), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	previous := doctorExecutable
+	doctorExecutable = func() (string, error) { return daemon, nil }
+	t.Cleanup(func() { doctorExecutable = previous })
 }
 
 func doctorChecks(t *testing.T, result map[string]any) map[string]doctorCheck {

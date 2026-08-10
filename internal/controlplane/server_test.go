@@ -74,31 +74,41 @@ func TestV10aEndpointCapabilitiesAndSockets(t *testing.T) {
 	}
 }
 
-func TestDoctorClientDaemonProtocolMismatch(t *testing.T) {
+// TestDoctorHandshakeRejectsIncompatibleMajors proves the ops.doctor endpoint
+// keeps the fail-closed handshake (release.md §4, control-plane.md §3.4): an
+// incompatible protocol major is rejected with unsupported_protocol and an
+// incompatible binary major with unsupported_binary, exactly like every other
+// method. The CLI, not the daemon, turns that rejection into the
+// version:daemon doctor error.
+func TestDoctorHandshakeRejectsIncompatibleMajors(t *testing.T) {
 	home := testHome(t)
 	s, err := Start(home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	response := s.operatorRequest(Request{
-		ProtocolMajor: ProtocolMajor + 1, ClientVersion: "2.0.0",
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Serve(ctx) }()
+	socket := filepath.Join(home.Path, "siftd.sock")
+	waitSocket(t, socket)
+
+	request := Request{
+		ProtocolMajor: ProtocolMajor + 1, ClientVersion: Version,
 		RequestID: "0123456789abcdef0123456789abcdef", Method: "ops.doctor",
 		Auth: Auth{Kind: "operator", Token: s.operatorToken}, Params: map[string]any{},
-	})
-	if !response.OK {
-		t.Fatalf("mismatched doctor request = %#v", response)
 	}
-	result := response.Result.(map[string]any)
-	for _, check := range result["checks"].([]doctorCheck) {
-		if check.ID == "version:daemon" {
-			if check.Level != "error" {
-				t.Fatalf("daemon check = %#v", check)
-			}
-			return
-		}
+	response := call(t, socket, request)
+	if response.OK || response.Error == nil || response.Error.Code != "unsupported_protocol" {
+		t.Fatalf("protocol-mismatched doctor = %#v, want unsupported_protocol rejection", response)
 	}
-	t.Fatal("missing version:daemon check")
+
+	request.ProtocolMajor = ProtocolMajor
+	request.ClientVersion = "2.0.0"
+	response = call(t, socket, request)
+	if response.OK || response.Error == nil || response.Error.Code != "unsupported_binary" {
+		t.Fatalf("binary-mismatched doctor = %#v, want unsupported_binary rejection", response)
+	}
 }
 
 // TestV10bUnsafeLocalAttackReproduces verifies the deliberately unclosed V0

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,11 +13,12 @@ import (
 )
 
 // releaseWrapperFixture writes an executable wrapper script next to daemonPath
-// that answers --version with release.
+// that answers --version with release and --protocol-major with the daemon's
+// own wire protocol major.
 func releaseWrapperFixture(t *testing.T, dir, release string) {
 	t.Helper()
 	path := filepath.Join(dir, "sift-agent-wrapper")
-	content := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"" + release + "\"; else exit 1; fi\n"
+	content := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"%s\"; fi\nif [ \"$1\" = \"--protocol-major\" ]; then printf '%d\\n'; fi\n", release, ProtocolMajor)
 	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +50,9 @@ func TestWrapperVersionChecksMatch(t *testing.T) {
 	}
 	if checks[0].Details["wrapper_version"] != version.Release {
 		t.Fatalf("wrapper_version = %v", checks[0].Details["wrapper_version"])
+	}
+	if checks[0].Details["wrapper_protocol_major"] != ProtocolMajor {
+		t.Fatalf("wrapper_protocol_major = %v, want probed %d", checks[0].Details["wrapper_protocol_major"], ProtocolMajor)
 	}
 }
 

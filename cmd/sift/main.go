@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
@@ -81,20 +82,79 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if command == "attach" {
 		return runAttach(response, home, stdout, stderr)
 	}
+	if command == "doctor" {
+		return runDoctor(response, stdout, stderr)
+	}
 	if err := printJSON(stdout, response); err != nil {
 		report(stderr, err)
 		return 1
-	}
-	if command == "doctor" {
-		if !response.OK {
-			return 1
-		}
-		return doctorExitCode(response.Result)
 	}
 	if !response.OK {
 		return 1
 	}
 	return 0
+}
+
+// runDoctor renders the online doctor response and maps it to the process
+// exit status (config.md §7). The daemon handshake is fail-closed
+// (control-plane.md §3.4, release.md §4): an incompatible CLI receives
+// unsupported_protocol/unsupported_binary instead of a result, and a success
+// envelope whose protocol or binary major differs from the CLI's own is never
+// consumed. Both surface as the version:daemon error the mismatch implies,
+// built from the observed response envelope, and exit 2.
+func runDoctor(response controlplane.Response, stdout, stderr io.Writer) int {
+	if !response.OK {
+		if response.Error != nil && (response.Error.Code == "unsupported_protocol" || response.Error.Code == "unsupported_binary") {
+			return emitDoctor(stdout, stderr, doctorMismatchResult(response))
+		}
+		if err := printJSON(stdout, response); err != nil {
+			report(stderr, err)
+		}
+		return 1
+	}
+	if response.ProtocolMajor != controlplane.ProtocolMajor || response.ProtocolMinor > controlplane.ProtocolMinor || majorVersion(response.ServerVersion) != majorVersion(version.Release) {
+		return emitDoctor(stdout, stderr, doctorMismatchResult(response))
+	}
+	if err := printJSON(stdout, response); err != nil {
+		report(stderr, err)
+		return 1
+	}
+	return doctorExitCode(response.Result)
+}
+
+// doctorMismatchResult synthesizes the doctor result for a handshake-rejected
+// or envelope-incompatible online doctor: a single version:daemon error check
+// pairing the CLI's own values with the daemon values observed on the wire.
+func doctorMismatchResult(response controlplane.Response) map[string]any {
+	message := "CLI and daemon binary major versions differ"
+	if response.Error != nil && response.Error.Code == "unsupported_protocol" {
+		message = "CLI and daemon wire protocol versions differ"
+	}
+	return map[string]any{
+		"offline":          false,
+		"exit_code":        2,
+		"security_posture": "unsafe-local",
+		"checks": []any{map[string]any{
+			"id":      "version:daemon",
+			"level":   "error",
+			"message": message,
+			"details": map[string]any{
+				"cli_version":           version.Release,
+				"cli_protocol_major":    controlplane.ProtocolMajor,
+				"daemon_version":        response.ServerVersion,
+				"daemon_protocol_major": response.ProtocolMajor,
+			},
+		}},
+	}
+}
+
+// majorVersion extracts the release major for the client-side envelope check;
+// the daemon applies the same rule in its handshake.
+func majorVersion(release string) string {
+	if i := strings.IndexByte(release, '.'); i >= 0 {
+		return release[:i]
+	}
+	return release
 }
 
 // emitDoctor prints the offline doctor result and maps its exit_code to the
