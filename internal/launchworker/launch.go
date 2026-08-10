@@ -264,6 +264,12 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	} else {
 		return errors.New("launch worker: no backend host configured")
 	}
+	if err := w.DB.CompleteOutboxAttempt(ctx, *claim, storage.CompleteOutcome{
+		State: storage.OperationSucceeded,
+		NowMS: now().UnixMilli(),
+	}); err != nil {
+		return fmt.Errorf("launch worker: complete launch operation: %w", err)
+	}
 	return nil
 }
 
