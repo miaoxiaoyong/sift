@@ -376,6 +376,35 @@ func TestSwitchCurrentLeavesNoTempLinkOnError(t *testing.T) {
 	}
 }
 
+func TestInstallCurrentFailureCleansActivatedRelease(t *testing.T) {
+	home := freshHome(t)
+	archive := writeValidArchive(t, t.TempDir(), testRelease, nil)
+	binDir := filepath.Join(home, BinDirName)
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(binDir, CurrentLink), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Install(home, archive); err == nil {
+		t.Fatal("install succeeded with a directory occupying current")
+	}
+	if _, err := os.Lstat(filepath.Join(binDir, testRelease)); !os.IsNotExist(err) {
+		t.Fatalf("activated release survived current switch failure: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(binDir, tempLinkName)); !os.IsNotExist(err) {
+		t.Fatalf("current temp link survived current switch failure: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(binDir, CurrentLink)); err != nil {
+		t.Fatal(err)
+	}
+	if installed, err := Install(home, archive); err != nil || installed != testRelease {
+		t.Fatalf("retry install = %q, %v; want %q, nil", installed, err, testRelease)
+	}
+}
+
 func TestInstallCleansStagingOnFailure(t *testing.T) {
 	home := freshHome(t)
 	path := filepath.Join(t.TempDir(), "bad.tar.gz")

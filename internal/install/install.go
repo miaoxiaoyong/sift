@@ -113,6 +113,9 @@ func Install(homePath, archivePath string) (string, error) {
 		return "", fmt.Errorf("install: activate %s: %w", target, err)
 	}
 	if err := switchCurrent(binDir, release); err != nil {
+		if cleanupErr := os.RemoveAll(target); cleanupErr != nil {
+			return "", fmt.Errorf("%w (cleanup activated release %s: %v)", err, release, cleanupErr)
+		}
 		return "", err
 	}
 	return release, nil
