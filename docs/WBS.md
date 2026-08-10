@@ -544,9 +544,12 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 8.2 托管与安装渠道
 
-- launchd user agent、systemd user unit、无 systemd foreground fallback
-- 崩溃自启与原子升级后重启
-- Homebrew tap 与 Release 归档两条安装路径
+- launchd user agent、systemd user unit、无 systemd foreground fallback ✅（#905：`internal/hosting` 后端分发 + launchd/systemd 模板 + foreground fallback；`sift service install|uninstall|status|restart`）
+- 崩溃自启与原子升级后重启 ✅（#905：launchd `KeepAlive` / systemd `Restart=on-failure`；ExecStart 跟随 `bin/current/sift`，`sift install` 后 `sift service restart` 重载；`scripts/hosting-smoke.sh` 实测 launchd 全路径）
+- Homebrew tap 与 Release 归档两条安装路径 ✅（#905：`packaging/homebrew/sift.rb` 草稿由 `tools/hosting formula` 渲染、`brew style` 零违规、归档名/布局与 release.md 一致；Release 归档路径随 §8.1）。**Homebrew tap 实际发布留后续（需 GitHub Release 产物）**
+- 契约与测试基准：[`specs/hosting.md`](specs/hosting.md) / [`testing/hosting.md`](testing/hosting.md)
+
+> launchd 端到端冒烟已本地验证（install → 起 daemon → kill 自启 → 原子升级 → restart）；systemd user unit 的自启需 user manager 环境、foreground fallback 在无 supervisor 时如实声明不承诺；A10 干净机证据随 §8.3。
 
 #### 8.3 干净机验收与文档
 

@@ -137,6 +137,43 @@ func TestInstallRequiresArchiveArgument(t *testing.T) {
 	}
 }
 
+// TestServiceRequiresAction asserts the hosting dispatch is a usage error
+// without an action verb (WBS M8 §8.2 / specs/hosting.md §4).
+func TestServiceRequiresAction(t *testing.T) {
+	freshHome(t)
+	var stderr bytes.Buffer
+	if code := run([]string{"sift", "service"}, io.Discard, &stderr); code != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "usage: sift service") {
+		t.Fatalf("stderr = %q, want service usage", stderr.String())
+	}
+}
+
+// TestServiceRejectsUnknownAction keeps the four-verb surface closed: an
+// unknown verb is a usage error, not a silent default.
+func TestServiceRejectsUnknownAction(t *testing.T) {
+	freshHome(t)
+	var stderr bytes.Buffer
+	if code := run([]string{"sift", "service", "reboot"}, io.Discard, &stderr); code != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%q", code, stderr.String())
+	}
+}
+
+// TestServiceInstallRequiresRelease asserts the hosting units refuse to point
+// at nothing: with no release installed under bin/current, install reports a
+// clear error and exits non-zero instead of writing a unit to a missing binary.
+func TestServiceInstallRequiresRelease(t *testing.T) {
+	freshHome(t)
+	var stderr bytes.Buffer
+	if code := run([]string{"sift", "service", "install"}, io.Discard, &stderr); code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "install") {
+		t.Fatalf("stderr = %q, want a hint to install a release first", stderr.String())
+	}
+}
+
 // TestInstallEndToEnd drives sift install against a real archive whose
 // binaries answer --version natively (executable shell fixtures, so the probe
 // step runs them).

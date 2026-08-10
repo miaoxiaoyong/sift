@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/miaoxiaoyong/sift/internal/hosting"
 	"github.com/miaoxiaoyong/sift/internal/install"
 	"github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/schema"
@@ -61,6 +63,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if command == "install" {
 		return runInstall(args[2:], home, stdout, stderr)
+	}
+	if command == "service" {
+		return runService(args[2:], home, stdout, stderr)
 	}
 	if command == "doctor" && len(args) == 3 && args[2] == "--offline" {
 		result := controlplane.OfflineDoctor(home)
@@ -325,7 +330,7 @@ func printJSON(w io.Writer, v any) error {
 }
 func report(w io.Writer, err error) { fmt.Fprintln(w, "sift:", err) }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sift --version|daemon|install <archive.tar.gz>|ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|hooks-bootstrap <project-id>|kill|retry|report <kind> --key KEY --payload JSON")
+	fmt.Fprintln(w, "usage: sift --version|daemon|install <archive.tar.gz>|service <install|uninstall|status|restart>|ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|hooks-bootstrap <project-id>|kill|retry|report <kind> --key KEY --payload JSON")
 }
 
 // runInstall installs a release archive into the version-directory layout
@@ -353,6 +358,60 @@ func nullableStringCLI(s string) any {
 		return nil
 	}
 	return s
+}
+
+// runService drives the user-level hosting units (WBS M8 §8.2). It renders the
+// platform unit (launchd user agent / systemd user unit), writes it atomically,
+// and runs the matching platform command. On a host without a supervisor it
+// reports the foreground fallback rather than failing (DESIGN §11).
+func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		report(stderr, fmt.Errorf("usage: sift service <install|uninstall|status|restart>"))
+		return 2
+	}
+	action, err := hosting.ActionFromString(args[0])
+	if err != nil {
+		report(stderr, err)
+		return 2
+	}
+	spec, err := hosting.NewSpec(home.Path)
+	if err != nil {
+		report(stderr, err)
+		return 1
+	}
+	plan, err := spec.Plan(action)
+	if err != nil {
+		report(stderr, err)
+		return 1
+	}
+	if err := hosting.Write(plan); err != nil {
+		report(stderr, err)
+		return 1
+	}
+	if plan.WriteFile != "" {
+		if plan.Content != nil {
+			fmt.Fprintf(stdout, "wrote %s unit: %s\n", spec.Backend, plan.WriteFile)
+		} else {
+			fmt.Fprintf(stdout, "removed %s unit: %s\n", spec.Backend, plan.WriteFile)
+		}
+	}
+	out, execErr := hosting.Exec(plan)
+	if len(out) > 0 {
+		stdout.Write(out)
+	}
+	switch {
+	case execErr == nil:
+		fmt.Fprintf(stdout, "%s: %s\n", spec.Backend, plan.Summary)
+		return 0
+	case errors.Is(execErr, hosting.ErrNoBackend):
+		// No supervisor: the foreground hint is the supported path, not an
+		// error. Print it and exit 0 so `sift service install` is portable.
+		fmt.Fprintf(stdout, "%s\n  %s\n", plan.Summary, plan.Hint)
+		return 0
+	default:
+		report(stderr, execErr)
+		return 1
+	}
 }
 
 var reportKinds = map[string]bool{"progress": true, "goal": true, "blocker": true, "completed": true}
