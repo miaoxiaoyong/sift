@@ -26,6 +26,8 @@ type doctorCheck struct {
 	Details map[string]any `json:"details"`
 }
 
+var resolveInstalledWrapper = runtimepkg.ResolveInstalledWrapper
+
 func doctor(ctx context.Context, offline bool, home config.Home) map[string]any {
 	// Dependency probes are independent checks; a slow or unavailable command
 	// must not consume the entire budget for the later SQLite and projection checks.
@@ -45,13 +47,16 @@ func doctor(ctx context.Context, offline bool, home config.Home) map[string]any 
 	}
 	dbPath := filepath.Join(home.Path, "sift.db")
 	checks = append(checks, sqliteCheck(ctx, dbPath))
+	checks = append(checks, versionChecks(ctx, dbPath)...)
+	checks = append(checks, outboxChecks(ctx, dbPath)...)
 	if cfg != nil {
 		checks = append(checks, hookChecks(ctx, dbPath, cfg)...)
 		checks = append(checks, projectPolicyChecks(ctx, cfg)...)
 	}
 	checks = append(checks, attemptChecks(ctx, dbPath)...)
 	checks = append(checks, homePermissions(home.Path, offline)...)
-	checks = append(checks, unsafeLocalCheck())
+	checks = append(checks, platformPostureChecks()...)
+	checks = append(checks, tm6ExposureChecks()...)
 
 	exitCode := 0
 	for _, check := range checks {
@@ -435,6 +440,74 @@ func permissionCheck(path, name string, want os.FileMode, required bool) doctorC
 		return errorCheck("permissions:"+name, fmt.Errorf("%s is not a regular file", path))
 	}
 	return doctorCheck{ID: "permissions:" + name, Level: "ok", Message: "permissions are owner-only", Details: map[string]any{"path": path, "mode": fmt.Sprintf("%04o", info.Mode().Perm())}}
+}
+
+func versionChecks(ctx context.Context, dbPath string) []doctorCheck {
+	daemon, active, err := storage.ReadDoctorDaemonVersion(ctx, dbPath)
+	if err != nil {
+		return []doctorCheck{{ID: "version:daemon", Level: "warning", Message: err.Error(), Details: map[string]any{}}}
+	}
+	checks := []doctorCheck{}
+	wrapper, err := resolveInstalledWrapper(Version)
+	if err != nil {
+		checks = append(checks, errorCheck("version:wrapper", err))
+	} else {
+		checks = append(checks, doctorCheck{ID: "version:wrapper", Level: "ok", Message: "CLI and wrapper versions match", Details: map[string]any{"cli_version": Version, "wrapper_path": wrapper, "wrapper_version": Version, "protocol_major": ProtocolMajor}})
+	}
+	if !active {
+		checks = append(checks, doctorCheck{ID: "version:daemon", Level: "ok", Message: "no active daemon version record", Details: map[string]any{"cli_version": Version, "protocol_major": ProtocolMajor}})
+		return checks
+	}
+	if daemon.ProtocolMajor != ProtocolMajor || majorVersion(daemon.BinaryVersion) != majorVersion(Version) {
+		checks = append(checks, doctorCheck{ID: "version:daemon", Level: "error", Message: "CLI and daemon protocol major versions differ", Details: map[string]any{"cli_version": Version, "cli_protocol_major": ProtocolMajor, "daemon_version": daemon.BinaryVersion, "daemon_protocol_major": daemon.ProtocolMajor}})
+		return checks
+	}
+	checks = append(checks, doctorCheck{ID: "version:daemon", Level: "ok", Message: "CLI and daemon protocol major versions match", Details: map[string]any{"cli_version": Version, "cli_protocol_major": ProtocolMajor, "daemon_version": daemon.BinaryVersion, "daemon_protocol_major": daemon.ProtocolMajor}})
+	return checks
+}
+
+func majorVersion(version string) string {
+	if i := strings.IndexByte(version, '.'); i >= 0 {
+		return version[:i]
+	}
+	return version
+}
+
+func outboxChecks(ctx context.Context, dbPath string) []doctorCheck {
+	outbox, err := storage.ReadDoctorOutbox(ctx, dbPath)
+	if err != nil {
+		return []doctorCheck{errorCheck("outbox", err)}
+	}
+	backlog := doctorCheck{ID: "outbox:backlog", Level: "ok", Message: "outbox has no pending operations", Details: map[string]any{"pending_count": outbox.Pending}}
+	if outbox.Pending > 0 {
+		backlog.Level, backlog.Message = "warning", "outbox operations remain pending"
+	}
+	failures := doctorCheck{ID: "outbox:push-failures", Level: "ok", Message: "outbox has no terminal delivery failures", Details: map[string]any{"failed_count": len(outbox.Failed), "failures": outbox.Failed}}
+	if len(outbox.Failed) > 0 {
+		failures.Level, failures.Message = "error", "outbox contains terminal delivery failures"
+	}
+	return []doctorCheck{backlog, failures}
+}
+
+func platformPostureChecks() []doctorCheck {
+	checks := make([]doctorCheck, 0, 2)
+	for _, platform := range []string{"darwin", "linux"} {
+		checks = append(checks, doctorCheck{ID: "security-posture:" + platform, Level: "warning", Message: platform + " V0 posture is unsafe-local; agent isolation is not implemented", Details: map[string]any{"platform": platform, "current_platform": runtime.GOOS == platform, "security_posture": "unsafe-local", "agent_isolation": "not-implemented"}})
+	}
+	return checks
+}
+
+func tm6ExposureChecks() []doctorCheck {
+	return []doctorCheck{
+		unsafeLocalCheck(),
+		{ID: "tm6:sift-home", Level: "warning", Message: "same-UID agents can read ~/.sift/ despite owner-only permissions", Details: map[string]any{"exposure": "~/.sift/ configuration, database, and local state", "v0_status": "unclosed"}},
+		{ID: "tm6:forge-cli-credentials", Level: "warning", Message: "same-UID agents can use already logged-in forge CLIs", Details: map[string]any{"exposure": "gh/glab credentials", "v0_status": "unclosed"}},
+		{ID: "tm6:operator-token-and-socket", Level: "warning", Message: "same-UID agents can read operator.token and call kill or retry over the operator socket", Details: map[string]any{"exposure": "operator.token and siftd.sock", "v0_status": "unclosed"}},
+		{ID: "tm6:shared-git", Level: "warning", Message: "shared .git, other worktrees, and non-Sift git writes remain reachable by same-UID agents", Details: map[string]any{"exposure": "shared .git and worktrees", "v0_status": "unclosed", "sift_git_control": "hooks disabled and fingerprinted"}},
+		{ID: "tm6:process-group-escape", Level: "warning", Message: "an agent or descendant can leave the wrapper process group", Details: map[string]any{"exposure": "process supervision", "v0_status": "unclosed", "mitigation": "qualification limits automatic retry"}},
+		{ID: "tm6:run-token", Level: "warning", Message: "same-UID processes can read the run token from owner-only control.json", Details: map[string]any{"exposure": "run token", "v0_status": "unclosed"}},
+		{ID: "tm6:bootstrap-credential", Level: "warning", Message: "another same-UID agent can race the short bootstrap credential window", Details: map[string]any{"exposure": "attempt bootstrap credential", "v0_status": "unclosed", "mitigation": "single-use claim binding"}},
+	}
 }
 
 func unsafeLocalCheck() doctorCheck {

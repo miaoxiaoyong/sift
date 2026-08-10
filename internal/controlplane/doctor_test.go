@@ -12,6 +12,7 @@ import (
 )
 
 func TestDoctorBaselineChecksConfiguredDependencies(t *testing.T) {
+	stubDoctorWrapper(t)
 	home := testHome(t)
 	bin := filepath.Join(home.Path, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
@@ -135,6 +136,56 @@ func TestDoctorRejectsNonSocketAtSocketPath(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsTM6PlatformsOutboxAndExitContract(t *testing.T) {
+	stubDoctorWrapper(t)
+	home := testHome(t)
+	db, err := storage.Open(context.Background(), storage.OpenConfig{Path: filepath.Join(home.Path, "sift.db"), BinaryVersion: Version, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecForTest(context.Background(), `INSERT INTO outbox_operations (id,operation_key,kind,state,payload_schema_version,payload_json,payload_digest,attempt_count,next_attempt_at_ms,created_at_ms,updated_at_ms) VALUES ('pending','pending-key','forge_comment','pending',1,'{}','digest',0,0,0,0), ('failed','failed-key','forge_comment','failed',1,'{}','digest',3,0,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result := doctor(context.Background(), true, home)
+	if result["exit_code"] != 2 {
+		t.Fatalf("exit_code = %v, want 2 for terminal outbox failure", result["exit_code"])
+	}
+	checks := doctorChecks(t, result)
+	for _, id := range []string{"outbox:backlog", "outbox:push-failures", "security-posture:darwin", "security-posture:linux", "tm6:sift-home", "tm6:forge-cli-credentials", "tm6:operator-token-and-socket", "tm6:shared-git", "tm6:process-group-escape", "tm6:run-token", "tm6:bootstrap-credential"} {
+		if _, ok := checks[id]; !ok {
+			t.Errorf("missing doctor check %q", id)
+		}
+	}
+	if checks["outbox:backlog"].Level != "warning" || checks["outbox:push-failures"].Level != "error" {
+		t.Fatalf("outbox checks = %#v", checks)
+	}
+}
+
+func TestDoctorReportsDaemonProtocolMismatch(t *testing.T) {
+	stubDoctorWrapper(t)
+	home := testHome(t)
+	db, err := storage.Open(context.Background(), storage.OpenConfig{Path: filepath.Join(home.Path, "sift.db"), BinaryVersion: Version, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecForTest(context.Background(), `INSERT INTO config_snapshots(id,config_hash,schema_version,canonical_json,source_present,loaded_at_ms,binary_version) VALUES ('config','config',1,'{}',1,0,'test')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.StartDaemonBoot(context.Background(), "config", "2.0.0", ProtocolMajor+1, os.Getpid(), time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checks := doctorChecks(t, doctor(context.Background(), true, home))
+	if checks["version:daemon"].Level != "error" {
+		t.Fatalf("daemon version check = %#v", checks["version:daemon"])
+	}
+}
+
 func initDoctorRepo(t *testing.T, repo, policy string) {
 	t.Helper()
 	for _, args := range [][]string{{"init"}, {"config", "user.email", "doctor@example.test"}, {"config", "user.name", "Doctor"}} {
@@ -165,6 +216,13 @@ func writeDoctorExecutable(t *testing.T, dir, name string) {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\necho 'fixture '+\"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func stubDoctorWrapper(t *testing.T) {
+	t.Helper()
+	previous := resolveInstalledWrapper
+	resolveInstalledWrapper = func(string) (string, error) { return "/fixture/sift-agent-wrapper", nil }
+	t.Cleanup(func() { resolveInstalledWrapper = previous })
 }
 
 func doctorChecks(t *testing.T, result map[string]any) map[string]doctorCheck {

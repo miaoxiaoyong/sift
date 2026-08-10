@@ -54,6 +54,33 @@ func withDatabase(t *testing.T, home string) {
 	}
 }
 
+func installDoctorWrapper(t *testing.T) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(filepath.Dir(executable), "sift-agent-wrapper")
+	old, readErr := os.ReadFile(wrapper)
+	oldInfo, statErr := os.Stat(wrapper)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+	if statErr != nil && !os.IsNotExist(statErr) {
+		t.Fatal(statErr)
+	}
+	t.Cleanup(func() {
+		if readErr == nil {
+			_ = os.WriteFile(wrapper, old, oldInfo.Mode().Perm())
+			return
+		}
+		_ = os.Remove(wrapper)
+	})
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf '"+controlplane.Version+"\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestDoctorExitCode extracts the §7 exit status from every shape the doctor
 // result can take: a Go int (offline, direct) and a JSON float64 (online, after
 // wire decode), plus the degenerate cases that must default to 0.
@@ -316,6 +343,7 @@ func TestRunDoctorOfflineExitsWithError(t *testing.T) {
 // with a healthy database the only remaining finding is the always-on
 // unsafe-local warning.
 func TestRunDoctorOfflineExitsWithWarning(t *testing.T) {
+	installDoctorWrapper(t)
 	home := freshHome(t)
 	withDatabase(t, home)
 	code := run([]string{"sift", "doctor", "--offline"}, &bytes.Buffer{}, io.Discard)
@@ -328,6 +356,7 @@ func TestRunDoctorOfflineExitsWithWarning(t *testing.T) {
 // daemon returns the doctor result in response.Result, and the process must
 // exit with the daemon-computed exit_code (1, unsafe-local warning).
 func TestRunDoctorOnlineExitsWithWarning(t *testing.T) {
+	installDoctorWrapper(t)
 	home := freshHome(t)
 	withDatabase(t, home)
 	s, err := controlplane.Start(config.Home{Path: home})

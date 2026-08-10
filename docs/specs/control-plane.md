@@ -413,7 +413,9 @@ attempt 为空时选择最大 attempt_no；`offset>=0`，`limit=1..262144`。res
 }
 ```
 
-`exit_code=0|1|2` 与 [`config.md`](config.md) §7 一致；`level=ok|warning|error`，checks 按 id 升序。details 是按 check id 绑定的 closed schema，不得成为任意 JSON 逃生口。
+`exit_code=0|1|2` 与 [`config.md`](config.md) §7 一致；`level=ok|info|warning|error`，checks 按 id 升序。details 是按 check id 绑定的 closed schema，不得成为任意 JSON 逃生口。
+
+最终诊断还必须包含 `version:daemon` / `version:wrapper` 的 CLI、daemon、wrapper 协议主版本配对，`outbox:backlog` 与 `outbox:push-failures`，以及 `security-posture:darwin`、`security-posture:linux` 两行。V0 两平台均为 `unsafe-local`；`tm6:*` 逐条列出同 UID 下的 `~/.sift/`、已登录 forge CLI、operator token/运维 socket、共享 `.git`/worktree、进程组逃逸、run token 与 bootstrap 凭据暴露面。资格结论不表示这些暴露面已闭合。
 
 `ops.metrics` params 为 `{"project_id":null}`（空表示全局）。result 为 `{"metrics": <MetricsReport>, "trigger_started_latency": <LatencyDistribution>}`，二者均为失败闭合的只读派生，口径与诚实边界见 [`metrics.md`](metrics.md) §2/§4。`MetricsReport` 的每个序列是 `{"numerator":N,"denominator":D,"rate":R,"coverage":"..."}`；缺数据时 `coverage` 必填、分子为零。
 

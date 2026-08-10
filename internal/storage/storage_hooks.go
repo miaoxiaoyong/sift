@@ -250,6 +250,24 @@ type DoctorAttempt struct {
 	AgentID        string
 }
 
+type DoctorOutbox struct {
+	Pending int
+	Failed  []DoctorOutboxFailure
+}
+
+type DoctorOutboxFailure struct {
+	ID           string
+	Kind         string
+	AttemptCount int
+	ErrorClass   string
+	ErrorSummary string
+}
+
+type DoctorDaemonVersion struct {
+	BinaryVersion string
+	ProtocolMajor int
+}
+
 // ReadDoctorState reads only diagnostic projections from an existing database.
 // It never creates, migrates, or mutates the database.
 func ReadDoctorState(ctx context.Context, path string) ([]HookBaseline, []DoctorAttempt, error) {
@@ -290,6 +308,52 @@ func ReadDoctorState(ctx context.Context, path string) ([]HookBaseline, []Doctor
 		attempts = append(attempts, a)
 	}
 	return hooks, attempts, rows.Err()
+}
+
+// ReadDoctorOutbox reads pending delivery pressure and terminal delivery
+// failures without opening a write connection.
+func ReadDoctorOutbox(ctx context.Context, path string) (DoctorOutbox, error) {
+	pool, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return DoctorOutbox{}, fmt.Errorf("storage: open doctor database: %w", err)
+	}
+	defer pool.Close()
+	var result DoctorOutbox
+	if err := pool.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_operations WHERE state IN ('pending','executing','retryable')`).Scan(&result.Pending); err != nil {
+		return DoctorOutbox{}, fmt.Errorf("storage: read outbox backlog: %w", err)
+	}
+	rows, err := pool.QueryContext(ctx, `SELECT id,kind,attempt_count,COALESCE(last_error_class,''),COALESCE(last_error_summary,'') FROM outbox_operations WHERE state='failed' ORDER BY updated_at_ms,id`)
+	if err != nil {
+		return DoctorOutbox{}, fmt.Errorf("storage: read outbox failures: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var failure DoctorOutboxFailure
+		if err := rows.Scan(&failure.ID, &failure.Kind, &failure.AttemptCount, &failure.ErrorClass, &failure.ErrorSummary); err != nil {
+			return DoctorOutbox{}, err
+		}
+		result.Failed = append(result.Failed, failure)
+	}
+	return result, rows.Err()
+}
+
+// ReadDoctorDaemonVersion returns the active daemon's version handshake when
+// one is recorded. A stopped historical boot is deliberately ignored.
+func ReadDoctorDaemonVersion(ctx context.Context, path string) (DoctorDaemonVersion, bool, error) {
+	pool, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return DoctorDaemonVersion{}, false, fmt.Errorf("storage: open doctor database: %w", err)
+	}
+	defer pool.Close()
+	var version DoctorDaemonVersion
+	err = pool.QueryRowContext(ctx, `SELECT binary_version,protocol_major FROM daemon_boots WHERE stopped_at_ms IS NULL ORDER BY started_at_ms DESC,id DESC LIMIT 1`).Scan(&version.BinaryVersion, &version.ProtocolMajor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DoctorDaemonVersion{}, false, nil
+	}
+	if err != nil {
+		return DoctorDaemonVersion{}, false, fmt.Errorf("storage: read active daemon version: %w", err)
+	}
+	return version, true, nil
 }
 
 // Migration refusal sentinels (specs/storage.md §3.1). Callers match with
