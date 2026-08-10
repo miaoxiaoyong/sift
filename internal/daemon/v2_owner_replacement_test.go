@@ -82,7 +82,7 @@ func runV2OwnerReplacement(t *testing.T, wrapperPath string, backend config.Back
 	if err := db.CompleteStartupRecovery(ctx, boot, now.UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-	server, err := controlplane.Start(config.Home{Path: filepath.Join(root, "runs")}, db)
+	server, err := controlplane.Start(config.Home{Path: root}, db)
 	if err != nil {
 		t.Fatal(err)
 	}

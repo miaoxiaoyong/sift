@@ -72,7 +72,7 @@ func TestLaunchWorkerWrapperCrashSuite(t *testing.T) {
 	if err := db.CompleteStartupRecovery(ctx, boot, now.UnixMilli()+1); err != nil {
 		t.Fatal(err)
 	}
-	serverHome := config.Home{Path: filepath.Join(home.Path, "runs")}
+	serverHome := config.Home{Path: home.Path}
 	server, err := controlplane.Start(serverHome, db)
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestLaunchWorkerKilledAtHandoffBoundaries(t *testing.T) {
 				t.Fatal(err)
 			}
 			completeLaunchRecovery(t, db, restartedBoot, restartedAt.UnixMilli(), point.recovery)
-			server, err := controlplane.Start(config.Home{Path: filepath.Join(root, "runs")}, db)
+			server, err := controlplane.Start(config.Home{Path: root}, db)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -249,7 +249,7 @@ func TestLaunchWorkerKilledAfterRealWrapperSpawn(t *testing.T) {
 				t.Fatal(err)
 			}
 			completeLaunchRecovery(t, db, boot, now.UnixMilli(), "supervise")
-			server, err := controlplane.Start(config.Home{Path: filepath.Join(root, "runs")}, db)
+			server, err := controlplane.Start(config.Home{Path: root}, db)
 			if err != nil {
 				t.Fatal(err)
 			}

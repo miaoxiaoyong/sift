@@ -149,7 +149,7 @@ func newV2Cell(t *testing.T, backend config.Backend) *v2Cell {
 		t.Fatal(err)
 	}
 	completeLaunchRecovery(t, db, boot, now.UnixMilli()+1, "supervise")
-	server, err := controlplane.Start(config.Home{Path: filepath.Join(root, "runs")}, db)
+	server, err := controlplane.Start(config.Home{Path: root}, db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -637,7 +637,7 @@ func v2ControlPGID(t *testing.T, runDir string) int {
 // v2RPC issues one framed control-plane request and returns ok/error-code.
 func v2RPC(t *testing.T, root, method string, auth, params map[string]any) (bool, string) {
 	t.Helper()
-	conn, err := net.Dial("unix", filepath.Join(root, "runs", "run.sock"))
+	conn, err := net.Dial("unix", filepath.Join(root, "run.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}

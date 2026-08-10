@@ -49,7 +49,7 @@ func TestProductionWrapperCrashWindows(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			root := shortTempDir(t)
-			runDir := filepath.Join(root, "runs", "run-1", "1")
+			runDir := filepath.Join(root, "runs", "run-1", "attempts", "1")
 			if err := os.MkdirAll(runDir, 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +123,7 @@ func TestQualificationBinaryReplacementBetweenMeasurementAndAgentExecFailsClosed
 		t.Skip("sealed executable images require a Unix executable image")
 	}
 	root := shortTempDir(t)
-	runDir := filepath.Join(root, "runs", "run-1", "1")
+	runDir := filepath.Join(root, "runs", "run-1", "attempts", "1")
 	if err := os.MkdirAll(runDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestQualificationBinaryInPlaceMutationBetweenMaterializationAndAgentExecFai
 		t.Skip("in-place mutation coverage is Darwin-specific")
 	}
 	root := shortTempDir(t)
-	runDir := filepath.Join(root, "runs", "run-1", "1")
+	runDir := filepath.Join(root, "runs", "run-1", "attempts", "1")
 	if err := os.MkdirAll(runDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +595,7 @@ func TestProductionTmuxWrapperCrashWindows(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			root := shortTempDir(t)
-			runDir := filepath.Join(root, "runs", "run-1", "1")
+			runDir := filepath.Join(root, "runs", "run-1", "attempts", "1")
 			if err := os.MkdirAll(runDir, 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -824,7 +824,7 @@ func buildWrapperWithTags(t *testing.T, tags ...string) string {
 func validBootstrap(t *testing.T, executable string, args []string) (string, string, string) {
 	t.Helper()
 	root := shortTempDir(t)
-	runDir := filepath.Join(root, "runs", "run-1", "1")
+	runDir := filepath.Join(root, "runs", "run-1", "attempts", "1")
 	if err := os.MkdirAll(runDir, 0700); err != nil {
 		t.Fatal(err)
 	}
