@@ -22,6 +22,7 @@ import (
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/miaoxiaoyong/sift/internal/hosting"
 	"github.com/miaoxiaoyong/sift/internal/storage"
 	"github.com/miaoxiaoyong/sift/internal/version"
 )
@@ -171,6 +172,61 @@ func TestServiceInstallRequiresRelease(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "install") {
 		t.Fatalf("stderr = %q, want a hint to install a release first", stderr.String())
+	}
+}
+
+// installReleaseLayout provisions bin/<release>/sift + bin/current under home
+// so the hosting layer's NewSpec resolves. The hosting layer never runs the
+// binary; an executable shell fixture suffices.
+func installReleaseLayout(t *testing.T, home string) {
+	t.Helper()
+	release := version.Release
+	dir := filepath.Join(home, "bin", release)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sift"), []byte("#!/bin/sh\necho "+release+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(release, filepath.Join(home, "bin", "current")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestServiceStatusForegroundReportsSocketVerdict pins the hosting §5 status
+// contract on the CLI's no-supervisor report in both states: the output must
+// carry present|absent for the operator socket (verifiable with
+// `[ -S "$SIFT_HOME/siftd.sock" ]`), not only the static hint.
+func TestServiceStatusForegroundReportsSocketVerdict(t *testing.T) {
+	for _, want := range []string{"absent", "present"} {
+		t.Run(want, func(t *testing.T) {
+			home := freshHome(t)
+			installReleaseLayout(t, home)
+			spec, err := hosting.NewSpecFor(home, "freebsd")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want == "present" {
+				sock := filepath.Join(home, "siftd.sock")
+				ln, err := net.Listen("unix", sock)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = ln.Close(); _ = os.Remove(sock) })
+			}
+			plan, err := spec.Plan(hosting.ActionStatus)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			printForegroundReport(&out, plan)
+			if !strings.Contains(out.String(), filepath.Join(home, "siftd.sock")) {
+				t.Errorf("status output %q does not name the operator socket", out.String())
+			}
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("status output %q lacks the %q verdict", out.String(), want)
+			}
+		})
 	}
 }
 

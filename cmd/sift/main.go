@@ -406,12 +406,25 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 	case errors.Is(execErr, hosting.ErrNoBackend):
 		// No supervisor: the foreground hint is the supported path, not an
 		// error. Print it and exit 0 so `sift service install` is portable.
-		fmt.Fprintf(stdout, "%s\n  %s\n", plan.Summary, plan.Hint)
+		printForegroundReport(stdout, plan)
 		return 0
 	default:
 		report(stderr, execErr)
 		return 1
 	}
+}
+
+// printForegroundReport writes the no-supervisor report for a plan: the
+// summary, the hosting §5 status verdict when the plan carries one (so
+// `sift service status` reports present|absent for the operator socket,
+// verifiable with `[ -S "$SIFT_HOME/siftd.sock" ]`, instead of only a hint),
+// and the human hint.
+func printForegroundReport(stdout io.Writer, plan hosting.Plan) {
+	fmt.Fprintf(stdout, "%s\n", plan.Summary)
+	if plan.Status != "" {
+		fmt.Fprintf(stdout, "  operator socket %s: %s\n", plan.SocketPath, plan.Status)
+	}
+	fmt.Fprintf(stdout, "  %s\n", plan.Hint)
 }
 
 var reportKinds = map[string]bool{"progress": true, "goal": true, "blocker": true, "completed": true}

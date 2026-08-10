@@ -208,6 +208,12 @@ type Plan struct {
 	Content   []byte   // content for WriteFile
 	RunCmd    []string // command + args to execute; nil means manual/foreground only
 	Hint      string   // human step printed when RunCmd is nil or the backend is missing
+	// Status is a machine-checkable verdict for ActionStatus plans that have
+	// no platform command (foreground): "present" when the operator socket
+	// exists at plan time, "absent" otherwise. SocketPath names the probed
+	// file so a caller can re-verify with `[ -S "$SocketPath" ]` (hosting §5).
+	Status     string
+	SocketPath string
 }
 
 // Plan builds the action's plan. It performs no IO beyond resolving the spec's
@@ -317,9 +323,20 @@ func (s Spec) planStatus() Plan {
 			Hint:   "systemctl --user status " + ServiceName + ".service",
 		}
 	default:
+		// hosting §5: the foreground status contract is the operator socket's
+		// existence, not a static hint. Probe it now so the CLI can report a
+		// verdict verifiable with `[ -S "$SIFT_HOME/siftd.sock" ]`.
+		sock := filepath.Join(s.HomePath, "siftd.sock")
+		status := "absent"
+		if info, err := os.Stat(sock); err == nil && info.Mode()&os.ModeSocket != 0 {
+			status = "present"
+		}
 		return Plan{
-			Action: ActionStatus, Summary: "foreground daemon (no supervisor)",
-			Hint:   "the daemon is foreground-managed; check the operator socket at " + filepath.Join(s.HomePath, "siftd.sock"),
+			Action:     ActionStatus,
+			Summary:    "foreground daemon (no supervisor)",
+			Status:     status,
+			SocketPath: sock,
+			Hint:       "the daemon is foreground-managed; check the operator socket at " + sock,
 		}
 	}
 }
@@ -337,15 +354,58 @@ func osUserUID() string {
 	return "$(id -u)"
 }
 
+// unitFuncs are the template functions that make a user-configurable SIFT_HOME
+// safe inside the generated units. The home (and every path derived from it:
+// daemon, logs) may legally contain &, space, #, and angle brackets; a unit
+// must stay loadable and must decode back to exactly the original path.
+// launchd consumes XML (plist) so values are entity-escaped; systemd consumes
+// its own syntax so ExecStart/Environment values are quoted as one token.
+var unitFuncs = template.FuncMap{
+	"xmlEscape":    xmlEscape,
+	"systemdQuote": systemdQuote,
+}
+
+// xmlEscape renders a value for insertion into XML element content. Only &, <
+// and > are special there; every XML parser (launchd's own plutil included)
+// decodes the entities back to the original characters, so escaping never
+// changes path semantics. Spaces and # need no XML escaping at all.
+func xmlEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '&':
+			b.WriteString("&amp;")
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// systemdQuote renders a value so systemd parses it as exactly one token in
+// ExecStart / Environment: the value is double-quoted and any embedded
+// backslash or double quote is escaped. SIFT_HOME may legally contain spaces
+// (word-splitting), & and # (both harmless inside a quoted token; systemd only
+// treats a line-leading # as a comment), so the quotes keep the path intact.
+func systemdQuote(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, `"`, `\"`)
+	return `"` + v + `"`
+}
+
 // Render renders the unit file content for the spec's backend. The foreground
 // backend renders nothing (it has no unit file).
 func (s Spec) Render() ([]byte, error) {
 	var tmpl *template.Template
 	switch s.Backend {
 	case BackendLaunchd:
-		tmpl = template.Must(template.New("launchd").Parse(launchdTemplate))
+		tmpl = template.Must(template.New("launchd").Funcs(unitFuncs).Parse(launchdTemplate))
 	case BackendSystemd:
-		tmpl = template.Must(template.New("systemd").Parse(systemdTemplate))
+		tmpl = template.Must(template.New("systemd").Funcs(unitFuncs).Parse(systemdTemplate))
 	case BackendForeground:
 		return nil, nil
 	default:
@@ -377,7 +437,7 @@ const launchdTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <string>{{.Label}}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{{.DaemonPath}}</string>
+        <string>{{xmlEscape .DaemonPath}}</string>
         <string>daemon</string>
     </array>
     <key>RunAtLoad</key>
@@ -387,13 +447,13 @@ const launchdTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>{{.LogOut}}</string>
+    <string>{{xmlEscape .LogOut}}</string>
     <key>StandardErrorPath</key>
-    <string>{{.LogErr}}</string>
+    <string>{{xmlEscape .LogErr}}</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>SIFT_HOME</key>
-        <string>{{.HomePath}}</string>
+        <string>{{xmlEscape .HomePath}}</string>
     </dict>
 </dict>
 </plist>
@@ -423,10 +483,10 @@ Documentation=https://github.com/miaoxiaoyong/sift
 
 [Service]
 Type=simple
-ExecStart={{.DaemonPath}} daemon
+ExecStart={{systemdQuote .DaemonPath}} daemon
 Restart=on-failure
 RestartSec=10
-Environment=SIFT_HOME={{.HomePath}}
+Environment=SIFT_HOME={{systemdQuote .HomePath}}
 
 [Install]
 WantedBy=default.target

@@ -1,7 +1,13 @@
 package hosting
 
 import (
+	"bytes"
+	"encoding/xml"
+	"fmt"
+	"io"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +21,14 @@ import (
 func installFakeRelease(t *testing.T) (home, daemonPath string) {
 	t.Helper()
 	home = t.TempDir()
+	return home, installFakeReleaseAt(t, home)
+}
+
+// installFakeReleaseAt provisions a release under an existing home directory.
+// Unlike t.TempDir, the caller's home may legally contain &, space or # — the
+// escaping tests need exactly that.
+func installFakeReleaseAt(t *testing.T, home string) (daemonPath string) {
+	t.Helper()
 	release := version.Release
 	versionDir := filepath.Join(home, "bin", release)
 	if err := os.MkdirAll(versionDir, 0o700); err != nil {
@@ -31,7 +45,7 @@ func installFakeRelease(t *testing.T) (home, daemonPath string) {
 	if err := os.Symlink(release, current); err != nil {
 		t.Fatal(err)
 	}
-	return home, daemonPath
+	return daemonPath
 }
 
 // pinDirs routes both OS directory resolvers at a temp root so backend path
@@ -190,7 +204,7 @@ func TestRenderLaunchdTemplateContract(t *testing.T) {
 		t.Error("launchd template lacks RunAtLoad")
 	}
 	// ExecStart-equivalent points at the current symlink daemon.
-	wantArgs := "<string>" + spec.DaemonPath + "</string>"
+	wantArgs := "<string>" + xmlEscape(spec.DaemonPath) + "</string>"
 	if !strings.Contains(s, wantArgs) {
 		t.Errorf("launchd template ProgramArguments does not point at %s", spec.DaemonPath)
 	}
@@ -238,14 +252,15 @@ func TestRenderSystemdTemplateContract(t *testing.T) {
 	if !strings.Contains(s, "RestartSec=10") {
 		t.Error("systemd template lacks RestartSec")
 	}
-	// ExecStart follows current/sift daemon.
-	if !strings.Contains(s, "ExecStart="+spec.DaemonPath+" daemon") {
+	// ExecStart follows current/sift daemon (quoted as one token so a home
+	// containing spaces or specials stays intact).
+	if !strings.Contains(s, "ExecStart="+systemdQuote(spec.DaemonPath)+" daemon") {
 		t.Errorf("systemd ExecStart does not point at %s daemon", spec.DaemonPath)
 	}
 	if !strings.Contains(s, "WantedBy=default.target") {
 		t.Error("systemd template is not a user unit (WantedBy=default.target)")
 	}
-	if !strings.Contains(s, "SIFT_HOME="+home) {
+	if !strings.Contains(s, "Environment=SIFT_HOME="+systemdQuote(home)) {
 		t.Error("systemd template does not pin SIFT_HOME")
 	}
 	// Foreground fallback is documented in-unit.
@@ -391,6 +406,243 @@ func TestPlanRejectsUnknownAction(t *testing.T) {
 	if _, err := spec.Plan(Action("bogus")); err == nil {
 		t.Fatal("unknown action succeeded")
 	}
+}
+
+// TestPlanStatusForegroundProbesSocket pins the hosting §5 status contract for
+// the foreground backend: the plan must carry a machine-checkable present|absent
+// verdict for the operator socket, not a static hint. Both states are covered;
+// "present" uses a real Unix socket so the verdict matches `[ -S ... ]`.
+func TestPlanStatusForegroundProbesSocket(t *testing.T) {
+	// The home is created directly under the OS temp root (like the cmd tests)
+	// so the probed socket path stays within the Unix domain socket length
+	// limit.
+	for _, want := range []string{"absent", "present"} {
+		t.Run(want, func(t *testing.T) {
+			home, err := os.MkdirTemp("", "sift-status")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(home) })
+			installFakeReleaseAt(t, home)
+			spec, err := NewSpecFor(home, "freebsd")
+			if err != nil {
+				t.Fatal(err)
+			}
+			sock := filepath.Join(home, "siftd.sock")
+			if want == "present" {
+				ln, err := net.Listen("unix", sock)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = ln.Close(); _ = os.Remove(sock) })
+			}
+			plan, err := spec.Plan(ActionStatus)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Status != want {
+				t.Errorf("foreground status verdict = %q, want %q", plan.Status, want)
+			}
+			if plan.SocketPath != sock {
+				t.Errorf("SocketPath = %q, want %q", plan.SocketPath, sock)
+			}
+			if plan.RunCmd != nil {
+				t.Errorf("foreground status must not run a platform command, got %v", plan.RunCmd)
+			}
+		})
+	}
+}
+
+// TestRenderEscapesUserPathsInUnits is the R1 P1-2 closing gate: SIFT_HOME is
+// user-configurable and may legally contain &, spaces and #. Both unit formats
+// must stay loadable (plutil -lint / systemd-analyze verify when the tool is
+// on this host) and must decode back to exactly the original paths.
+func TestRenderEscapesUserPathsInUnits(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "sift home & hash#")
+	installFakeReleaseAt(t, home)
+	pinDirs(t)
+	for _, tc := range []struct{ name, goos, unitName string }{
+		{"launchd", "darwin", Label + ".plist"},
+		{"systemd", "linux", ServiceName + ".service"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := NewSpecFor(home, tc.goos)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content, err := spec.Render()
+			if err != nil {
+				t.Fatal(err)
+			}
+			unit := filepath.Join(t.TempDir(), tc.unitName)
+			if err := os.WriteFile(unit, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			switch tc.goos {
+			case "darwin":
+				assertPlistPathSemantics(t, content, spec)
+				verifyWithPlutil(t, unit, spec)
+			case "linux":
+				assertSystemdPathSemantics(t, content, spec)
+				verifyWithSystemdAnalyze(t, unit)
+			}
+		})
+	}
+}
+
+// assertPlistPathSemantics decodes the rendered plist as XML: entity decoding
+// must recover the original paths exactly, proving the escaping kept the path
+// semantics (the same decoding the real plist parser performs).
+func assertPlistPathSemantics(t *testing.T, content []byte, spec Spec) {
+	t.Helper()
+	strs := plistStringValues(t, content)
+	for _, want := range []string{spec.DaemonPath, spec.HomePath, spec.LogOut, spec.LogErr} {
+		if !containsString(strs, want) {
+			t.Errorf("decoded plist strings %v do not contain %q", strs, want)
+		}
+	}
+}
+
+// plistStringValues collects every non-whitespace XML character-data node of a
+// plist (all unit values live in <string>/<integer> elements; comments and the
+// doctype are separate token kinds).
+func plistStringValues(t *testing.T, content []byte) []string {
+	t.Helper()
+	dec := xml.NewDecoder(bytes.NewReader(content))
+	var vals []string
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return vals
+		}
+		if err != nil {
+			t.Fatalf("decode plist xml: %v", err)
+		}
+		if cd, ok := tok.(xml.CharData); ok {
+			if s := strings.TrimSpace(string(cd)); s != "" {
+				vals = append(vals, s)
+			}
+		}
+	}
+}
+
+// verifyWithPlutil runs the platform loader's own validation on darwin hosts:
+// plutil -lint proves the plist loads, and plutil -extract decodes the exact
+// values launchd would use. Skipped where plutil is absent (non-darwin).
+func verifyWithPlutil(t *testing.T, unit string, spec Spec) {
+	t.Helper()
+	plutil, err := exec.LookPath("plutil")
+	if err != nil {
+		t.Skip("plutil not on PATH (non-darwin host)")
+	}
+	if out, err := exec.Command(plutil, "-lint", unit).CombinedOutput(); err != nil {
+		t.Errorf("plutil -lint: %v\n%s", err, out)
+	}
+	for _, want := range []struct {
+		keypath, expect string
+	}{
+		{"ProgramArguments.0", spec.DaemonPath},
+		{"EnvironmentVariables.SIFT_HOME", spec.HomePath},
+	} {
+		out, err := exec.Command(plutil, "-extract", want.keypath, "raw", "-o", "-", unit).Output()
+		if err != nil {
+			t.Errorf("plutil -extract %s: %v", want.keypath, err)
+			continue
+		}
+		if got := strings.TrimRight(string(out), "\n"); got != want.expect {
+			t.Errorf("plutil -extract %s = %q, want %q", want.keypath, got, want.expect)
+		}
+	}
+}
+
+// assertSystemdPathSemantics checks the emitted quoting is decodable back to the
+// original paths and that ExecStart keeps the daemon subcommand.
+func assertSystemdPathSemantics(t *testing.T, content []byte, spec Spec) {
+	t.Helper()
+	s := string(content)
+	if !strings.Contains(s, "ExecStart="+systemdQuote(spec.DaemonPath)+" daemon") {
+		t.Errorf("ExecStart is not the quoted daemon path + daemon subcommand:\n%s", s)
+	}
+	if got := systemdValueOf(t, s, "ExecStart="); got != spec.DaemonPath {
+		t.Errorf("ExecStart decodes to %q, want %q", got, spec.DaemonPath)
+	}
+	if !strings.Contains(s, "Environment=SIFT_HOME="+systemdQuote(spec.HomePath)) {
+		t.Errorf("Environment does not carry the quoted SIFT_HOME:\n%s", s)
+	}
+	if got := systemdValueOf(t, s, "Environment=SIFT_HOME="); got != spec.HomePath {
+		t.Errorf("SIFT_HOME decodes to %q, want %q", got, spec.HomePath)
+	}
+}
+
+// systemdValueOf mirrors systemd's token rule for the quoting we emit: a
+// double-quoted value with backslash escapes, split at the first whitespace
+// (ExecStart also carries the daemon subcommand).
+func systemdValueOf(t *testing.T, unit, directive string) string {
+	t.Helper()
+	for _, line := range strings.Split(unit, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, directive) {
+			continue
+		}
+		v := strings.TrimPrefix(line, directive)
+		// The values we emit are always one double-quoted token (with \" and
+		// \\ escapes) and may legally contain spaces, so scan to the closing
+		// quote rather than splitting at the first space.
+		if len(v) >= 2 && v[0] == '"' {
+			for i := 1; i < len(v); i++ {
+				if v[i] == '\\' {
+					i++
+					continue
+				}
+				if v[i] == '"' {
+					v = v[1:i]
+					break
+				}
+			}
+		}
+		if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+			v = v[1 : len(v)-1]
+		}
+		var b strings.Builder
+		for i := 0; i < len(v); i++ {
+			if v[i] == '\\' && i+1 < len(v) {
+				i++
+			}
+			b.WriteByte(v[i])
+		}
+		return b.String()
+	}
+	t.Fatalf("directive %q not found in unit:\n%s", directive, unit)
+	return ""
+}
+
+// verifyWithSystemdAnalyze runs the static unit parser on linux hosts: the
+// --user variant first, the plain variant as the same parser when no user
+// manager/bus is reachable. Skipped where systemd-analyze is absent.
+func verifyWithSystemdAnalyze(t *testing.T, unit string) {
+	t.Helper()
+	analyze, err := exec.LookPath("systemd-analyze")
+	if err != nil {
+		t.Skip("systemd-analyze not on PATH (non-linux host)")
+	}
+	var lastErr error
+	for _, args := range [][]string{{"--user", "verify", unit}, {"verify", unit}} {
+		if out, err := exec.Command(analyze, args...).CombinedOutput(); err != nil {
+			lastErr = fmt.Errorf("systemd-analyze %s: %w\n%s", strings.Join(args, " "), err, out)
+		} else {
+			return
+		}
+	}
+	t.Error(lastErr)
+}
+
+func containsString(hay []string, needle string) bool {
+	for _, s := range hay {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWriteCreatesUnitFileAtomically(t *testing.T) {
