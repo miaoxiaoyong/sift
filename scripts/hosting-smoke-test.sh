@@ -18,6 +18,12 @@
 #   stale-upgrade-launchd launchd (fake) darwin  smoke exits != 0 (restart, no new release)
 #   happy-launchd        launchd (fake)  darwin  smoke exits == 0 (alive / registered / new release)
 #
+# Happy scenarios additionally assert their smoke.log carries the full
+# install → alive → kill/restart → new-release chain, so the log itself is
+# reviewable evidence, not only the exit code. The fake supervisors create
+# their own state dir (mkdir -p) so a scenario never depends on harness
+# ordering or a pre-created scratch layout.
+#
 # Usage (from the repo root):
 #   ./scripts/hosting-smoke-test.sh
 set -euo pipefail
@@ -70,6 +76,7 @@ write_fake_systemctl() {
 #!/usr/bin/env bash
 set -u
 STATE="${FAKE_SYSTEMD_STATE:?}"
+mkdir -p "$STATE"
 pid_file="$STATE/pid"
 log="$STATE/daemon.log"
 start_daemon() {
@@ -118,6 +125,7 @@ write_fake_launchctl() {
 #!/usr/bin/env bash
 set -u
 STATE="${FAKE_LAUNCHD_STATE:?}"
+mkdir -p "$STATE"
 pid_file="$STATE/pid"
 log="$STATE/daemon.log"
 start_daemon() {
@@ -192,6 +200,35 @@ check() {
 	fi
 }
 
+# check_log asserts the scenario's smoke.log carries every required substring:
+# the happy paths must evidence the full install→alive→kill/restart→new release
+# chain in the log, not only a zero exit code.
+check_log() {
+	local name="$1"
+	local log="$scratch_root/$name/smoke.log"
+	shift
+	for s in "$@"; do
+		if ! grep -q -- "$s" "$log"; then
+			echo "FAIL: $name: smoke.log missing '$s'" >&2
+			FAILURES=$((FAILURES + 1))
+		fi
+	done
+}
+
+# check_log_absent asserts a negative scenario never reaches the completion
+# marker, so a smoke that silently exited 0 cannot pass the exit-code gate.
+check_log_absent() {
+	local name="$1"
+	local log="$scratch_root/$name/smoke.log"
+	shift
+	for s in "$@"; do
+		if grep -q -- "$s" "$log"; then
+			echo "FAIL: $name: smoke.log unexpectedly contains '$s'" >&2
+			FAILURES=$((FAILURES + 1))
+		fi
+	done
+}
+
 # --- scenario 1: foreground daemon dies at boot ---------------------------------
 s1="$scratch_root/startup-failure"
 mkdir -p "$s1/bin"
@@ -216,20 +253,24 @@ check "startup-failure: foreground daemon exiting at boot must fail the smoke" n
 # --- scenario 2: foreground happy path (daemon comes up, clean shutdown) --------
 rc="$(run_smoke happy-foreground)"
 check "happy-foreground: foreground daemon alive + clean shutdown must pass" zero "$rc"
+check_log happy-foreground "==> SMOKE OK"
 
 # --- systemd scenarios (linux only: the CLI backend follows runtime.GOOS) --------
 if [[ "$(uname -s)" == "Linux" ]]; then
 	write_fake_systemctl "$scratch_root/no-new-pid/state" 0 0
 	rc="$(run_smoke no-new-pid "FAKE_SYSTEMD_STATE=$scratch_root/no-new-pid/state FAKE_ON_KILL=0 FAKE_RESTART_CMD=0")"
 	check "no-new-pid: supervisor not producing a new pid after kill must fail the smoke" nonzero "$rc"
+	check_log_absent no-new-pid "==> SMOKE OK"
 
 	write_fake_systemctl "$scratch_root/stale-upgrade/state" 1 0
 	rc="$(run_smoke stale-upgrade "FAKE_SYSTEMD_STATE=$scratch_root/stale-upgrade/state FAKE_ON_KILL=1 FAKE_RESTART_CMD=0")"
 	check "stale-upgrade: daemon not running on the new release after restart must fail the smoke" nonzero "$rc"
+	check_log_absent stale-upgrade "==> SMOKE OK"
 
 	write_fake_systemctl "$scratch_root/happy-systemd/state" 1 1
 	rc="$(run_smoke happy-systemd "FAKE_SYSTEMD_STATE=$scratch_root/happy-systemd/state FAKE_ON_KILL=1 FAKE_RESTART_CMD=1")"
 	check "happy-systemd: daemon alive, new pid after kill, new release after restart must pass" zero "$rc"
+	check_log happy-systemd "==> daemon came up under systemd" "==> autorestart verified" "==> atomic upgrade verified" "new release running:" "==> SMOKE OK"
 else
 	echo "SKIP: systemd scenarios require Linux (host is $(uname -s))"
 fi
@@ -239,14 +280,17 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 	write_fake_launchctl "$scratch_root/unregistered-launchd/state" 0 0
 	rc="$(run_smoke unregistered-launchd "FAKE_LAUNCHD_STATE=$scratch_root/unregistered-launchd/state FAKE_ON_KILL=0 FAKE_RESTART_CMD=0")"
 	check "unregistered-launchd: agent not registered after kill must fail the smoke" nonzero "$rc"
+	check_log_absent unregistered-launchd "==> SMOKE OK"
 
 	write_fake_launchctl "$scratch_root/stale-upgrade-launchd/state" 1 0
 	rc="$(run_smoke stale-upgrade-launchd "FAKE_LAUNCHD_STATE=$scratch_root/stale-upgrade-launchd/state FAKE_ON_KILL=1 FAKE_RESTART_CMD=0")"
 	check "stale-upgrade-launchd: daemon not running on the new release after restart must fail the smoke" nonzero "$rc"
+	check_log_absent stale-upgrade-launchd "==> SMOKE OK"
 
 	write_fake_launchctl "$scratch_root/happy-launchd/state" 1 1
 	rc="$(run_smoke happy-launchd "FAKE_LAUNCHD_STATE=$scratch_root/happy-launchd/state FAKE_ON_KILL=1 FAKE_RESTART_CMD=1")"
 	check "happy-launchd: daemon alive, re-registered after kill, new release after restart must pass" zero "$rc"
+	check_log happy-launchd "==> daemon came up under launchd" "==> autorestart verified" "==> atomic upgrade verified" "new release running:" "==> SMOKE OK"
 else
 	echo "SKIP: launchd scenarios require Darwin (host is $(uname -s))"
 fi

@@ -139,6 +139,23 @@ jobs:
         run: |
           CGO_ENABLED=0 go test -v -run TestV10ZeroNetworkListeners ./internal/controlplane/ | tee v10.log
           grep -q -- "--- PASS: TestV10ZeroNetworkListeners" v10.log
+      # Issue #905 / M8 §8.2: the hosting smoke harness must be runnable on CI
+      # Linux, with both systemd negative scenarios failing the smoke and the
+      # happy systemd scenario passing (the launchd scenarios SKIP on Linux
+      # with a reason; they run on Darwin). The fake supervisors need no real
+      # systemd, launchd, install, or network port, so the ubuntu runner is
+      # deterministic for all five scenarios.
+      - name: M8 hosting smoke harness evidence (linux)
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 ./scripts/hosting-smoke-test.sh | tee hosting-smoke.log
+          grep -q -- 'PASS: no-new-pid' hosting-smoke.log
+          grep -q -- 'PASS: stale-upgrade' hosting-smoke.log
+          grep -q -- 'PASS: happy-systemd' hosting-smoke.log
+          if grep -q -- 'FAIL:' hosting-smoke.log; then
+            echo '::error::Hosting smoke harness scenario failed.'
+            exit 1
+          fi
 
   release-smoke:
     # WBS M8 §8.1 / Issue #903: the goreleaser snapshot pipeline must produce

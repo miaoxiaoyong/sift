@@ -216,11 +216,35 @@ elif [[ "$backend" == "launchd" ]]; then
 	plist_pid="$(launchctl list com.miaoxiaoyong.sift 2>/dev/null | awk '/"PID"/{gsub(/[^0-9]/,""); print}' | head -1 || echo "")"
 	if [[ -n "$plist_pid" ]] && (( plist_pid > 1 )); then
 		kill -KILL "$plist_pid" 2>/dev/null || true
-		sleep 4
-		if launchctl list com.miaoxiaoyong.sift >/dev/null 2>&1; then
-			echo "==> autorestart verified: launchd kept the agent registered after kill"
+		# Poll for a NEW pid under the same label plus the operator socket: a
+		# registration that survives with the old (dead) pid, or a socket that
+		# is only the leftover file, must fail the smoke. launchd has to hand
+		# the label to a fresh instance and that instance has to rebind the
+		# control plane (hosting §8).
+		new_pid=""
+		lost=0
+		deadline=$((SECONDS + 30))
+		while (( SECONDS < deadline )); do
+			listed="$(launchctl list com.miaoxiaoyong.sift 2>/dev/null || true)"
+			if [[ -z "$listed" ]]; then
+				# launchd lost the label entirely; autorestart cannot happen.
+				lost=$((lost + 1))
+				if (( lost >= 5 )); then
+					break
+				fi
+				sleep 1
+				continue
+			fi
+			new_pid="$(printf '%s\n' "$listed" | awk '/"PID"/{gsub(/[^0-9]/,""); print}' | head -1 || echo "")"
+			if [[ -n "$new_pid" ]] && (( new_pid > 1 )) && (( new_pid != plist_pid )) && [[ -S "$SIFT_HOME/siftd.sock" ]]; then
+				break
+			fi
+			sleep 1
+		done
+		if [[ -n "$new_pid" ]] && (( new_pid > 1 )) && (( new_pid != plist_pid )) && [[ -S "$SIFT_HOME/siftd.sock" ]]; then
+			echo "==> autorestart verified: launchd restarted the agent pid $plist_pid -> $new_pid; operator socket present"
 		else
-			echo "!! launchd agent not registered after kill" >&2
+			echo "!! launchd did not restart the agent under a new pid (was $plist_pid, now ${new_pid:-none})" >&2
 			exit 1
 		fi
 	else
