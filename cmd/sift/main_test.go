@@ -305,7 +305,10 @@ func TestHookBootstrapRequestRequiresExplicitProject(t *testing.T) {
 	}
 }
 
-func TestDoctorExitCode(t *testing.T) {
+// TestDoctorResultContract verifies that only the closed 0/1/2 exit-code
+// domain is healthy. The direct offline representation is int; the decoded
+// online representation is float64.
+func TestDoctorResultContract(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		result any
@@ -317,10 +320,12 @@ func TestDoctorExitCode(t *testing.T) {
 		{"online float clean", map[string]any{"exit_code": float64(0)}, 0},
 		{"online float warning", map[string]any{"exit_code": float64(1)}, 1},
 		{"online float error", map[string]any{"exit_code": float64(2)}, 2},
-		{"missing exit_code", map[string]any{"checks": nil}, 0},
-		{"malformed exit_code", map[string]any{"exit_code": "2"}, 0},
-		{"not a map", []any{"checks"}, 0},
-		{"nil", nil, 0},
+		{"missing exit_code", map[string]any{"checks": nil}, 2},
+		{"wrong exit_code type", map[string]any{"exit_code": "2"}, 2},
+		{"fractional exit_code", map[string]any{"exit_code": float64(1.5)}, 2},
+		{"out of range exit_code", map[string]any{"exit_code": float64(3)}, 2},
+		{"not a map", []any{"checks"}, 2},
+		{"nil", nil, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := doctorExitCode(tc.result); got != tc.want {
@@ -417,7 +422,7 @@ func TestRunDoctorOnlineExitsOneWhenDaemonUnavailable(t *testing.T) {
 	}
 }
 
-// TestDoctorDaemonVersionMismatchExitsTwo drives the real CLI binary over the
+// TestDoctorHandshakeErrorConsistencyDaemonVersionMismatchExitsTwo drives the real CLI binary over the
 // real operator socket against a daemon compiled at a different release. The
 // daemon handshake stays fail-closed (unsupported_binary), and the CLI must
 // surface that rejection as a synthesized version:daemon error — built from
@@ -427,7 +432,7 @@ func TestRunDoctorOnlineExitsOneWhenDaemonUnavailable(t *testing.T) {
 // controlplane.Version derives from), so the wire handshake observes a
 // genuine client/daemon binary-major mismatch — no direct operatorRequest
 // call and no fabricated boot row.
-func TestDoctorDaemonVersionMismatchExitsTwo(t *testing.T) {
+func TestDoctorHandshakeErrorConsistencyDaemonVersionMismatchExitsTwo(t *testing.T) {
 	home := freshHome(t)
 	withDatabase(t, home)
 
@@ -538,6 +543,105 @@ func TestDoctorRejectsInvalidResponseEnvelope(t *testing.T) {
 				t.Fatalf("doctor consumed untrusted result/error: stdout=%q stderr=%q", stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+// TestDoctorOnlineResultContract exercises the success result over the Unix
+// socket. A legal envelope does not make an absent, malformed, fractional, or
+// out-of-range doctor exit_code trustworthy.
+func TestDoctorOnlineResultContract(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result map[string]any
+		want   int
+	}{
+		{"clean", map[string]any{"exit_code": 0}, 0},
+		{"warning", map[string]any{"exit_code": 1}, 1},
+		{"error", map[string]any{"exit_code": 2}, 2},
+		{"missing exit_code", map[string]any{}, 2},
+		{"wrong exit_code type", map[string]any{"exit_code": "0"}, 2},
+		{"fractional exit_code", map[string]any{"exit_code": 1.5}, 2},
+		{"out of range exit_code", map[string]any{"exit_code": 3}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := freshHome(t)
+			serveFakeDoctorResponse(t, home, func(req controlplane.Request) map[string]any {
+				return fakeDoctorSuccess(req.RequestID, tc.result)
+			})
+			var stdout, stderr bytes.Buffer
+			if got := run([]string{"sift", "doctor"}, &stdout, &stderr); got != tc.want {
+				t.Fatalf("doctor exit code = %d, want %d; stdout=%q stderr=%q", got, tc.want, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+// TestDoctorHandshakeErrorConsistency only allows unsupported_* errors when
+// the corresponding response version is actually incompatible. A compatible
+// peer cannot synthesize a daemon mismatch; matching real handshake rejections
+// still become the closed version:daemon error and exit 2.
+func TestDoctorHandshakeErrorConsistency(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response func(controlplane.Request) map[string]any
+		want     int
+		consume  bool
+	}{
+		{
+			name: "compatible protocol cannot claim unsupported protocol",
+			response: func(req controlplane.Request) map[string]any {
+				return fakeDoctorError(req.RequestID, controlplane.ProtocolMajor, controlplane.ProtocolMinor, controlplane.Version, "unsupported_protocol", "forged")
+			},
+			want: 1,
+		},
+		{
+			name: "compatible binary cannot claim unsupported binary",
+			response: func(req controlplane.Request) map[string]any {
+				return fakeDoctorError(req.RequestID, controlplane.ProtocolMajor, controlplane.ProtocolMinor, controlplane.Version, "unsupported_binary", "forged")
+			},
+			want: 1,
+		},
+		{
+			name: "incompatible protocol with matching error becomes mismatch",
+			response: func(req controlplane.Request) map[string]any {
+				return fakeDoctorError(req.RequestID, controlplane.ProtocolMajor+1, controlplane.ProtocolMinor, controlplane.Version, "unsupported_protocol", "protocol mismatch")
+			},
+			want: 2, consume: true,
+		},
+		{
+			name: "incompatible binary with matching error becomes mismatch",
+			response: func(req controlplane.Request) map[string]any {
+				return fakeDoctorError(req.RequestID, controlplane.ProtocolMajor, controlplane.ProtocolMinor, "2.0.0", "unsupported_binary", "binary mismatch")
+			},
+			want: 2, consume: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := freshHome(t)
+			serveFakeDoctorResponse(t, home, tc.response)
+			var stdout, stderr bytes.Buffer
+			if got := run([]string{"sift", "doctor"}, &stdout, &stderr); got != tc.want {
+				t.Fatalf("doctor exit code = %d, want %d; stdout=%q stderr=%q", got, tc.want, stdout.String(), stderr.String())
+			}
+			if tc.consume {
+				if !bytes.Contains(stdout.Bytes(), []byte(`"id": "version:daemon"`)) {
+					t.Fatalf("missing synthesized version:daemon error: %q", stdout.String())
+				}
+			} else if stdout.Len() != 0 {
+				t.Fatalf("doctor consumed compatible forged handshake error: %q", stdout.String())
+			}
+		})
+	}
+}
+
+func fakeDoctorSuccess(requestID string, result map[string]any) map[string]any {
+	return map[string]any{
+		"protocol_major": controlplane.ProtocolMajor,
+		"protocol_minor": controlplane.ProtocolMinor,
+		"server_version": controlplane.Version,
+		"request_id":     requestID,
+		"ok":             true,
+		"result":         result,
 	}
 }
 

@@ -107,6 +107,10 @@ func validateResponseEnvelope(response Response, requestID string) error {
 		if response.OK || response.Error.Code != "unsupported_binary" {
 			return errf("response server binary major is incompatible")
 		}
+		return nil
+	}
+	if !response.OK && (response.Error.Code == "unsupported_protocol" || response.Error.Code == "unsupported_binary") {
+		return errf("response handshake error conflicts with compatible versions")
 	}
 	return nil
 }

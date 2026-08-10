@@ -111,6 +111,58 @@ func TestDoctorHandshakeRejectsIncompatibleMajors(t *testing.T) {
 	}
 }
 
+// TestHandshakeRejectsNonCanonicalClientVersion verifies the shared envelope
+// gate rejects malformed same-major versions before either authorization or
+// method parameter validation on both socket surfaces.
+func TestHandshakeRejectsNonCanonicalClientVersion(t *testing.T) {
+	home := testHome(t)
+	s, err := Start(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Serve(ctx) }()
+
+	for _, socket := range []string{"siftd.sock", "run.sock"} {
+		socket := socket
+		t.Run(socket, func(t *testing.T) {
+			waitSocket(t, filepath.Join(home.Path, socket))
+			for _, clientVersion := range []string{majorVersion(Version) + ".x", majorVersion(Version) + ".0"} {
+				clientVersion := clientVersion
+				t.Run(clientVersion, func(t *testing.T) {
+					response := call(t, filepath.Join(home.Path, socket), Request{
+						ProtocolMajor: ProtocolMajor, ProtocolMinor: ProtocolMinor,
+						ClientVersion: clientVersion, RequestID: "0123456789abcdef0123456789abcdef",
+						Method: "ops.doctor", Auth: Auth{Kind: "operator"}, Params: nil,
+					})
+					if response.OK || response.Error == nil || response.Error.Code != "unsupported_binary" {
+						t.Fatalf("non-canonical client version %q = %#v, want unsupported_binary before auth/params", clientVersion, response)
+					}
+				})
+			}
+
+			canonical := Request{
+				ProtocolMajor: ProtocolMajor, ProtocolMinor: ProtocolMinor,
+				ClientVersion: Version, RequestID: "0123456789abcdef0123456789abcdef",
+				Method: "ops.doctor", Auth: Auth{Kind: "operator", Token: s.operatorToken}, Params: map[string]any{},
+			}
+			if socket == "run.sock" {
+				canonical.Method = "report.submit"
+				canonical.Auth = Auth{Kind: "run_token", Token: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+			}
+			response := call(t, filepath.Join(home.Path, socket), canonical)
+			if socket == "siftd.sock" && !response.OK {
+				t.Fatalf("canonical operator request = %#v, want handshake to remain usable", response)
+			}
+			if socket == "run.sock" && (response.Error == nil || response.Error.Code == "unsupported_binary") {
+				t.Fatalf("canonical report request = %#v, want to reach the normal authorization gate", response)
+			}
+		})
+	}
+}
+
 // TestV10bUnsafeLocalAttackReproduces verifies the deliberately unclosed V0
 // boundary as an Agent would exploit it: same-UID code reads operator.token
 // and uses it to invoke an operator RPC successfully.

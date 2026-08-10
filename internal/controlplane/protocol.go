@@ -111,7 +111,7 @@ func validateEnvelope(r Request) (string, string) {
 	if r.ProtocolMajor != ProtocolMajor || r.ProtocolMinor > ProtocolMinor {
 		return "unsupported_protocol", "protocol version is not supported"
 	}
-	if len(r.ClientVersion) < 3 || r.ClientVersion[0] < '0' || r.ClientVersion[0] > '9' || r.ClientVersion[1] != '.' {
+	if !version.IsValidSemver(r.ClientVersion) {
 		return "unsupported_binary", "binary version is invalid"
 	}
 	if majorVersion(r.ClientVersion) != majorVersion(Version) {

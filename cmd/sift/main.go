@@ -172,20 +172,24 @@ func emitDoctor(stdout, stderr io.Writer, result map[string]any) int {
 // doctorExitCode extracts the process exit status from a doctor result. The
 // doctor computes exit_code as 0 (clean), 1 (warning) or 2 (error); this only
 // projects it. The offline result carries a Go int, the online result arrives
-// from JSON as a float64. A missing or malformed value defaults to 0, matching
-// a healthy result that must always set it.
+// from JSON as a float64. Any absent, malformed, fractional, or out-of-range
+// value is untrustworthy and therefore fails closed as an error.
 func doctorExitCode(result any) int {
 	m, ok := result.(map[string]any)
 	if !ok {
-		return 0
+		return 2
 	}
 	switch code := m["exit_code"].(type) {
 	case int:
-		return code
+		if code >= 0 && code <= 2 {
+			return code
+		}
 	case float64:
-		return int(code)
+		if code >= 0 && code <= 2 && code == float64(int(code)) {
+			return int(code)
+		}
 	}
-	return 0
+	return 2
 }
 
 func request(command string, args []string) (string, map[string]any, error) {
