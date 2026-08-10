@@ -536,10 +536,11 @@ summary: Sift PoC 的里程碑、工作分解与验收标准
 
 #### 8.1 发布归档与升级
 
-- GoReleaser 产出同版本两个发布二进制（`sift` / `sift-agent-wrapper`）单归档、manifest、校验和
-- 四组合运行安装、版本握手、SQLite、双 socket、wrapper handoff 冒烟
-- 安装到版本目录，校验后原子切换 `current`；禁止逐文件覆盖
-- CLI/daemon/wrapper 主版本不一致拒绝并由 doctor 报错
+- GoReleaser 产出同版本两个发布二进制（`sift` / `sift-agent-wrapper`）单归档、manifest、校验和 ✅（#903：`.goreleaser.yml` + `tools/release` + `scripts/release-snapshot.sh`，含 `before.hook` 保留 schema 生成）
+- 四组合运行安装、版本握手、SQLite、双 socket、wrapper handoff 冒烟（安装/握手段 ✅ #903：`internal/install` + doctor `version:wrapper`；SQLite/双 socket/handoff 冒烟随 A10/§8.3 干净机）
+- 安装到版本目录，校验后原子切换 `current`；禁止逐文件覆盖 ✅（#903：`~/.sift/bin/<release>/` + temp+rename symlink）
+- CLI/daemon/wrapper 主版本不一致拒绝并由 doctor 报错 ✅（#903：release 版本 ldflags 注入；doctor `version`/`version:wrapper` 检查，不一致 error）
+- 契约与测试基准：[`specs/release.md`](specs/release.md) / [`testing/release.md`](testing/release.md)
 
 #### 8.2 托管与安装渠道
 

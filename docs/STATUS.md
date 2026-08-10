@@ -20,7 +20,7 @@ summary: Sift 总体计划执行情况。工作包分解见 WBS.md。
 | M5 Attention/Command/Report/Brain/指标 | ✅ 完成 | PASS WITH NOTES | Interrupt 全功能、Command、Report、Channel、九项指标 |
 | M6 tmux + 完整故障矩阵 | ✅ 完成 | PASS WITH NOTES | tmux 第二后端、PTY、V2/V4 双后端全矩阵、阶段门归档 |
 | **M7 真实 Agent + PoC 取证** | 🔬 **PoC 已验证** | — | **Pi Brain+Agent 双 forge 端到端跑通** |
-| M8 发布 | ⏸ 未启动 | — | 单归档、四组合冒烟、托管、升级、Homebrew |
+| **M8 发布** | 🔄 **§8.1 已启动** | — | 单归档 + 版本/安装/握手（#903）；托管、升级、Homebrew 待续 |
 
 ## M7 PoC 验证成果(本轮)
 
@@ -72,4 +72,5 @@ summary: Sift 总体计划执行情况。工作包分解见 WBS.md。
 ## 下一步
 
 1. **M7 剩余验收**:人工前置(并行 Run 环境、手机设备、凭证策略)
-2. **M8 发布**:M7 PoC 证据齐全后
+2. **M8 §8.1 已完成（#903）**:release 版本（ldflags 注入）+ GoReleaser 四组合单归档/manifest/校验和 + `~/.sift/bin/<version>/` 原子安装 + doctor 握手可见性；契约见 [`specs/release.md`](specs/release.md)
+3. **M8 后续**:托管（launchd/systemd，§8.2）、Homebrew tap、干净机验收与文档（§8.3）

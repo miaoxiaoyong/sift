@@ -9,18 +9,28 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
+
+	"github.com/miaoxiaoyong/sift/internal/version"
 )
 
 const wrapperName = "sift-agent-wrapper"
 
-var semver = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
-
 // ErrWrapperVersion reports that the installed wrapper is not from the same
 // Sift release as the daemon.
 var ErrWrapperVersion = errors.New("runtime: wrapper version mismatch")
+
+// WrapperVersion runs the wrapper's --version probe and returns its trimmed
+// output. The wrapper prints exactly the release SemVer it was built with
+// (internal/version.Release), so the output is comparable to daemonVersion.
+func WrapperVersion(wrapper string) (string, error) {
+	out, err := exec.Command(wrapper, "--version").Output()
+	if err != nil {
+		return "", fmt.Errorf("runtime: probe wrapper %q: %w", wrapper, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
 
 // ResolveWrapper finds the wrapper next to daemonPath. It never consults PATH:
 // release archives install the daemon and wrapper together, so choosing a
@@ -29,7 +39,7 @@ func ResolveWrapper(daemonPath, daemonVersion string) (string, error) {
 	if !filepath.IsAbs(daemonPath) {
 		return "", fmt.Errorf("runtime: daemon path must be absolute")
 	}
-	if !semver.MatchString(daemonVersion) {
+	if !version.IsValidSemver(daemonVersion) {
 		return "", fmt.Errorf("runtime: invalid daemon version %q", daemonVersion)
 	}
 	wrapper := filepath.Join(filepath.Dir(daemonPath), wrapperName)
@@ -41,15 +51,21 @@ func ResolveWrapper(daemonPath, daemonVersion string) (string, error) {
 		return "", fmt.Errorf("runtime: installed wrapper %q is not executable", wrapper)
 	}
 
-	out, err := exec.Command(wrapper, "--version").Output()
+	reported, err := WrapperVersion(wrapper)
 	if err != nil {
-		return "", fmt.Errorf("runtime: probe wrapper %q: %w", wrapper, err)
+		return "", err
 	}
-	version := strings.TrimSpace(string(out))
-	if version != daemonVersion {
-		return "", fmt.Errorf("%w: daemon %s, wrapper %s", ErrWrapperVersion, daemonVersion, version)
+	if reported != daemonVersion {
+		return "", fmt.Errorf("%w: daemon %s, wrapper %s", ErrWrapperVersion, daemonVersion, reported)
 	}
 	return wrapper, nil
+}
+
+// WrapperPathNextTo returns the release-wrapper path installed next to
+// daemonPath. ResolveWrapper owns the probing and version validation; this
+// helper only exposes the layout for diagnostics (sift doctor).
+func WrapperPathNextTo(daemonPath string) string {
+	return filepath.Join(filepath.Dir(daemonPath), wrapperName)
 }
 
 // ResolveInstalledWrapper resolves the wrapper for the currently running

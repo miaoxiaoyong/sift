@@ -7,13 +7,13 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/miaoxiaoyong/sift/internal/version"
 	"github.com/miaoxiaoyong/sift/internal/wrapper"
 )
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		fmt.Println(controlplane.Version)
+		fmt.Println(version.Release)
 		return
 	}
 	if len(os.Args) == 4 && os.Args[1] == "--reap-process-group" {

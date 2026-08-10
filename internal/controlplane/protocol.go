@@ -7,14 +7,22 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+
+	"github.com/miaoxiaoyong/sift/internal/version"
 )
 
 const (
 	ProtocolMajor = 1
 	ProtocolMinor = 0
-	Version       = "0.1.0"
 	MaxFrame      = 1048576
 )
+
+// Version is the canonical binary/release SemVer carried in every RPC
+// envelope (client_version / server_version). It is the release version
+// injected through ldflags (internal/version.Release), separate from the wire
+// protocol version (ProtocolMajor/Minor) and from the config file protocol
+// version (config.Version). control-plane.md §3.4 defines the handshake.
+var Version = version.Release
 
 var requestID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 

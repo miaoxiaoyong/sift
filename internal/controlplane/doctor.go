@@ -16,6 +16,7 @@ import (
 	"github.com/miaoxiaoyong/sift/internal/policy"
 	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/miaoxiaoyong/sift/internal/version"
 )
 
 type doctorCheck struct {
@@ -30,7 +31,10 @@ func doctor(ctx context.Context, offline bool, home config.Home) map[string]any 
 	// must not consume the entire budget for the later SQLite and projection checks.
 	ctx, cancel := context.WithTimeout(ctx, 15*deadline)
 	defer cancel()
-	checks := []doctorCheck{runtimeCheck(), permissionCheck(home.Path, "home", 0o700, true)}
+	checks := []doctorCheck{runtimeCheck(), versionCheck(), permissionCheck(home.Path, "home", 0o700, true)}
+	if daemon, err := os.Executable(); err == nil {
+		checks = append(checks, wrapperVersionChecks(ctx, daemon)...)
+	}
 	var cfg *config.Config
 	if snapshot, err := config.Load(home, time.Now()); err != nil {
 		checks = append(checks, errorCheck("config", err))
@@ -67,6 +71,43 @@ func runtimeCheck() doctorCheck {
 		ID: "runtime", Level: "ok", Message: "Go runtime is supported",
 		Details: map[string]any{"go_version": runtime.Version(), "goos": runtime.GOOS, "goarch": runtime.GOARCH},
 	}
+}
+
+// versionCheck reports the release version of the binary running the doctor.
+// The same value is injected through ldflags into sift, sift-agent-wrapper and
+// the daemon (internal/version.Release); config.Version (protocol) is separate
+// and unchanged (specs/release.md §1).
+func versionCheck() doctorCheck {
+	return doctorCheck{
+		ID: "version", Level: "ok", Message: "release version is canonical",
+		Details: map[string]any{"release_version": version.Release, "go_version": runtime.Version(), "goos": runtime.GOOS, "goarch": runtime.GOARCH},
+	}
+}
+
+// wrapperVersionChecks surfaces the wrapper/daemon release-version handshake
+// to the doctor (WBS §8.1). The daemon refuses to start on a mismatch, so this
+// is the visibility side of the invariant; the offline doctor (run from the
+// sift binary in the same install directory) is the path that sees it.
+// daemonPath is the running sift binary (os.Executable); it is a parameter so
+// tests can drive the check against a fabricated install directory.
+func wrapperVersionChecks(ctx context.Context, daemonPath string) []doctorCheck {
+	wrapper := runtimepkg.WrapperPathNextTo(daemonPath)
+	info, err := os.Stat(wrapper)
+	if err != nil {
+		return []doctorCheck{{ID: "version:wrapper", Level: "warning", Message: "wrapper is not installed next to the sift binary", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release}}}
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return []doctorCheck{{ID: "version:wrapper", Level: "warning", Message: "installed wrapper is not an executable file", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release}}}
+	}
+	out, _, err := runtimepkg.ProbeVersion(ctx, wrapper, []string{"--version"}, 0)
+	if err != nil {
+		return []doctorCheck{{ID: "version:wrapper", Level: "warning", Message: "cannot probe the installed wrapper", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release, "error": err.Error()}}}
+	}
+	reported := strings.TrimSpace(string(out))
+	if reported != version.Release {
+		return []doctorCheck{errorCheck("version:wrapper", fmt.Errorf("%w: sift %s, wrapper %s", runtimepkg.ErrWrapperVersion, version.Release, reported))}
+	}
+	return []doctorCheck{{ID: "version:wrapper", Level: "ok", Message: "wrapper matches the release version", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release, "wrapper_version": reported}}}
 }
 
 func executableChecks(ctx context.Context, cfg *config.Config) []doctorCheck {

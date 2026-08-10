@@ -1,0 +1,75 @@
+# GoReleaser release configuration — WBS M8 §8.1 / Issue #903.
+#
+# Produces four single archives (darwin/linux × amd64/arm64), each carrying
+# both release binaries (`sift` + `sift-agent-wrapper`), a release manifest
+# and, alongside the archives, `checksums.txt`. Every binary is built with
+# CGO_ENABLED=0 (H7) and embeds the release version through ldflags, which is
+# the same version the manifest records and the install layout uses.
+#
+# Pipeline: goreleaser build -> per-build post hook regenerates
+# dist/manifest.json from the just-built binaries (--allow-partial keeps the
+# hook safe while builds run concurrently; the archive step only starts after
+# all builds and hooks finish, so the last hook writes the full matrix) ->
+# archive (which picks the manifest up via `files`) -> checksum.
+#
+# Dev/snapshot runs use the dev placeholder release version
+# (snapshot.version_template). Real releases take the version from a git tag
+# (vX.Y.Z) and publish through the standard goreleaser release step.
+version: 2
+
+before:
+  hooks:
+    # V14 invariant: JSON Schema artifacts are generated from the Go structs
+    # and checked in; CI diffs them (build.yml schema-drift). Regenerating in
+    # the release pipeline keeps that gate inside the release path.
+    - go generate ./...
+
+builds:
+  - id: sift
+    main: ./cmd/sift
+    binary: sift
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/miaoxiaoyong/sift/internal/version.Release={{.Version}}
+    hooks:
+      post:
+        # Manifest generation for the whole matrix. The hook runs after each
+        # build target from the repo root; --allow-partial writes whatever is
+        # complete so a concurrent early hook never fails the build, and the
+        # last hook to finish always sees the full 8-binary matrix.
+        - go run ./tools/release manifest --dist dist --version {{.Version}} --allow-partial
+
+  - id: sift-agent-wrapper
+    main: ./cmd/sift-agent-wrapper
+    binary: sift-agent-wrapper
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/miaoxiaoyong/sift/internal/version.Release={{.Version}}
+    hooks:
+      post:
+        - go run ./tools/release manifest --dist dist --version {{.Version}} --allow-partial
+
+archives:
+  - id: sift
+    name_template: "sift_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    ids: [sift, sift-agent-wrapper]
+    files:
+      - src: dist/manifest.json
+        dst: manifest.json
+        info:
+          mode: 0644
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  # Matches the internal/version.Release default: dev and snapshot builds
+  # always carry the placeholder release version.
+  version_template: "0.1.0-dev"

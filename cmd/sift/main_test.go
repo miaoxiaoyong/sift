@@ -1,18 +1,25 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
 	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/miaoxiaoyong/sift/internal/version"
 )
 
 // freshHome returns a 0700 temp dir suitable for use as SIFT_HOME. It creates
@@ -50,6 +57,136 @@ func withDatabase(t *testing.T, home string) {
 // TestDoctorExitCode extracts the §7 exit status from every shape the doctor
 // result can take: a Go int (offline, direct) and a JSON float64 (online, after
 // wire decode), plus the degenerate cases that must default to 0.
+// TestVersionFlag makes `sift --version` report the release version. The
+// wrapper prints the same value via --version and the daemon via the RPC
+// envelope / doctor; the release handshake compares them (WBS M8 §8.1).
+func TestVersionFlag(t *testing.T) {
+	var out bytes.Buffer
+	if code := run([]string{"sift", "--version"}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit code = %d", code)
+	}
+	if got := strings.TrimSpace(out.String()); got != version.Release {
+		t.Fatalf("--version = %q, want %q", got, version.Release)
+	}
+	var dashOut bytes.Buffer
+	if code := run([]string{"sift", "-version"}, &dashOut, io.Discard); code != 0 {
+		t.Fatalf("-version exit code = %d", code)
+	}
+	if dashOut.String() != out.String() {
+		t.Fatalf("-version output differs from --version")
+	}
+}
+
+func TestVersionFlagRejectsExtraArguments(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := run([]string{"sift", "--version", "extra"}, io.Discard, &stderr); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+}
+
+// TestInstallRequiresArchiveArgument mirrors the daemon/report argument
+// discipline: sift install without an archive path is a usage error.
+func TestInstallRequiresArchiveArgument(t *testing.T) {
+	freshHome(t)
+	var stderr bytes.Buffer
+	if code := run([]string{"sift", "install"}, io.Discard, &stderr); code != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "usage: sift install") {
+		t.Fatalf("stderr = %q, want install usage", stderr.String())
+	}
+}
+
+// TestInstallEndToEnd drives sift install against a real archive whose
+// binaries answer --version natively (executable shell fixtures, so the probe
+// step runs them).
+func TestInstallEndToEnd(t *testing.T) {
+	home := freshHome(t)
+	archiveDir := t.TempDir()
+
+	release := version.Release
+	archive := filepath.Join(archiveDir, "sift_"+release+"_"+runtime.GOOS+"_"+runtime.GOARCH+".tar.gz")
+	buildTestArchive(t, archive, release)
+
+	var out bytes.Buffer
+	if code := run([]string{"sift", "install", archive}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit code = %d; output=%q", code, out.String())
+	}
+	current := filepath.Join(home, "bin", "current")
+	target, err := os.Readlink(current)
+	if err != nil {
+		t.Fatalf("current link: %v", err)
+	}
+	if target != release {
+		t.Fatalf("current -> %q, want %q", target, release)
+	}
+	for _, name := range []string{"sift", "sift-agent-wrapper"} {
+		installed := filepath.Join(home, "bin", release, name)
+		info, err := os.Stat(installed)
+		if err != nil {
+			t.Fatalf("%s not installed: %v", name, err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Fatalf("%s is not executable", installed)
+		}
+	}
+}
+
+// testReleaseBinary returns an executable shell fixture that answers
+// --version with release; the install probe executes it natively.
+func testReleaseBinary(release string) []byte {
+	return []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"" + release + "\"; else exit 1; fi\n")
+}
+
+// buildTestArchive writes a release archive (two binaries + manifest.json) for
+// the current platform.
+func buildTestArchive(t *testing.T, archive, release string) {
+	t.Helper()
+	content := map[string][]byte{
+		"sift":               testReleaseBinary(release),
+		"sift-agent-wrapper": testReleaseBinary(release),
+	}
+	sum := func(b []byte) string {
+		s := sha256.Sum256(b)
+		return hex.EncodeToString(s[:])
+	}
+	raw, err := json.Marshal(map[string]any{
+		"schema_version":  1,
+		"release_version": release,
+		"artifacts": []any{
+			map[string]any{"goos": runtime.GOOS, "goarch": runtime.GOARCH, "name": "sift", "sha256": sum(content["sift"])},
+			map[string]any{"goos": runtime.GOOS, "goarch": runtime.GOARCH, "name": "sift-agent-wrapper", "sha256": sum(content["sift-agent-wrapper"])},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content["manifest.json"] = raw
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for name, data := range content {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(data))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDaemonDispatchRejectsArguments is the daemon argument-discipline
+// regression: `sift daemon --unexpected` must exit 2 without starting.
 func TestDaemonDispatchRejectsArguments(t *testing.T) {
 	var stderr bytes.Buffer
 	if code := run([]string{"sift", "daemon", "--unexpected"}, io.Discard, &stderr); code != 2 {

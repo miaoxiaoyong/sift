@@ -14,8 +14,10 @@ import (
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/miaoxiaoyong/sift/internal/install"
 	"github.com/miaoxiaoyong/sift/internal/runtime"
 	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/miaoxiaoyong/sift/internal/version"
 )
 
 func main() {
@@ -32,6 +34,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+	// `sift --version` is the operator-facing release version surface; the
+	// wrapper exposes the same value via `sift-agent-wrapper --version` and the
+	// daemon via the RPC envelope and `sift doctor` (WBS M8 §8.1).
+	if args[1] == "--version" || args[1] == "-version" {
+		if len(args) != 2 {
+			report(stderr, fmt.Errorf("usage: sift --version"))
+			return 2
+		}
+		fmt.Fprintln(stdout, version.Release)
+		return 0
+	}
 	home, err := config.ResolveHome()
 	if err != nil {
 		report(stderr, err)
@@ -44,6 +57,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		return runDaemonCommand(home, stderr)
+	}
+	if command == "install" {
+		return runInstall(args[2:], home, stdout, stderr)
 	}
 	if command == "doctor" && len(args) == 3 && args[2] == "--offline" {
 		result := controlplane.OfflineDoctor(home)
@@ -243,7 +259,25 @@ func printJSON(w io.Writer, v any) error {
 }
 func report(w io.Writer, err error) { fmt.Fprintln(w, "sift:", err) }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sift daemon|ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|hooks-bootstrap <project-id>|kill|retry|report <kind> --key KEY --payload JSON")
+	fmt.Fprintln(w, "usage: sift --version|daemon|install <archive.tar.gz>|ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|hooks-bootstrap <project-id>|kill|retry|report <kind> --key KEY --payload JSON")
+}
+
+// runInstall installs a release archive into the version-directory layout
+// (specs/release.md §3). The archive is the per-combo tarball produced by the
+// goreleaser pipeline: it must carry manifest.json plus both release binaries
+// for the current platform.
+func runInstall(args []string, home config.Home, stdout, stderr io.Writer) int {
+	if len(args) != 1 || args[0] == "" {
+		report(stderr, fmt.Errorf("usage: sift install <release-archive.tar.gz>"))
+		return 2
+	}
+	installed, err := install.Install(home.Path, args[0])
+	if err != nil {
+		report(stderr, err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "installed sift %s to %s; current -> %s\n", installed, filepath.Join(home.Path, "bin", installed), installed)
+	return 0
 }
 
 // nullableStringCLI emits nil for an empty string so the RPC param set stays

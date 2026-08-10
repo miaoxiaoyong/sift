@@ -124,6 +124,8 @@ JSON 数字不得为 NaN/Infinity。网络帧无需作为存储 hash 输入；�
 
 每次 RPC 都携完整的四元组：request 的 `(protocol_major, protocol_minor, client_version)` 与 response 的 `server_version`；不能因为调用方是同一归档中的 CLI/wrapper 而省略任一字段。`sift`、`sift-agent-wrapper` 分别以自己的 canonical SemVer 填 `client_version`；`sift daemon` 以自己的版本填 `server_version`。服务端按 §3.2 的顺序在鉴权和 params 解码前拒绝不兼容版本；客户端也必须在使用 `result/error` 前校验 response envelope、request id、protocol 版本和 server binary major。
 
+`client_version`/`server_version` 即 **release 版本**（`internal/version.Release`，ldflags 注入；dev/snapshot 默认 `0.1.0-dev`），与 wire 协议版本（`protocol_major/minor`）和 config 协议版本（`config.Version`）互不混淆，见 [`release.md` §1](release.md)。M8 起 `sift doctor` 对 daemon/wrapper release 版本不一致可见且报 error（[`release.md` §4](release.md)）。
+
 wrapper 还有一段文件到进程的握手：[`bootstrap.json` v2](#71-bootstrapjson-v2) 必须携 `protocol_major`、`protocol_minor`、`daemon_version`、`wrapper_version`。wrapper 先校验自身版本与 `wrapper_version` 完全相等、再校验 daemon/wrapper binary major 与协议版本；失败时 unlink 已读取的 bootstrap、不得调用 acquire、更不得写 control 或 spawn。随后 `claim.acquire` 的 RPC envelope 再以 wrapper 实际版本作为 `client_version` 完成双向校验，文件字段不能替代 RPC 握手。
 
 **破坏性变更：** 本次冻结将旧 `bootstrap.json` v1 升为 v2，并新增三个必填版本字段（`protocol_minor`、`daemon_version`、`wrapper_version`）；v1 与字段缺失文件必须 fail closed，不做默认补值。RPC envelope 仍为 v1，wire protocol major/minor 仍为 `1/0`。
