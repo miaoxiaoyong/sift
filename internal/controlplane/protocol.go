@@ -62,7 +62,13 @@ type Response struct {
 	OK            bool   `json:"ok"`
 	Result        any    `json:"result,omitempty"`
 	Error         *Error `json:"error,omitempty"`
+
+	envelopeValidated bool
 }
+
+// EnvelopeValidated reports whether this response passed client-side envelope,
+// request-id, protocol, and binary-major validation.
+func (r Response) EnvelopeValidated() bool { return r.envelopeValidated }
 
 func failure(id, code, message string, retryable bool) Response {
 	return Response{ProtocolMajor: ProtocolMajor, ProtocolMinor: ProtocolMinor, ServerVersion: Version, RequestID: id, Error: &Error{Code: code, Message: message, Retryable: retryable, Details: map[string]any{}}, OK: false}

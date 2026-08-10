@@ -288,8 +288,8 @@ func TestDoctorWrapperUniqueAndPairing(t *testing.T) {
 		if check.Level != "ok" {
 			t.Fatalf("version:wrapper = %#v, want ok", check)
 		}
-		if check.Details["wrapper_version"] != Version || check.Details["wrapper_protocol_major"] != ProtocolMajor {
-			t.Fatalf("details = %v, want actual probed wrapper values", check.Details)
+		if check.Details["wrapper_version"] != Version || check.Details["wrapper_protocol_major"] != ProtocolMajor || check.Details["daemon_protocol_major"] != ProtocolMajor {
+			t.Fatalf("details = %v, want actual daemon/wrapper probe values", check.Details)
 		}
 	})
 
@@ -303,7 +303,7 @@ func TestDoctorWrapperUniqueAndPairing(t *testing.T) {
 		if check.Level != "ok" {
 			t.Fatalf("version:wrapper = %#v, want ok: daemon and wrapper are paired", check)
 		}
-		if check.Details["wrapper_version"] != Version || check.Details["wrapper_protocol_major"] != ProtocolMajor {
+		if check.Details["wrapper_version"] != Version || check.Details["wrapper_protocol_major"] != ProtocolMajor || check.Details["daemon_protocol_major"] != ProtocolMajor {
 			t.Fatalf("details = %v, want actual daemon-side probe, not client input", check.Details)
 		}
 		for key, value := range check.Details {
@@ -325,6 +325,9 @@ func TestDoctorWrapperUniqueAndPairing(t *testing.T) {
 		}
 		if !strings.Contains(check.Message, "2.0.0") {
 			t.Fatalf("message = %q, want the actual probed wrapper version", check.Message)
+		}
+		if check.Details["wrapper_version"] != "2.0.0" || check.Details["wrapper_protocol_major"] != ProtocolMajor+1 || check.Details["daemon_protocol_major"] != ProtocolMajor {
+			t.Fatalf("details = %v, want actual wrapper and daemon pairing values", check.Details)
 		}
 	})
 }

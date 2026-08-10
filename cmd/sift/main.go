@@ -98,11 +98,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 // runDoctor renders the online doctor response and maps it to the process
 // exit status (config.md §7). The daemon handshake is fail-closed
 // (control-plane.md §3.4, release.md §4): an incompatible CLI receives
-// unsupported_protocol/unsupported_binary instead of a result, and a success
-// envelope whose protocol or binary major differs from the CLI's own is never
-// consumed. Both surface as the version:daemon error the mismatch implies,
-// built from the observed response envelope, and exit 2.
+// unsupported_protocol/unsupported_binary instead of a result. OperatorRequest
+// validates the response envelope, request id, protocol, and server binary
+// major before this function receives it; an unvalidated response is never
+// allowed to influence doctor output. A validated handshake rejection surfaces
+// as the version:daemon error the mismatch implies and exits 2.
 func runDoctor(response controlplane.Response, stdout, stderr io.Writer) int {
+	if !response.EnvelopeValidated() {
+		report(stderr, fmt.Errorf("invalid daemon response for doctor"))
+		return 1
+	}
 	if !response.OK {
 		if response.Error != nil && (response.Error.Code == "unsupported_protocol" || response.Error.Code == "unsupported_binary") {
 			return emitDoctor(stdout, stderr, doctorMismatchResult(response))
@@ -111,9 +116,6 @@ func runDoctor(response controlplane.Response, stdout, stderr io.Writer) int {
 			report(stderr, err)
 		}
 		return 1
-	}
-	if response.ProtocolMajor != controlplane.ProtocolMajor || response.ProtocolMinor > controlplane.ProtocolMinor || majorVersion(response.ServerVersion) != majorVersion(version.Release) {
-		return emitDoctor(stdout, stderr, doctorMismatchResult(response))
 	}
 	if err := printJSON(stdout, response); err != nil {
 		report(stderr, err)

@@ -119,18 +119,22 @@ func wrapperVersionChecks(ctx context.Context, daemonPath string) []doctorCheck 
 		return []doctorCheck{{ID: "version:wrapper", Level: "warning", Message: "cannot probe the installed wrapper", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release, "error": err.Error()}}}
 	}
 	reported := strings.TrimSpace(string(out))
-	if reported != version.Release {
-		return []doctorCheck{errorCheck("version:wrapper", fmt.Errorf("%w: sift %s, wrapper %s", runtimepkg.ErrWrapperVersion, version.Release, reported))}
-	}
 	protocolOut, _, err := runtimepkg.ProbeVersion(ctx, wrapper, []string{"--protocol-major"}, 0)
 	if err != nil {
 		return []doctorCheck{{ID: "version:wrapper", Level: "warning", Message: "cannot probe the installed wrapper protocol major", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release, "wrapper_version": reported, "error": err.Error()}}}
 	}
 	reportedMajor, err := strconv.Atoi(strings.TrimSpace(string(protocolOut)))
-	if err != nil || reportedMajor != ProtocolMajor {
-		return []doctorCheck{errorCheck("version:wrapper", fmt.Errorf("%w: sift %d, wrapper %s", runtimepkg.ErrWrapperProtocolMajor, ProtocolMajor, strings.TrimSpace(string(protocolOut))))}
+	if err != nil {
+		return []doctorCheck{{ID: "version:wrapper", Level: "error", Message: fmt.Sprintf("%v: sift %d, wrapper %s", runtimepkg.ErrWrapperProtocolMajor, ProtocolMajor, strings.TrimSpace(string(protocolOut))), Details: map[string]any{"wrapper_path": wrapper, "daemon_version": version.Release, "daemon_protocol_major": ProtocolMajor, "wrapper_version": reported, "wrapper_protocol_major": strings.TrimSpace(string(protocolOut))}}}
 	}
-	return []doctorCheck{{ID: "version:wrapper", Level: "ok", Message: "wrapper matches the release version and protocol major", Details: map[string]any{"wrapper_path": wrapper, "release_version": version.Release, "daemon_protocol_major": ProtocolMajor, "wrapper_version": reported, "wrapper_protocol_major": reportedMajor}}}
+	details := map[string]any{"wrapper_path": wrapper, "daemon_version": version.Release, "release_version": version.Release, "daemon_protocol_major": ProtocolMajor, "wrapper_version": reported, "wrapper_protocol_major": reportedMajor}
+	if reported != version.Release {
+		return []doctorCheck{{ID: "version:wrapper", Level: "error", Message: fmt.Sprintf("%v: sift %s, wrapper %s", runtimepkg.ErrWrapperVersion, version.Release, reported), Details: details}}
+	}
+	if reportedMajor != ProtocolMajor {
+		return []doctorCheck{{ID: "version:wrapper", Level: "error", Message: fmt.Sprintf("%v: sift %d, wrapper %d", runtimepkg.ErrWrapperProtocolMajor, ProtocolMajor, reportedMajor), Details: details}}
+	}
+	return []doctorCheck{{ID: "version:wrapper", Level: "ok", Message: "wrapper matches the release version and protocol major", Details: details}}
 }
 
 func executableChecks(ctx context.Context, cfg *config.Config) []doctorCheck {

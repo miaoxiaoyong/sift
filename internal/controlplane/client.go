@@ -12,6 +12,7 @@ import (
 
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/miaoxiaoyong/sift/internal/version"
 )
 
 // OperatorRequest sends one operator RPC. It deliberately has no database
@@ -35,15 +36,7 @@ func OperatorRequest(home config.Home, method string, params map[string]any) (Re
 	if err := writeFrame(c, req); err != nil {
 		return Response{}, err
 	}
-	body, err := readFrame(c)
-	if err != nil {
-		return Response{}, err
-	}
-	var response Response
-	if err := schema.Decode(body, &response, schema.Closed); err != nil {
-		return Response{}, fmt.Errorf("invalid daemon response: %w", err)
-	}
-	return response, nil
+	return readResponse(c, id)
 }
 
 // RunReportRequest sends one report.submit RPC over run.sock using the run token
@@ -64,6 +57,15 @@ func RunReportRequest(home config.Home, auth Auth, params map[string]any) (Respo
 	if err := writeFrame(c, req); err != nil {
 		return Response{}, err
 	}
+	return readResponse(c, id)
+}
+
+// readResponse verifies every response envelope before exposing either result
+// or error to an RPC caller. A canonical handshake rejection is itself a
+// validated observation: it is the sole exception to compatible protocol or
+// binary majors, so doctor can report the daemon mismatch without consuming a
+// response from an incompatible server.
+func readResponse(c net.Conn, requestID string) (Response, error) {
 	body, err := readFrame(c)
 	if err != nil {
 		return Response{}, err
@@ -72,8 +74,43 @@ func RunReportRequest(home config.Home, auth Auth, params map[string]any) (Respo
 	if err := schema.Decode(body, &response, schema.Closed); err != nil {
 		return Response{}, fmt.Errorf("invalid daemon response: %w", err)
 	}
+	if err := validateResponseEnvelope(response, requestID); err != nil {
+		return Response{}, fmt.Errorf("invalid daemon response: %w", err)
+	}
+	response.envelopeValidated = true
 	return response, nil
 }
+
+func validateResponseEnvelope(response Response, requestID string) error {
+	if response.RequestID != requestID {
+		return errf("response request id does not match request")
+	}
+	if !version.IsValidSemver(response.ServerVersion) {
+		return errf("response server version is not canonical SemVer")
+	}
+	if response.OK {
+		if response.Result == nil || response.Error != nil {
+			return errf("response ok/result/error combination is invalid")
+		}
+	} else if response.Error == nil || response.Result != nil || response.Error.Code == "" || response.Error.Message == "" || response.Error.Details == nil {
+		return errf("response ok/result/error combination is invalid")
+	}
+
+	protocolCompatible := response.ProtocolMajor == ProtocolMajor && response.ProtocolMinor <= ProtocolMinor
+	if !protocolCompatible {
+		if response.OK || response.Error.Code != "unsupported_protocol" {
+			return errf("response protocol is incompatible")
+		}
+		return nil
+	}
+	if majorVersion(response.ServerVersion) != majorVersion(Version) {
+		if response.OK || response.Error.Code != "unsupported_binary" {
+			return errf("response server binary major is incompatible")
+		}
+	}
+	return nil
+}
+
 func readOperatorToken(path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {

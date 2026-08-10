@@ -6,10 +6,12 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -489,6 +491,108 @@ func TestDoctorDaemonVersionMismatchExitsTwo(t *testing.T) {
 // TestDoctorWrapperUniqueOnline drives the online doctor end to end and
 // asserts version:wrapper appears exactly once, graded ok by the actual
 // daemon-side wrapper probe.
+// TestDoctorRejectsInvalidResponseEnvelope proves a malicious or stale Unix
+// socket peer cannot make doctor consume either result or error before the
+// response envelope, request ID, wire protocol, and server version are
+// validated. The valid unsupported_* handshake rejection remains covered by
+// TestDoctorDaemonVersionMismatchExitsTwo.
+func TestDoctorRejectsInvalidResponseEnvelope(t *testing.T) {
+	const poison = "untrusted-response-content"
+	for _, tc := range []struct {
+		name     string
+		response func(controlplane.Request) map[string]any
+	}{
+		{
+			name: "wrong request id",
+			response: func(req controlplane.Request) map[string]any {
+				return fakeDoctorError("00000000000000000000000000000000", controlplane.ProtocolMajor, controlplane.ProtocolMinor, controlplane.Version, "unsupported_binary", poison)
+			},
+		},
+		{
+			name: "incompatible response envelope",
+			response: func(req controlplane.Request) map[string]any {
+				return fakeDoctorError(req.RequestID, controlplane.ProtocolMajor+1, controlplane.ProtocolMinor, "not-a-canonical-semver", "unsupported_binary", poison)
+			},
+		},
+		{
+			name: "ok result error combination",
+			response: func(req controlplane.Request) map[string]any {
+				response := fakeDoctorError(req.RequestID, controlplane.ProtocolMajor, controlplane.ProtocolMinor, controlplane.Version, "unsupported_binary", poison)
+				response["ok"] = true
+				response["result"] = map[string]any{"exit_code": 0, "poison": poison}
+				return response
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := freshHome(t)
+			serveFakeDoctorResponse(t, home, tc.response)
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"sift", "doctor"}, &stdout, &stderr); code == 0 {
+				t.Fatalf("doctor exit code = 0; stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("doctor consumed invalid response into stdout: %q", stdout.String())
+			}
+			if bytes.Contains(append(stdout.Bytes(), stderr.Bytes()...), []byte(poison)) {
+				t.Fatalf("doctor consumed untrusted result/error: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func fakeDoctorError(requestID string, protocolMajor, protocolMinor int, serverVersion, code, message string) map[string]any {
+	return map[string]any{
+		"protocol_major": protocolMajor,
+		"protocol_minor": protocolMinor,
+		"server_version": serverVersion,
+		"request_id":     requestID,
+		"ok":             false,
+		"error": map[string]any{
+			"code": code, "message": message, "retryable": false, "details": map[string]any{},
+		},
+	}
+}
+
+func serveFakeDoctorResponse(t *testing.T, home string, response func(controlplane.Request) map[string]any) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(home, "operator.token"), []byte(strings.Repeat("a", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(home, "siftd.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var header [4]byte
+		if _, err := io.ReadFull(conn, header[:]); err != nil {
+			return
+		}
+		body := make([]byte, binary.BigEndian.Uint32(header[:]))
+		if _, err := io.ReadFull(conn, body); err != nil {
+			return
+		}
+		var request controlplane.Request
+		if err := json.Unmarshal(body, &request); err != nil {
+			return
+		}
+		out, err := json.Marshal(response(request))
+		if err != nil {
+			return
+		}
+		binary.BigEndian.PutUint32(header[:], uint32(len(out)))
+		if _, err := conn.Write(header[:]); err == nil {
+			_, _ = conn.Write(out)
+		}
+	}()
+}
+
 func TestDoctorWrapperUniqueOnline(t *testing.T) {
 	installDoctorWrapper(t)
 	home := freshHome(t)
