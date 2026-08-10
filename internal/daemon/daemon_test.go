@@ -47,11 +47,11 @@ func TestEmptyDBDaemonTickPersistsForgeIntakeAndT1(t *testing.T) {
 		}
 		path := args[1]
 		switch {
-		case strings.HasPrefix(path, "/repos/acme%2Fwidgets/issues?labels="):
+		case strings.HasPrefix(path, "/repos/acme/widgets/issues?labels="):
 			return []byte(`[{"number":42,"title":"Fix it","body":"details","html_url":"https://github.com/acme/widgets/issues/42","state":"open","user":{"login":"contributor"},"labels":[{"name":"sift"}],"updated_at":"2026-07-29T11:59:00Z"}]`), nil, nil
-		case path == "/repos/acme%2Fwidgets/issues/42":
+		case path == "/repos/acme/widgets/issues/42":
 			return []byte(`{"number":42,"title":"Fix it","body":"details","html_url":"https://github.com/acme/widgets/issues/42","state":"open","user":{"login":"contributor"},"updated_at":"2026-07-29T11:59:00Z"}`), nil, nil
-		case strings.HasPrefix(path, "/repos/acme%2Fwidgets/issues/42/timeline"):
+		case strings.HasPrefix(path, "/repos/acme/widgets/issues/42/timeline"):
 			return []byte(`[{"id":7,"label":{"name":"sift"},"actor":{"login":"operator"},"event":"labeled","created_at":"2026-07-29T11:58:00Z"}]`), nil, nil
 		default:
 			return nil, nil, fmt.Errorf("unexpected fixture path %q", path)
