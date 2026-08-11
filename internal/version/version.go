@@ -27,10 +27,15 @@ import "regexp"
 var Release = "0.1.0-dev"
 
 // semver accepts canonical SemVer 2.0.0 (major.minor.patch with optional
-// pre-release and build metadata). The same grammar constrains the release
-// version everywhere: wrapper resolution (internal/runtime), bootstrap
-// handshake fields, install version directories and the release manifest.
-var semver = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+// pre-release and build metadata), exactly as specified by semver.org:
+// numeric identifiers never carry leading zeroes, dot-separated identifiers
+// are never empty, and no identifier characters other than [0-9A-Za-z-].
+// The same grammar constrains the release version everywhere: wrapper
+// resolution (internal/runtime), bootstrap handshake fields, install
+// version directories and the release manifest.
+var semver = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)` +
+	`(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?` +
+	`(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 
 // IsValidSemver reports whether s is a canonical SemVer accepted by the
 // release handshake and the install layout.

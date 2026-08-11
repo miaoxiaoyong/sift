@@ -96,7 +96,10 @@ func validateResponseEnvelope(response Response, requestID string) error {
 		return errf("response ok/result/error combination is invalid")
 	}
 
-	protocolCompatible := response.ProtocolMajor == ProtocolMajor && response.ProtocolMinor <= ProtocolMinor
+	// A negative protocol_minor is not "older but compatible": V0 is a closed
+	// contract, so it is treated as incompatible and is only consumable as the
+	// canonical unsupported_protocol handshake rejection below.
+	protocolCompatible := response.ProtocolMajor == ProtocolMajor && response.ProtocolMinor >= 0 && response.ProtocolMinor <= ProtocolMinor
 	if !protocolCompatible {
 		if response.OK || response.Error.Code != "unsupported_protocol" {
 			return errf("response protocol is incompatible")

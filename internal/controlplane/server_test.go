@@ -129,7 +129,14 @@ func TestHandshakeRejectsNonCanonicalClientVersion(t *testing.T) {
 		socket := socket
 		t.Run(socket, func(t *testing.T) {
 			waitSocket(t, filepath.Join(home.Path, socket))
-			for _, clientVersion := range []string{majorVersion(Version) + ".x", majorVersion(Version) + ".0"} {
+			// SemVer 2.0.0 canonical violations the handshake must fail closed on:
+			// malformed same-major versions, numeric pre-release identifiers with
+			// leading zeroes, and empty dot-separated identifiers.
+			nonCanonical := []string{
+				majorVersion(Version) + ".x", majorVersion(Version) + ".0",
+				"0.1.0-01", "0.1.0-alpha..x", "0.1.0+foo..bar",
+			}
+			for _, clientVersion := range nonCanonical {
 				clientVersion := clientVersion
 				t.Run(clientVersion, func(t *testing.T) {
 					response := call(t, filepath.Join(home.Path, socket), Request{
@@ -160,6 +167,67 @@ func TestHandshakeRejectsNonCanonicalClientVersion(t *testing.T) {
 				t.Fatalf("canonical report request = %#v, want to reach the normal authorization gate", response)
 			}
 		})
+	}
+}
+
+// TestProtocolMinorNegativeRejectedBeforeAuth proves the V0 closed contract
+// (control-plane.md §3.2) on both socket surfaces: a negative protocol_minor
+// is rejected with unsupported_protocol before authorization or parameter
+// validation, not silently treated as an older compatible client.
+func TestProtocolMinorNegativeRejectedBeforeAuth(t *testing.T) {
+	home := testHome(t)
+	s, err := Start(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Serve(ctx) }()
+
+	for _, socket := range []string{"siftd.sock", "run.sock"} {
+		socket := socket
+		t.Run(socket, func(t *testing.T) {
+			waitSocket(t, filepath.Join(home.Path, socket))
+			// No credential at all: if the handshake gate did not fire first,
+			// the response would be unauthorized instead of unsupported_protocol.
+			response := call(t, filepath.Join(home.Path, socket), Request{
+				ProtocolMajor: ProtocolMajor, ProtocolMinor: -1,
+				ClientVersion: Version, RequestID: "0123456789abcdef0123456789abcdef",
+				Method: "ops.doctor", Auth: Auth{Kind: "operator"}, Params: nil,
+			})
+			if response.OK || response.Error == nil || response.Error.Code != "unsupported_protocol" {
+				t.Fatalf("negative protocol_minor = %#v, want unsupported_protocol before auth/params", response)
+			}
+		})
+	}
+}
+
+// TestValidateResponseEnvelopeProtocolMinorNegative covers the client-side
+// mirror: a negative protocol_minor is incompatible, so the client consumes
+// neither a success result nor an ordinary error from it — only the canonical
+// unsupported_protocol handshake rejection remains observable.
+func TestValidateResponseEnvelopeProtocolMinorNegative(t *testing.T) {
+	const id = "0123456789abcdef0123456789abcdef"
+	base := Response{ProtocolMajor: ProtocolMajor, ProtocolMinor: -1, ServerVersion: Version, RequestID: id}
+
+	success := base
+	success.OK = true
+	success.Result = map[string]any{"exit_code": 0}
+	if err := validateResponseEnvelope(success, id); err == nil {
+		t.Fatal("client consumed a success result with protocol_minor=-1")
+	}
+
+	ordinary := base
+	ordinary.Error = &Error{Code: "unauthorized", Message: "credential rejected", Details: map[string]any{}}
+	if err := validateResponseEnvelope(ordinary, id); err == nil {
+		t.Fatal("client consumed an ordinary error with protocol_minor=-1")
+	}
+
+	handshake := base
+	handshake.Error = &Error{Code: "unsupported_protocol", Message: "protocol version is not supported", Details: map[string]any{}}
+	if err := validateResponseEnvelope(handshake, id); err != nil {
+		t.Fatalf("canonical unsupported_protocol rejection with protocol_minor=-1 was not accepted: %v", err)
 	}
 }
 

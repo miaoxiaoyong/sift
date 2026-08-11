@@ -634,6 +634,49 @@ func TestDoctorHandshakeErrorConsistency(t *testing.T) {
 	}
 }
 
+// TestDoctorProtocolMinorNegative proves the client-side mirror of the V0
+// closed contract: a fake peer answering with protocol_minor=-1 is not an
+// "older compatible" daemon. Neither its success result nor its ordinary
+// error may be consumed; only the canonical unsupported_protocol handshake
+// rejection remains observable.
+func TestDoctorProtocolMinorNegative(t *testing.T) {
+	const poison = "negative-minor-content"
+	for _, tc := range []struct {
+		name     string
+		response func(controlplane.Request) map[string]any
+	}{
+		{
+			name: "success result with negative minor",
+			response: func(req controlplane.Request) map[string]any {
+				response := fakeDoctorSuccess(req.RequestID, map[string]any{"exit_code": 0, "poison": poison})
+				response["protocol_minor"] = -1
+				return response
+			},
+		},
+		{
+			name: "ordinary error with negative minor",
+			response: func(req controlplane.Request) map[string]any {
+				return fakeDoctorError(req.RequestID, controlplane.ProtocolMajor, -1, controlplane.Version, "unauthorized", poison)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := freshHome(t)
+			serveFakeDoctorResponse(t, home, tc.response)
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"sift", "doctor"}, &stdout, &stderr); code == 0 {
+				t.Fatalf("doctor exit code = 0; stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("doctor consumed negative-minor response into stdout: %q", stdout.String())
+			}
+			if bytes.Contains(append(stdout.Bytes(), stderr.Bytes()...), []byte(poison)) {
+				t.Fatalf("doctor consumed untrusted result/error: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func fakeDoctorSuccess(requestID string, result map[string]any) map[string]any {
 	return map[string]any{
 		"protocol_major": controlplane.ProtocolMajor,

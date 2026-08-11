@@ -17,7 +17,7 @@ const attachSession = "sift-0123456789abcdef0123456789abcdef0123456789abcdef0123
 
 func attachSuccessResponse(session string) controlplane.Response {
 	return controlplane.Response{
-		OK: true, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor, ServerVersion: "test",
+		OK: true, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor, ServerVersion: controlplane.Version,
 		Result: attachResponse{RunID: "run-1", AttemptNo: 1, Generation: 1, Backend: "tmux", SessionName: session},
 	}
 }

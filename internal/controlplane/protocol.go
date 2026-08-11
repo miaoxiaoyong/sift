@@ -108,7 +108,11 @@ func validateEnvelope(r Request) (string, string) {
 	// ops.doctor (release.md §4, control-plane.md §3.4): an incompatible
 	// client is rejected here, and the CLI surfaces that rejection as the
 	// version:daemon doctor error instead of the daemon relaxing the gate.
-	if r.ProtocolMajor != ProtocolMajor || r.ProtocolMinor > ProtocolMinor {
+	// V0 is a closed contract (control-plane.md §3.2): protocol_minor must be
+	// 0. Reject anything above the server minor without guessing compatibility,
+	// and reject negative values just as fail-closed instead of treating them
+	// as silently compatible.
+	if r.ProtocolMajor != ProtocolMajor || r.ProtocolMinor < 0 || r.ProtocolMinor > ProtocolMinor {
 		return "unsupported_protocol", "protocol version is not supported"
 	}
 	if !version.IsValidSemver(r.ClientVersion) {

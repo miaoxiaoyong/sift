@@ -271,7 +271,7 @@ type attachResponse struct {
 }
 
 func runAttach(response controlplane.Response, home config.Home, stdout, stderr io.Writer) int {
-	if !response.OK || response.ProtocolMajor != controlplane.ProtocolMajor || response.ProtocolMinor > controlplane.ProtocolMinor || response.ServerVersion == "" {
+	if !response.OK || response.ProtocolMajor != controlplane.ProtocolMajor || response.ProtocolMinor < 0 || response.ProtocolMinor > controlplane.ProtocolMinor || !version.IsValidSemver(response.ServerVersion) {
 		report(stderr, fmt.Errorf("invalid daemon response for attach"))
 		return 1
 	}
