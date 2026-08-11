@@ -153,4 +153,6 @@ sift --version
 sift-agent-wrapper --version
 ```
 
+macOS v0.1.0 用户按上述归档升级路径执行 `sift service restart` 时会自动迁移旧 launchd label：清理 `com.miaoxiaoyong.sift` 及其 plist，并使用 `cn.hexai.sift`；迁移一次且幂等，不会创建重复 agent。无需先额外执行 `sift service install`。
+
 不要在 tap 尚未发布时猜测 service 命令。两个渠道都应整套升级，禁止只替换 `sift` 或只替换 wrapper。数据库迁移只前向执行；降级 binary 可能因数据库 schema 较新而拒绝启动。

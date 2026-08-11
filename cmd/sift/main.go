@@ -533,10 +533,32 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 		report(stderr, err)
 		return 1
 	}
-	if action == hosting.ActionInstall && spec.Backend == hosting.BackendLaunchd {
-		if err := migrateLegacyLaunchd(stdout); err != nil {
+	migratedLegacy := false
+	if spec.Backend == hosting.BackendLaunchd && (action == hosting.ActionInstall || action == hosting.ActionRestart || action == hosting.ActionReload) {
+		migratedLegacy, err = migrateLegacyLaunchd(stdout)
+		if err != nil {
 			report(stderr, err)
 			return 1
+		}
+	}
+	// The documented upgrade path is install-archive -> restart. If the old
+	// agent was the only loaded unit, migration removed its plist; load the new
+	// plist before kickstart so restart reaches the existing daemon.
+	if migratedLegacy && (action == hosting.ActionRestart || action == hosting.ActionReload) {
+		if _, statErr := os.Stat(spec.UnitPath); os.IsNotExist(statErr) {
+			installPlan, planErr := spec.Plan(hosting.ActionInstall)
+			if planErr != nil {
+				report(stderr, planErr)
+				return 1
+			}
+			if err := hosting.Write(installPlan); err != nil {
+				report(stderr, err)
+				return 1
+			}
+			if _, err := hosting.Exec(installPlan); err != nil && !errors.Is(err, hosting.ErrNoBackend) {
+				report(stderr, err)
+				return 1
+			}
 		}
 	}
 	installed := false
@@ -561,7 +583,7 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 		}
 	}
 	out, execErr := hosting.Exec(plan)
-	if action == hosting.ActionUninstall && hosting.IsAlreadyUnloaded(execErr) {
+	if (action == hosting.ActionUninstall || action == hosting.ActionStop) && hosting.IsAlreadyUnloaded(execErr) {
 		// "No such process" is the successful idempotent case; do not render
 		// launchctl's diagnostic as though the CLI had failed.
 		out, execErr = nil, nil
@@ -579,11 +601,11 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "removed %s unit: %s\n", spec.Backend, plan.WriteFile)
 		}
 	}
-	if len(out) > 0 && action != hosting.ActionStatus {
-		stdout.Write(out)
-	}
 	switch {
 	case execErr == nil:
+		if len(out) > 0 && action != hosting.ActionStatus {
+			_, _ = stdout.Write(out)
+		}
 		if action == hosting.ActionStatus {
 			renderServiceStatus(stdout, spec, string(out), installed)
 		} else {
@@ -612,32 +634,32 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 // migrateLegacyLaunchd removes the v0.1.0 label before installing the current
 // one. Without this, both labels can supervise daemons that contend for the
 // same SIFT_HOME lock after an upgrade.
-func migrateLegacyLaunchd(stdout io.Writer) error {
+func migrateLegacyLaunchd(stdout io.Writer) (bool, error) {
 	oldUnit, err := hosting.LegacyLaunchdUnitPath()
 	if err != nil {
-		return err
+		return false, err
 	}
 	_, statErr := os.Stat(oldUnit)
 	if statErr != nil && !os.IsNotExist(statErr) {
-		return fmt.Errorf("stat legacy launchd unit %s: %w", oldUnit, statErr)
+		return false, fmt.Errorf("stat legacy launchd unit %s: %w", oldUnit, statErr)
 	}
 	legacyFile := statErr == nil
 	_, probeErr := hosting.Exec(hosting.LegacyLaunchdStatusPlan())
 	legacyLoaded := probeErr == nil
 	if !legacyFile && !legacyLoaded {
-		return nil
+		return false, nil
 	}
 	if !errors.Is(probeErr, hosting.ErrNoBackend) {
 		_, bootoutErr := hosting.Exec(hosting.LegacyLaunchdBootoutPlan())
 		if bootoutErr != nil && !hosting.IsAlreadyUnloaded(bootoutErr) {
-			return bootoutErr
+			return false, bootoutErr
 		}
 	}
 	if err := hosting.Write(hosting.Plan{Action: hosting.ActionUninstall, WriteFile: oldUnit}); err != nil {
-		return err
+		return false, err
 	}
 	fmt.Fprintf(stdout, "迁移：已移除旧 label %s\n", hosting.LegacyLabel)
-	return nil
+	return true, nil
 }
 
 // renderServiceStatus keeps platform command output out of the default CLI

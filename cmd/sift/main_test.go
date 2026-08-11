@@ -226,6 +226,50 @@ func TestServiceRejectsUnknownAction(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyLaunchdRemovesLoadedAgentAndPlist(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(filepath.Join(home, "Library", "LaunchAgents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	legacy, err := hosting.LegacyLaunchdUnitPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(root, "launchctl.log")
+	launchctl := filepath.Join(bin, "launchctl")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log + "\"\ncase \"$1\" in list) exit 0;; bootout) exit 0;; esac\n"
+	if err := os.WriteFile(launchctl, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var out bytes.Buffer
+	if migrated, err := migrateLegacyLaunchd(&out); err != nil {
+		t.Fatal(err)
+	} else if !migrated {
+		t.Fatal("migration reported no legacy agent")
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy plist still exists: %v", err)
+	}
+	if got, err := os.ReadFile(log); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(got), "list "+hosting.LegacyLabel) || !strings.Contains(string(got), "bootout") {
+		t.Fatalf("launchctl calls = %q", got)
+	}
+	if !strings.Contains(out.String(), hosting.LegacyLabel) {
+		t.Fatalf("migration output = %q", out.String())
+	}
+}
+
 func TestRenderServiceStatusHumanizesBackendPIDAndSocket(t *testing.T) {
 	spec := hosting.Spec{Backend: hosting.BackendLaunchd, HomePath: "/tmp/sift"}
 	var out bytes.Buffer

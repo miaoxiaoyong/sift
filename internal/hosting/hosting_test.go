@@ -347,6 +347,32 @@ func TestLegacyLaunchdMigrationPlans(t *testing.T) {
 	}
 }
 
+func TestIsAlreadyUnloadedRecognizesLaunchctlNoSuchProcess(t *testing.T) {
+	bin := t.TempDir()
+	launchctl := filepath.Join(bin, "launchctl")
+	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\necho \"$LAUNCHCTL_MESSAGE\" >&2\nexit \"$LAUNCHCTL_EXIT\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, tc := range []struct {
+		name, message, exit string
+		want                bool
+	}{
+		{"no such process", "Boot-out failed: 3: No such process", "3", true},
+		{"different exit", "No such process", "1", false},
+		{"different message", "Boot-out failed: 3: permission denied", "3", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LAUNCHCTL_MESSAGE", tc.message)
+			t.Setenv("LAUNCHCTL_EXIT", tc.exit)
+			_, err := Exec(Plan{RunCmd: []string{"launchctl", "bootout"}})
+			if got := IsAlreadyUnloaded(err); got != tc.want {
+				t.Fatalf("IsAlreadyUnloaded(%v) = %v, want %v", err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPlanInstallForegroundHasNoWrite(t *testing.T) {
 	home, _ := installFakeRelease(t)
 	spec, err := NewSpecFor(home, "freebsd")
