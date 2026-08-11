@@ -106,12 +106,23 @@ else
   [ "$expected" = "$actual" ] || fail "sha256 checksum failed for $archive"
 fi
 
-# Reject absolute paths, parent traversal, and non-regular archive members before extraction.
+# Reject absolute paths, parent traversal, and link members before extraction.
+archive_members="$tmp_dir/archive-members"
+if ! tar -tzf "$tmp_dir/$archive" >"$archive_members"; then
+  fail 'could not inspect archive'
+fi
 while IFS= read -r member; do
   case "$member" in
     ''|/*|../*|*/../*|*/..|*/|.|./*) fail "unsafe archive member: $member" ;;
   esac
-done < <(tar -tzf "$tmp_dir/$archive") || fail 'could not inspect archive'
+done <"$archive_members"
+archive_details="$tmp_dir/archive-details"
+if ! tar -tvzf "$tmp_dir/$archive" >"$archive_details"; then
+  fail 'could not inspect archive'
+fi
+if awk '$1 ~ /^[lh]/ { found=1; exit } END { exit found ? 0 : 1 }' "$archive_details"; then
+  fail 'archive contains symlink or hardlink member'
+fi
 
 bin_root="$INSTALL_ROOT/bin"
 version_dir="$bin_root/$version"
@@ -136,9 +147,7 @@ current="$bin_root/current"
 if [ -e "$current" ] && [ ! -L "$current" ]; then
   fail "$current exists and is not a symlink"
 fi
-link_tmp="$bin_root/.current-tmp-${version}-$$"
-ln -s "$version" "$link_tmp"
-mv -f "$link_tmp" "$current"
+ln -sfn "$version" "$current"
 
 printf 'Installed Sift %s at %s\n' "$version" "$version_dir"
 printf 'Add Sift to PATH: export PATH="%s:$PATH"\n' "$bin_root/current"
