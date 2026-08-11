@@ -1,0 +1,78 @@
+{
+  "protocol_major": 1,
+  "protocol_minor": 0,
+  "server_version": "0.1.0-dev",
+  "request_id": "00112233445566778899aabbccddeeff",
+  "ok": true,
+  "result": {
+    "events": [
+      {
+        "Actor": "agent-0",
+        "AttemptNo": null,
+        "ID": "golden-event-1",
+        "OccurredAtMS": 1700000005000,
+        "PayloadJSON": "e30=",
+        "ProjectID": "",
+        "RecordedAtMS": 1700000005000,
+        "RunID": "runCLI",
+        "Seq": 1,
+        "Source": "agent",
+        "Type": "report.progress"
+      },
+      {
+        "Actor": "agent-1",
+        "AttemptNo": null,
+        "ID": "golden-event-2",
+        "OccurredAtMS": 1700000004000,
+        "PayloadJSON": "e30=",
+        "ProjectID": "",
+        "RecordedAtMS": 1700000004000,
+        "RunID": "runCLI",
+        "Seq": 2,
+        "Source": "agent",
+        "Type": "report.progress"
+      },
+      {
+        "Actor": "agent-2",
+        "AttemptNo": null,
+        "ID": "golden-event-3",
+        "OccurredAtMS": 1700000003000,
+        "PayloadJSON": "e30=",
+        "ProjectID": "",
+        "RecordedAtMS": 1700000003000,
+        "RunID": "runCLI",
+        "Seq": 3,
+        "Source": "agent",
+        "Type": "report.progress"
+      },
+      {
+        "Actor": "agent-3",
+        "AttemptNo": null,
+        "ID": "golden-event-4",
+        "OccurredAtMS": 1700000002000,
+        "PayloadJSON": "e30=",
+        "ProjectID": "",
+        "RecordedAtMS": 1700000002000,
+        "RunID": "runCLI",
+        "Seq": 4,
+        "Source": "agent",
+        "Type": "report.progress"
+      },
+      {
+        "Actor": "agent-4",
+        "AttemptNo": null,
+        "ID": "golden-event-5",
+        "OccurredAtMS": 1700000001000,
+        "PayloadJSON": "e30=",
+        "ProjectID": "",
+        "RecordedAtMS": 1700000001000,
+        "RunID": "runCLI",
+        "Seq": 5,
+        "Source": "agent",
+        "Type": "report.progress"
+      }
+    ],
+    "has_more": false,
+    "next_seq": 5
+  }
+}
