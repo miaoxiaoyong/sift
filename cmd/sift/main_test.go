@@ -112,20 +112,20 @@ func TestHumanOverviewAndHelp(t *testing.T) {
 	if !strings.Contains(overviewOut.String(), "Sift ") || !strings.Contains(overviewOut.String(), "sift doctor --offline") {
 		t.Fatalf("overview = %q", overviewOut.String())
 	}
-	if strings.Contains(overviewOut.String(), "sift init") {
-		t.Fatalf("overview advertises unimplemented init: %q", overviewOut.String())
+	if !strings.Contains(overviewOut.String(), "sift init") {
+		t.Fatalf("overview does not advertise init: %q", overviewOut.String())
 	}
 
 	var helpOut bytes.Buffer
 	if code := run([]string{"sift", "help"}, &helpOut, io.Discard); code != 0 {
 		t.Fatalf("help exit code = %d", code)
 	}
-	if !strings.Contains(helpOut.String(), "命令参考") || strings.Contains(helpOut.String(), "init") {
+	if !strings.Contains(helpOut.String(), "命令参考") || !strings.Contains(helpOut.String(), "init") {
 		t.Fatalf("help = %q", helpOut.String())
 	}
-	var helpErr bytes.Buffer
-	if code := run([]string{"sift", "help", "init"}, io.Discard, &helpErr); code != 2 {
-		t.Fatalf("help init exit code = %d, want 2", code)
+	var initHelp bytes.Buffer
+	if code := run([]string{"sift", "help", "init"}, &initHelp, io.Discard); code != 0 {
+		t.Fatalf("help init exit code = %d, want 0", code)
 	}
 }
 

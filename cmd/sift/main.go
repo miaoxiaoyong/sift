@@ -38,6 +38,11 @@ func main() {
 // doctor result's exit_code; the offline path computes that result locally,
 // the online path receives it from the daemon in response.Result.
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithInput(args, os.Stdin, stdout, stderr)
+}
+
+// runWithInput keeps setup commands testable without requiring a terminal.
+func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
 		return overview(stdout, stderr)
 	}
@@ -68,6 +73,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	command := args[1]
+	if command == "init" {
+		return runSetup(args[2:], stdin, home, stdout, stderr, setupAll)
+	}
+	if command == "project" {
+		return runSetupCommand(args[2:], stdin, home, stdout, stderr, setupProject)
+	}
+	if command == "agent" {
+		return runSetupCommand(args[2:], stdin, home, stdout, stderr, setupAgent)
+	}
 	if command == "daemon" {
 		if len(args) != 2 {
 			report(stderr, fmt.Errorf("usage: sift daemon"))
@@ -522,7 +536,7 @@ func overview(stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "配置文件：%s（%s）\n", config.ConfigPath(home), configured)
 	if configured == "否" {
-		fmt.Fprintln(stdout, "下一步：运行 sift doctor --offline 检查环境")
+		fmt.Fprintln(stdout, "下一步：运行 sift init 完成交互式配置；也可运行 sift doctor --offline 检查环境")
 	} else {
 		fmt.Fprintln(stdout, "下一步：运行 sift daemon 启动服务，或 sift ps 查看运行")
 	}
@@ -532,10 +546,13 @@ func overview(stdout, stderr io.Writer) int {
 
 func commandHelp(command string, stdout, stderr io.Writer) int {
 	if command == "" {
-		fmt.Fprintln(stdout, "Sift 命令参考\n\n基础命令：\n  daemon               启动本地守护进程\n  doctor               检查本地环境\n\n查询命令：\n  ps                   查看运行\n  logs <run-id>        查看运行日志\n  timeline             查看事件时间线\n  metrics              查看运行指标\n\n运行控制：\n  kill <run-id>        停止运行\n  retry <run-id>       重试运行\n  report <kind>        提交报告\n\n用法：sift <命令> [选项]\n示例：sift doctor --offline；sift ps")
+		fmt.Fprintln(stdout, "Sift 命令参考\n\n基础命令：\n  init                 交互式初始化配置\n  project add          添加项目\n  agent add            添加 Agent\n  daemon               启动本地守护进程\n  doctor               检查本地环境\n\n查询命令：\n  ps                   查看运行\n  logs <run-id>        查看运行日志\n  timeline             查看事件时间线\n  metrics              查看运行指标\n\n运行控制：\n  kill <run-id>        停止运行\n  retry <run-id>       重试运行\n  report <kind>        提交报告\n\n用法：sift <命令> [选项]\n示例：sift doctor --offline；sift ps")
 		return 0
 	}
 	entries := map[string][3]string{
+		"init":            {"交互式初始化本地配置", "sift init [--offline] [--agent NAME] [--project PATH] [--operator LOGIN] [--forge github|gitlab]", "sift init --agent claude --project . --forge github"},
+		"project":         {"添加一个项目", "sift project add [--project PATH] [--forge github|gitlab]", "sift project add --project . --forge github"},
+		"agent":           {"添加一个 Agent", "sift agent add [--agent NAME]", "sift agent add --agent claude"},
 		"doctor":          {"检查本地环境并报告问题", "sift doctor [--offline] [--json]", "sift doctor --offline"},
 		"ps":              {"查看运行中的任务", "sift ps [--json]", "sift ps"},
 		"daemon":          {"启动本地守护进程", "sift daemon", "sift daemon"},
