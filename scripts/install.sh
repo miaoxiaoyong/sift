@@ -13,10 +13,13 @@ fail() {
 }
 
 usage() {
-  printf 'Usage: install.sh [--version VERSION]\n' >&2
+  printf 'Usage: install.sh [--version VERSION] [--add-to-path]\n' >&2
+  printf '  --add-to-path   append the PATH export to your shell rc file (opt-in;\n' >&2
+  printf '                  default is to only print the next-steps hint)\n' >&2
 }
 
 version="${SIFT_VERSION:-}"
+add_to_path=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --version)
@@ -28,6 +31,10 @@ while [ "$#" -gt 0 ]; do
     --version=*)
       [ -z "$version" ] || [ "$version" = "${SIFT_VERSION:-}" ] || fail 'version specified more than once'
       version="${1#*=}"
+      shift
+      ;;
+    --add-to-path)
+      add_to_path=1
       shift
       ;;
     -h|--help)
@@ -149,6 +156,73 @@ if [ -e "$current" ] && [ ! -L "$current" ]; then
 fi
 ln -sfn "$version" "$current"
 
-printf 'Installed Sift %s at %s\n' "$version" "$version_dir"
-printf 'Add Sift to PATH: export PATH="%s:$PATH"\n' "$bin_root/current"
 "$current/sift" --version || fail 'installed sift failed --version verification'
+printf 'Installed Sift %s at %s\n' "$version" "$version_dir"
+
+# --- Onboarding ---------------------------------------------------------
+# rc detection follows $SHELL (zsh -> ~/.zshrc, bash -> ~/.bashrc); any other
+# shell only gets the printed hint, never a file write.
+path_line="export PATH=\"$bin_root/current:\$PATH\""
+rc_file=""
+rc_hint="add '$path_line' to your shell rc file"
+case "${SHELL:-}" in
+  */zsh)
+    rc_file="${HOME}/.zshrc"
+    rc_hint="echo '$path_line' >> ~/.zshrc && source ~/.zshrc"
+    ;;
+  */bash)
+    rc_file="${HOME}/.bashrc"
+    rc_hint="echo '$path_line' >> ~/.bashrc && source ~/.bashrc"
+    ;;
+esac
+
+# Opt-in auto PATH: SIFT_AUTO_PATH=1 or --add-to-path. Idempotent: never
+# append a line that is already present verbatim.
+if [ "$add_to_path" -eq 1 ] || [ "${SIFT_AUTO_PATH:-}" = "1" ]; then
+  if [ -z "$rc_file" ]; then
+    printf 'Sift installer: unsupported shell (%s); not modifying any rc file\n' "${SHELL:-unset}" >&2
+    printf 'Add Sift to PATH manually: %s\n' "$path_line"
+  elif [ -f "$rc_file" ] && grep -Fqx "$path_line" "$rc_file"; then
+    printf 'Sift PATH entry already present in %s (no change)\n' "$rc_file"
+  elif printf '\n# Added by the Sift installer (SIFT_AUTO_PATH)\n%s\n' "$path_line" >>"$rc_file" 2>/dev/null; then
+    printf 'Added Sift to PATH in %s\n' "$rc_file"
+  else
+    printf 'Sift installer: warning: could not write %s; ' "$rc_file" >&2
+    printf 'add to PATH manually: %s\n' "$path_line" >&2
+  fi
+fi
+
+# The daemon refuses startup when SIFT_HOME grants group/other access
+# (docs/specs/config.md §2.1); the installer-created root must be owner-only.
+if ! chmod 700 "$INSTALL_ROOT" 2>/dev/null; then
+  printf 'Sift installer: warning: could not set %s to owner-only (0700); ' "$INSTALL_ROOT" >&2
+  printf 'run chmod 700 %s before starting sift daemon\n' "$INSTALL_ROOT" >&2
+fi
+
+cat <<EOF
+
+Next steps
+----------
+1) Add Sift to PATH
+   For this session:
+     export PATH="$bin_root/current:\$PATH"
+   Permanent (per \$SHELL):
+     $rc_hint
+   Or rerun the installer with SIFT_AUTO_PATH=1 to append it automatically.
+
+2) Log in to your forge CLI (Sift drives the official CLI and never manages
+   credentials itself):
+     gh auth login       # GitHub
+     glab auth login     # GitLab
+
+3) Optional minimal config: ~/.sift/config.yaml (owner-only when present)
+     chmod 600 ~/.sift/config.yaml
+   Minimal example (operators/agents/projects): docs/specs/config.md §3.1-3.3
+   Walkthrough:                                docs/guides/installation.md
+
+4) Verify and start:
+     sift doctor --offline   # read-only check; exit 0 = healthy
+     sift daemon             # foreground; or: sift service install (autostart)
+
+Docs: https://github.com/miaoxiaoyong/sift#readme
+EOF

@@ -4,7 +4,11 @@
 
 > 概念验证（PoC）：M1–M6 已完成，M7 PoC 已验证，M8 自动化核心持续完善中。
 
-## 一键安装
+## 快速开始
+
+从零开始，把本机接到一个 forge Issue 的自动编排。字段契约与默认值以 [docs/specs/config.md](docs/specs/config.md) 为准，安装与升级细节见 [docs/guides/installation.md](docs/guides/installation.md)。
+
+### 1. 一键安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | bash
@@ -14,6 +18,104 @@ curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/inst
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | SIFT_VERSION=0.1.0 bash
+```
+
+安装器把 `sift` 与 `sift-agent-wrapper` 装到 `~/.sift/bin/<version>`，`~/.sift/bin/current` 指向最新版本。**默认不修改你的 shell 配置文件**（`curl|bash` 非交互，只打印 next-steps 提示）；如需自动追加 PATH（按 `$SHELL` 探测：zsh→`~/.zshrc`、bash→`~/.bashrc`，已含去重、可安全重跑）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | SIFT_AUTO_PATH=1 bash
+# 或本地：
+./scripts/install.sh --add-to-path
+```
+
+### 2. 加 PATH
+
+当前终端临时生效：
+
+```bash
+export PATH="$HOME/.sift/bin/current:$PATH"
+sift --version
+```
+
+永久生效（zsh；bash 把 `~/.zshrc` 换成 `~/.bashrc`）：
+
+```bash
+echo 'export PATH="$HOME/.sift/bin/current:$PATH"' >> ~/.zshrc && source ~/.zshrc
+```
+
+### 3. 登录 forge CLI
+
+Sift 经官方 CLI 驱动 GitHub / GitLab，**不管理任何凭证**：
+
+```bash
+gh auth login       # GitHub
+# 或
+glab auth login     # GitLab
+```
+
+### 4. 最小配置
+
+`~/.sift/config.yaml` 可缺省，但要接入项目必须有可信 operator、Agent 与项目（字段见 [docs/specs/config.md](docs/specs/config.md) §3.1–3.3）。配置存在时，`~/.sift` 与 `config.yaml` 必须为属主读写（§2.1，否则 daemon 拒启）：
+
+```bash
+chmod 700 ~/.sift
+chmod 600 ~/.sift/config.yaml
+```
+
+```yaml
+version: 1
+
+operators:
+  github: ["<your-github-login>"]
+  gitlab: ["<your-gitlab-login>"]
+
+agents:
+  - id: claude-code
+    executable: claude
+    args: ["-p"]
+    task_transport: stdin
+    backend: process
+    max_concurrent: 1
+    version_args: ["--version"]
+
+projects:
+  - id: my-project
+    repo: /absolute/path/to/repo
+    forge:
+      kind: github        # 或 gitlab
+      project: owner/repo
+      host: github.com    # 私有实例填对应 host
+    enabled: true
+    agents: [claude-code]
+```
+
+### 5. 检查
+
+```bash
+sift doctor --offline   # 只读诊断，exit 0 表示健康
+```
+
+### 6. 启动
+
+```bash
+sift daemon             # 前台运行
+# 或注册自启：
+sift service install
+```
+
+### 7. 触发
+
+给 Issue 打上 trigger label（默认 `sift:run`，可在配置 `labels` 覆盖）：
+
+```bash
+gh issue edit 42 --add-label sift:run
+```
+
+观察运行：
+
+```bash
+sift ps            # 运行中 Run / attempt、注意力余量与隔离状态
+sift timeline      # append-only 事件时间线
 ```
 
 ---
@@ -36,6 +138,8 @@ curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/inst
 | 文档 | 内容 |
 |------|------|
 | [docs/PRD.md](docs/PRD.md) | 产品需求（问题、公理、范围、状态机、模块） |
+| [docs/guides/installation.md](docs/guides/installation.md) | 安装、升级与配置引导 |
+| [docs/specs/config.md](docs/specs/config.md) | 全局配置字段契约（`~/.sift/config.yaml`） |
 
 ## 核心设计
 
@@ -46,24 +150,6 @@ curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/inst
 
 详细设计见 [docs/PRD.md](docs/PRD.md)。
 
-## 快速开始
-
-安装完成后，启动 daemon：
-
-```bash
-sift daemon
-```
-
-从源码运行或开发时，也可以按下面的方式构建两个发布二进制：
-
-```bash
-git clone https://github.com/miaoxiaoyong/sift.git
-cd sift
-go build -o sift ./cmd/sift
-go build -o sift-agent-wrapper ./cmd/sift-agent-wrapper
-./sift daemon
-```
-
 ## 开发
 
 ### 依赖
@@ -71,6 +157,14 @@ go build -o sift-agent-wrapper ./cmd/sift-agent-wrapper
 - Go 1.22+
 - `gh` CLI（GitHub 集成）
 - `glab` CLI（GitLab 集成）
+
+### 从源码构建两个发布二进制
+
+```bash
+go build -o sift ./cmd/sift
+go build -o sift-agent-wrapper ./cmd/sift-agent-wrapper
+./sift daemon
+```
 
 ### 本地开发
 
