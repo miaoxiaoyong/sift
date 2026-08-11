@@ -104,6 +104,83 @@ func TestOpsTimelineReturnsPersistedEvents(t *testing.T) {
 	}
 }
 
+// opsTimelineRPC issues a direct ops.timeline RPC with the given params and
+// returns the decoded report, failing the test on any protocol error.
+func opsTimelineRPC(t *testing.T, s *Server, params map[string]any) storage.TimelineReport {
+	t.Helper()
+	resp := s.operatorRequest(Request{RequestID: "0123456789abcdef0123456789abcdef", Method: "ops.timeline", Auth: Auth{Kind: "operator", Token: s.operatorToken}, Params: params})
+	if !resp.OK {
+		t.Fatalf("ops.timeline = %#v", resp)
+	}
+	return resp.Result.(storage.TimelineReport)
+}
+
+// TestOpsTimelineLegacyAfterSeqPagination verifies the backward-compatible
+// legacy RPC contract: a caller that sends only after_seq (no
+// after_occurred_at_ms) must keep paging — each page returns the subsequent
+// events, concatenated pages cover all events exactly once, and the stream
+// stays globally occurred_at_ms descending.
+func TestOpsTimelineLegacyAfterSeqPagination(t *testing.T) {
+	s, db := startServerWithDB(t)
+	seedCPRun(t, db)
+	ctx := context.Background()
+	// Interleaved seq/occurred_at_ms; global newest-first is +4, +3, +1, +2, +0.
+	occurred := []int64{cpNow + 1, cpNow + 3, cpNow + 2, cpNow + 5, cpNow + 4}
+	for _, at := range occurred {
+		if _, err := db.AppendEvent(ctx, storage.EventCmd{RunID: "runCP", Type: "report.progress", Source: storage.SourceAgent, PayloadJSON: []byte("{}"), OccurredAtMS: at, RecordedAtMS: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Page 1 with the old parameter set: no cursor at all.
+	page1 := opsTimelineRPC(t, s, map[string]any{"run_id": "runCP", "limit": float64(2)})
+	if len(page1.Events) != 2 || !page1.HasMore {
+		t.Fatalf("legacy page1 = %+v, want 2 events with more", page1)
+	}
+
+	// Page 2: legacy field set — only after_seq, after_occurred_at_ms absent.
+	page2 := opsTimelineRPC(t, s, map[string]any{"run_id": "runCP", "after_seq": float64(page1.NextSeq), "limit": float64(2)})
+	if len(page2.Events) != 2 || !page2.HasMore {
+		t.Fatalf("legacy page2 = %+v, want 2 events with more", page2)
+	}
+	if page2.Events[0].Seq == page1.Events[len(page1.Events)-1].Seq {
+		t.Fatalf("legacy page2 repeats page1 tail event: %+v", page2.Events)
+	}
+
+	// Page 3: only after_seq again, draining the stream.
+	page3 := opsTimelineRPC(t, s, map[string]any{"run_id": "runCP", "after_seq": float64(page2.NextSeq), "limit": float64(10)})
+	if len(page3.Events) != 1 || page3.HasMore {
+		t.Fatalf("legacy page3 = %+v, want the final event", page3)
+	}
+
+	// Concatenated pages cover all five events exactly once, globally descending.
+	all := append(append(append([]storage.Event{}, page1.Events...), page2.Events...), page3.Events...)
+	if len(all) != 5 {
+		t.Fatalf("legacy pages cover %d events, want 5: %+v", len(all), all)
+	}
+	seen := map[int64]bool{}
+	for i, e := range all {
+		if seen[e.Seq] {
+			t.Fatalf("legacy pages duplicate seq %d: %+v", e.Seq, all)
+		}
+		seen[e.Seq] = true
+		if i > 0 && all[i-1].OccurredAtMS < e.OccurredAtMS {
+			t.Fatalf("legacy pages not globally descending at %d: %+v", i, all)
+		}
+	}
+
+	// The legacy path must agree with the dual-cursor path page-for-page.
+	dual2 := opsTimelineRPC(t, s, map[string]any{"run_id": "runCP", "after_seq": float64(page1.NextSeq), "after_occurred_at_ms": float64(page1.NextOccurredAtMS), "limit": float64(2)})
+	if len(dual2.Events) != len(page2.Events) {
+		t.Fatalf("legacy/dual page2 disagree: legacy %d vs dual %d events", len(page2.Events), len(dual2.Events))
+	}
+	for i := range dual2.Events {
+		if dual2.Events[i].Seq != page2.Events[i].Seq {
+			t.Fatalf("legacy/dual page2 disagree at %d: legacy %+v vs dual %+v", i, page2.Events, dual2.Events)
+		}
+	}
+}
+
 // TestOpsLogsReadsAgentLog verifies ops.logs reads the persisted agent.log file
 // with a bounded base64 payload and EOF semantics.
 func TestOpsLogsReadsAgentLog(t *testing.T) {

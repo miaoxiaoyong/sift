@@ -419,7 +419,7 @@ attempt 为空时选择最大 attempt_no；`offset>=0`，`limit=1..262144`。res
 
 `ops.metrics` params 为 `{"project_id":null}`（空表示全局）。result 为 `{"metrics": <MetricsReport>, "trigger_started_latency": <LatencyDistribution>}`，二者均为失败闭合的只读派生，口径与诚实边界见 [`metrics.md`](metrics.md) §2/§4。`MetricsReport` 的每个序列是 `{"numerator":N,"denominator":D,"rate":R,"coverage":"..."}`；缺数据时 `coverage` 必填、分子为零。
 
-`ops.timeline` params 为 `{"run_id":null,"project_id":null,"type":null,"after_seq":0,"after_occurred_at_ms":0,"limit":100}`。result 为 `{"events":[<Event>],"next_seq":S,"next_occurred_at_ms":M,"has_more":bool}`，按 `occurred_at_ms` 降序（`seq` 为次序键）全局排序、以 `(occurred_at_ms, seq)` 为 keyset 游标分页，`limit=1..1000`；任意分页拼接均为全局时间倒序。Event 结构与 `storage.md` §7.1 的只读模型一致；不返回 token/hash。
+`ops.timeline` params 为 `{"run_id":null,"project_id":null,"type":null,"after_seq":0,"after_occurred_at_ms":0,"limit":100}`。result 为 `{"events":[<Event>],"next_seq":S,"next_occurred_at_ms":M,"has_more":bool}`，按 `occurred_at_ms` 降序（`seq` 为次序键）全局排序、以 `(occurred_at_ms, seq)` 为 keyset 游标分页，`limit=1..1000`；任意分页拼接均为全局时间倒序。旧客户端只传 `after_seq`（`after_occurred_at_ms` 缺省为 0）时，服务端先按该 `seq` 解析其 `occurred_at_ms` 再走同一 keyset，保持旧参数分页兼容；若该 `seq` 已被裁剪无法解析，则返回空页（fail-closed）。Event 结构与 `storage.md` §7.1 的只读模型一致；不返回 token/hash。
 
 ### 6.3 `ops.kill` / `ops.retry`
 

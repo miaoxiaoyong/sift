@@ -62,8 +62,25 @@ func (d *DB) RunTimeline(ctx context.Context, q TimelineQuery) (TimelineReport, 
 	conds := filters
 	args := append([]any{}, filterArgs...)
 	if q.AfterSeq > 0 {
+		at := q.AfterOccurredAtMS
+		if at == 0 {
+			// Legacy cursor: an old ops.timeline caller sends only after_seq
+			// (no after_occurred_at_ms). Resolve that seq's occurred_at_ms so
+			// the (occurred_at_ms, seq) keyset pages correctly instead of
+			// silently treating the missing time as 0, which would match no
+			// events (every event has occurred_at_ms > 0) and return empty
+			// or partial pages. A pruned/unresolvable seq keeps the keyset on
+			// (0, seq): fail-closed empty page, never a wrong one.
+			var seqAt int64
+			err := d.db.QueryRowContext(ctx, `SELECT occurred_at_ms FROM events WHERE seq=?`, q.AfterSeq).Scan(&seqAt)
+			if err == nil {
+				at = seqAt
+			} else if err != sql.ErrNoRows {
+				return report, fmt.Errorf("storage: timeline: resolve after_seq: %w", err)
+			}
+		}
 		conds = append(conds, "(occurred_at_ms<? OR (occurred_at_ms=? AND seq<?))")
-		args = append(args, q.AfterOccurredAtMS, q.AfterOccurredAtMS, q.AfterSeq)
+		args = append(args, at, at, q.AfterSeq)
 	}
 	where := ""
 	if len(conds) > 0 {

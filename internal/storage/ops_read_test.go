@@ -139,7 +139,7 @@ func TestRunTimelineIsBoundedAndKeyset(t *testing.T) {
 	for i := 1; i < len(all); i++ {
 		prev, cur := all[i-1], all[i]
 		if prev.OccurredAtMS < cur.OccurredAtMS || (prev.OccurredAtMS == cur.OccurredAtMS && prev.Seq < cur.Seq) {
-		t.Fatalf("concatenated pages not globally descending at %d: %+v", i, all)
+			t.Fatalf("concatenated pages not globally descending at %d: %+v", i, all)
 		}
 		if prev.Seq == cur.Seq {
 			t.Fatalf("duplicate event across pages: %+v", all)
@@ -163,6 +163,91 @@ func TestRunTimelineIsBoundedAndKeyset(t *testing.T) {
 		}
 		if i > 0 && typed.Events[i-1].OccurredAtMS < e.OccurredAtMS {
 			t.Fatalf("typed timeline not descending: %+v", typed.Events)
+		}
+	}
+}
+
+// TestRunTimelineLegacyAfterSeqPagination verifies the backward-compatible
+// legacy cursor: an old ops.timeline caller sends only after_seq (no
+// after_occurred_at_ms), so the seq must be resolved to its occurred_at_ms
+// before the (occurred_at_ms, seq) keyset is applied. Each page returns the
+// subsequent events; concatenated pages cover all events exactly once and stay
+// globally occurred_at_ms descending — identical to the dual-cursor path.
+func TestRunTimelineLegacyAfterSeqPagination(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	const now = testNow
+	if err := db.SeedProjectForTest(ctx, "cfg-tl2", "proj-tl2", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedForgeRunForTest(ctx, "runTL2", "proj-tl2", "cfg-tl2", "iTL2", now); err != nil {
+		t.Fatal(err)
+	}
+	// Interleaved seq/occurred_at_ms; global newest-first is +4, +3, +1, +2, +0.
+	occurred := []int64{now + 1, now + 3, now + 2, now + 5, now + 4}
+	for _, at := range occurred {
+		if _, err := db.AppendEvent(ctx, EventCmd{RunID: "runTL2", Type: "run.transitioned", Source: SourceAgent, PayloadJSON: []byte("{}"), OccurredAtMS: at, RecordedAtMS: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Page 1: no cursor.
+	page1, err := db.RunTimeline(ctx, TimelineQuery{RunID: "runTL2", Limit: 2})
+	if err != nil {
+		t.Fatalf("legacy page1: %v", err)
+	}
+	if len(page1.Events) != 2 || !page1.HasMore {
+		t.Fatalf("legacy page1 = %+v, want 2 events with more", page1)
+	}
+
+	// Page 2: legacy cursor — only AfterSeq, AfterOccurredAtMS left at 0.
+	page2, err := db.RunTimeline(ctx, TimelineQuery{RunID: "runTL2", AfterSeq: page1.NextSeq, Limit: 2})
+	if err != nil {
+		t.Fatalf("legacy page2: %v", err)
+	}
+	if len(page2.Events) != 2 || !page2.HasMore {
+		t.Fatalf("legacy page2 = %+v, want 2 events with more", page2)
+	}
+	if page2.Events[0].Seq == page1.Events[len(page1.Events)-1].Seq {
+		t.Fatalf("legacy page2 repeats page1 tail event: %+v", page2.Events)
+	}
+
+	// Page 3: legacy cursor again, limit 10 to drain the stream.
+	page3, err := db.RunTimeline(ctx, TimelineQuery{RunID: "runTL2", AfterSeq: page2.NextSeq, Limit: 10})
+	if err != nil {
+		t.Fatalf("legacy page3: %v", err)
+	}
+	if len(page3.Events) != 1 || page3.HasMore {
+		t.Fatalf("legacy page3 = %+v, want the final event", page3)
+	}
+
+	// Concatenation covers all five events exactly once, globally descending.
+	all := append(append(append([]Event{}, page1.Events...), page2.Events...), page3.Events...)
+	if len(all) != 5 {
+		t.Fatalf("legacy pages cover %d events, want 5: %+v", len(all), all)
+	}
+	seen := map[int64]bool{}
+	for i, e := range all {
+		if seen[e.Seq] {
+			t.Fatalf("legacy pages duplicate seq %d: %+v", e.Seq, all)
+		}
+		seen[e.Seq] = true
+		if i > 0 && all[i-1].OccurredAtMS < e.OccurredAtMS {
+			t.Fatalf("legacy pages not globally descending at %d: %+v", i, all)
+		}
+	}
+
+	// The legacy path must agree with the dual-cursor path page-for-page.
+	dual2, err := db.RunTimeline(ctx, TimelineQuery{RunID: "runTL2", AfterOccurredAtMS: page1.NextOccurredAtMS, AfterSeq: page1.NextSeq, Limit: 2})
+	if err != nil {
+		t.Fatalf("dual page2: %v", err)
+	}
+	if len(dual2.Events) != len(page2.Events) {
+		t.Fatalf("legacy/dual page2 disagree: legacy %d vs dual %d events", len(page2.Events), len(dual2.Events))
+	}
+	for i := range dual2.Events {
+		if dual2.Events[i].Seq != page2.Events[i].Seq {
+			t.Fatalf("legacy/dual page2 disagree at %d: legacy %+v vs dual %+v", i, page2.Events, dual2.Events)
 		}
 	}
 }

@@ -162,16 +162,19 @@ func (s *Server) handleOpsMetrics(req Request) Response {
 // event stream (storage.md §7.1), globally ordered by occurred_at_ms
 // descending (seq tie-breaker). It never reconstructs events from memory.
 func (s *Server) handleOpsTimeline(req Request) Response {
-	if !onlyKeys(req.Params, "run_id", "project_id", "type", "after_occurred_at_ms", "after_seq", "limit") {
+	// Accept both the dual-cursor param set and the legacy set without
+	// after_occurred_at_ms (pre-B2 ops.timeline), so old callers keep paging;
+	// unknown keys are still rejected via subsetKeys.
+	if !subsetKeys(req.Params, "run_id", "project_id", "type", "after_occurred_at_ms", "after_seq", "limit") {
 		return failure(req.RequestID, "invalid_request", "invalid params", false)
 	}
 	if s.db == nil {
 		return failure(req.RequestID, "storage", "timeline unavailable", true)
 	}
 	q := storage.TimelineQuery{
-		RunID:     optString(req.Params["run_id"]),
-		ProjectID: optString(req.Params["project_id"]),
-		Type:      optString(req.Params["type"]),
+		RunID:             optString(req.Params["run_id"]),
+		ProjectID:         optString(req.Params["project_id"]),
+		Type:              optString(req.Params["type"]),
 		AfterSeq:          optInt64(req.Params["after_seq"], 0),
 		AfterOccurredAtMS: optInt64(req.Params["after_occurred_at_ms"], 0),
 		Limit:             optInt(req.Params["limit"], 100),
@@ -181,6 +184,23 @@ func (s *Server) handleOpsTimeline(req Request) Response {
 		return failure(req.RequestID, "storage", "timeline unavailable", true)
 	}
 	return success(req.RequestID, report)
+}
+
+// subsetKeys reports whether every param key is one of the allowed keys.
+// Unlike onlyKeys it permits absent optional keys, which ops.timeline needs to
+// keep the legacy param set (no after_occurred_at_ms) valid; unknown keys are
+// still rejected.
+func subsetKeys(m map[string]any, keys ...string) bool {
+	allowed := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		allowed[k] = true
+	}
+	for k := range m {
+		if !allowed[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // optString returns a string param or "" when nil/absent.
