@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/miaoxiaoyong/sift/internal/cli/render"
 	"github.com/miaoxiaoyong/sift/internal/config"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
 	"github.com/miaoxiaoyong/sift/internal/hosting"
@@ -34,8 +35,17 @@ func main() {
 // the online path receives it from the daemon in response.Result.
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
-		usage(stderr)
-		return 2
+		return overview(stdout, stderr)
+	}
+	if args[1] == "help" || args[1] == "--help" || args[1] == "-h" {
+		if len(args) > 3 {
+			report(stderr, fmt.Errorf("usage: sift help [command]"))
+			return 2
+		}
+		if len(args) == 3 {
+			return commandHelp(args[2], stdout, stderr)
+		}
+		return commandHelp("", stdout, stderr)
 	}
 	// `sift --version` is the operator-facing release version surface; the
 	// wrapper exposes the same value via `sift-agent-wrapper --version` and the
@@ -67,14 +77,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if command == "service" {
 		return runService(args[2:], home, stdout, stderr)
 	}
-	if command == "doctor" && len(args) == 3 && args[2] == "--offline" {
-		result := controlplane.OfflineDoctor(home)
-		return emitDoctor(stdout, stderr, result)
+	if command == "doctor" {
+		jsonOutput, offline, ok := doctorFlags(args[2:])
+		if !ok {
+			report(stderr, fmt.Errorf("usage: sift doctor [--offline] [--json]"))
+			return 2
+		}
+		if offline {
+			result := controlplane.OfflineDoctor(home)
+			return emitDoctor(stdout, stderr, result, jsonOutput)
+		}
+		// Keep the protocol envelope untouched when explicitly requested.
+		_ = jsonOutput
 	}
 	if command == "report" {
 		return runReport(args[2:], home, stdout, stderr)
 	}
-	method, params, err := request(command, args[2:])
+	requestArgs := args[2:]
+	if command == "doctor" {
+		requestArgs = nil
+	} // --json/--offline are CLI-only flags
+	method, params, err := request(command, requestArgs)
 	if err != nil {
 		report(stderr, err)
 		return 1
@@ -88,7 +111,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runAttach(response, home, stdout, stderr)
 	}
 	if command == "doctor" {
-		return runDoctor(response, stdout, stderr)
+		jsonOutput, _, _ := doctorFlags(args[2:])
+		return runDoctor(response, stdout, stderr, jsonOutput)
 	}
 	if err := printJSON(stdout, response); err != nil {
 		report(stderr, err)
@@ -108,23 +132,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 // major before this function receives it; an unvalidated response is never
 // allowed to influence doctor output. A validated handshake rejection surfaces
 // as the version:daemon error the mismatch implies and exits 2.
-func runDoctor(response controlplane.Response, stdout, stderr io.Writer) int {
+func runDoctor(response controlplane.Response, stdout, stderr io.Writer, jsonOutput bool) int {
 	if !response.EnvelopeValidated() {
 		report(stderr, fmt.Errorf("invalid daemon response for doctor"))
 		return 1
 	}
 	if !response.OK {
 		if response.Error != nil && (response.Error.Code == "unsupported_protocol" || response.Error.Code == "unsupported_binary") {
-			return emitDoctor(stdout, stderr, doctorMismatchResult(response))
+			return emitDoctor(stdout, stderr, doctorMismatchResult(response), jsonOutput)
 		}
-		if err := printJSON(stdout, response); err != nil {
-			report(stderr, err)
+		if jsonOutput {
+			if err := printJSON(stdout, response); err != nil {
+				report(stderr, err)
+			}
+			return 1
 		}
+		fmt.Fprintln(stdout, "✗ 守护进程返回错误")
 		return 1
 	}
-	if err := printJSON(stdout, response); err != nil {
-		report(stderr, err)
-		return 1
+	if jsonOutput {
+		if err := printJSON(stdout, response); err != nil {
+			report(stderr, err)
+			return 1
+		}
+	} else {
+		renderDoctor(stdout, response.Result)
 	}
 	return doctorExitCode(response.Result)
 }
@@ -166,10 +198,14 @@ func majorVersion(release string) string {
 
 // emitDoctor prints the offline doctor result and maps its exit_code to the
 // process exit status (config.md §7).
-func emitDoctor(stdout, stderr io.Writer, result map[string]any) int {
-	if err := printJSON(stdout, result); err != nil {
-		report(stderr, err)
-		return 1
+func emitDoctor(stdout, stderr io.Writer, result map[string]any, jsonOutput bool) int {
+	if jsonOutput {
+		if err := printJSON(stdout, result); err != nil {
+			report(stderr, err)
+			return 1
+		}
+	} else {
+		renderDoctor(stdout, result)
 	}
 	return doctorExitCode(result)
 }
@@ -195,6 +231,70 @@ func doctorExitCode(result any) int {
 		}
 	}
 	return 2
+}
+
+func doctorFlags(args []string) (jsonOutput, offline, ok bool) {
+	jsonOutput = os.Getenv("SIFT_JSON") == "1"
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		case "--offline":
+			offline = true
+		default:
+			return false, false, false
+		}
+	}
+	return jsonOutput, offline, true
+}
+
+func renderDoctor(w io.Writer, value any) {
+	// Normalize typed offline checks to the same shape used by the online RPC.
+	var result map[string]any
+	body, marshalErr := json.Marshal(value)
+	ok := marshalErr == nil && json.Unmarshal(body, &result) == nil
+	if !ok {
+		fmt.Fprintln(w, "✗ 无法读取诊断结果")
+		return
+	}
+	fmt.Fprintln(w, "Sift 诊断")
+	if offline, _ := result["offline"].(bool); offline {
+		fmt.Fprintln(w, "模式：离线（不连接守护进程）")
+	}
+	checks, _ := result["checks"].([]any)
+	for _, raw := range checks {
+		check, _ := raw.(map[string]any)
+		level, _ := check["level"].(string)
+		id, _ := check["id"].(string)
+		message, _ := check["message"].(string)
+		fmt.Fprintf(w, "%s %s：%s\n", render.Status(level), id, doctorMessage(message, level))
+		if details, ok := check["details"].(map[string]any); ok && len(details) > 0 {
+			if b, err := json.Marshal(details); err == nil {
+				fmt.Fprintf(w, "  详情：%s\n", string(b))
+			}
+		}
+	}
+	code := doctorExitCode(result)
+	labels := []string{"正常", "有警告", "有错误"}
+	if code >= 0 && code < len(labels) {
+		fmt.Fprintf(w, "\n结论：%s（退出码 %d）\n", labels[code], code)
+	}
+}
+
+func doctorMessage(message, level string) string {
+	if strings.Contains(strings.ToLower(message), "unsupported") {
+		return "版本或协议不兼容"
+	}
+	if level == "ok" {
+		return "检查通过"
+	}
+	if level == "warning" {
+		return "需要注意：" + message
+	}
+	if level == "error" {
+		return "检查失败：" + message
+	}
+	return message
 }
 
 func request(command string, args []string) (string, map[string]any, error) {
@@ -330,7 +430,59 @@ func printJSON(w io.Writer, v any) error {
 }
 func report(w io.Writer, err error) { fmt.Fprintln(w, "sift:", err) }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sift --version|daemon|install <archive.tar.gz>|service <install|uninstall|status|restart>|ps|logs|worktree|metrics|timeline|attach|doctor [--offline]|hooks-bootstrap <project-id>|kill|retry|report <kind> --key KEY --payload JSON")
+	fmt.Fprintln(w, "用法：sift <命令> [选项]（运行 sift help 查看帮助）")
+}
+
+func overview(stdout, stderr io.Writer) int {
+	home, err := config.ResolveHome()
+	if err != nil {
+		report(stderr, err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Sift %s\n\n", version.Release)
+	configured := "否"
+	if _, err := os.Stat(config.ConfigPath(home)); err == nil {
+		configured = "是"
+	}
+	fmt.Fprintf(stdout, "配置文件：%s（%s）\n", config.ConfigPath(home), configured)
+	if configured == "否" {
+		fmt.Fprintln(stdout, "下一步：运行 sift init（初始化配置）")
+	} else {
+		fmt.Fprintln(stdout, "下一步：运行 sift daemon 启动服务，或 sift ps 查看运行")
+	}
+	fmt.Fprintln(stdout, "\n运行 sift help 查看全部命令。")
+	return 0
+}
+
+func commandHelp(command string, stdout, stderr io.Writer) int {
+	if command == "" {
+		fmt.Fprintln(stdout, "Sift 命令参考\n\n基础命令：\n  init                 初始化配置\n  daemon               启动本地守护进程\n  doctor               检查本地环境\n\n查询命令：\n  ps                   查看运行\n  logs <run-id>        查看运行日志\n  timeline             查看事件时间线\n  metrics              查看运行指标\n\n运行控制：\n  kill <run-id>        停止运行\n  retry <run-id>       重试运行\n  report <kind>        提交报告\n\n用法：sift <命令> [选项]\n示例：sift doctor --offline；sift ps")
+		return 0
+	}
+	entries := map[string][3]string{
+		"doctor":          {"检查本地环境并报告问题", "sift doctor [--offline] [--json]", "sift doctor --offline"},
+		"ps":              {"查看运行中的任务", "sift ps [--json]", "sift ps"},
+		"daemon":          {"启动本地守护进程", "sift daemon", "sift daemon"},
+		"logs":            {"查看指定运行的日志", "sift logs <run-id>", "sift logs run-123"},
+		"timeline":        {"查看事件时间线", "sift timeline", "sift timeline --limit 20"},
+		"metrics":         {"查看运行指标", "sift metrics", "sift metrics --project demo"},
+		"init":            {"初始化 Sift 配置", "sift init", "sift init"},
+		"worktree":        {"查看运行对应的工作树", "sift worktree <run-id>", "sift worktree run-123"},
+		"attach":          {"只读连接到运行会话", "sift attach <run-id>", "sift attach run-123"},
+		"kill":            {"停止指定运行", "sift kill <run-id> --expected-version N --request-key KEY", "sift kill run-123 --expected-version 2 --request-key stop-1"},
+		"retry":           {"重试指定运行", "sift retry <run-id> --expected-version N --request-key KEY", "sift retry run-123 --expected-version 2 --request-key retry-1"},
+		"report":          {"向运行提交报告", "sift report <kind> --key KEY --payload JSON", "sift report review --key run-123 --payload '{}'"},
+		"hooks-bootstrap": {"为项目安装 Git hooks", "sift hooks-bootstrap <project-id>", "sift hooks-bootstrap project-1"},
+		"install":         {"安装 Sift 发布包", "sift install <archive.tar.gz>", "sift install sift.tar.gz"},
+		"service":         {"管理系统服务", "sift service <install|uninstall|status|restart>", "sift service status"},
+	}
+	entry, ok := entries[command]
+	if !ok {
+		report(stderr, fmt.Errorf("未知命令 %q；运行 sift help 查看可用命令", command))
+		return 2
+	}
+	fmt.Fprintf(stdout, "sift %s\n\n%s\n\n用法：%s\n示例：%s\n", command, entry[0], entry[1], entry[2])
+	return 0
 }
 
 // runInstall installs a release archive into the version-directory layout
