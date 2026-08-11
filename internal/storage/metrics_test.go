@@ -549,6 +549,33 @@ func TestMetricsEmptyIsHonest(t *testing.T) {
 	}
 }
 
+func TestMetricsForgeAPIQuotaConsumption(t *testing.T) {
+	db, _ := openTestDB(t)
+	ctx := context.Background()
+	if err := db.SeedProjectForTest(ctx, "cfg-api-metrics", "proj-api-metrics", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ChargeForgeAPICall(ctx, ChargeForgeAPICallCmd{
+		ProjectID: "proj-api-metrics", CallAttemptKey: "api-metrics-1", NowMS: testNow,
+		Limit: 10, WarningRatio: .8,
+	}); err != nil {
+		t.Fatalf("charge forge api: %v", err)
+	}
+	report, err := db.Metrics(ctx, MetricsQuery{
+		NowMS: testNow, ForgeAPIHourlyLimit: 10, ForgeAPIWarningRatio: .8,
+	})
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	if len(report.ForgeAPIQuotaConsumption) != 1 {
+		t.Fatalf("forge api quotas = %+v, want one project", report.ForgeAPIQuotaConsumption)
+	}
+	got := report.ForgeAPIQuotaConsumption[0]
+	if got.ProjectID != "proj-api-metrics" || got.Consumed != 1 || got.Limit != 10 || got.Unit != "calls" {
+		t.Fatalf("forge api quota = %+v, want proj-api-metrics 1/10 calls", got)
+	}
+}
+
 func verifyJSONSerializable(v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {

@@ -1,7 +1,10 @@
 package storage
 
 type MetricsQuery struct {
-	ProjectID string
+	ProjectID            string
+	NowMS                int64
+	ForgeAPIHourlyLimit  int64
+	ForgeAPIWarningRatio float64
 }
 
 // RatioMetric is a numerator/denominator pair with its honest V0 coverage note.
@@ -44,19 +47,29 @@ type LLMCostMetric struct {
 	Coverage              string  `json:"coverage"`
 }
 
-// MetricsReport is the nine PRD §10.2 series derived from persisted state.
+// ForgeAPIQuotaConsumption is one project's current hourly Forge API budget.
+type ForgeAPIQuotaConsumption struct {
+	ProjectID string `json:"project_id"`
+	Consumed  int64  `json:"consumed"`
+	Limit     int64  `json:"limit"`
+	Unit      string `json:"unit"`
+}
+
+// MetricsReport is the nine PRD §10.2 series plus operator-facing Forge API
+// budget consumption derived from persisted state.
 type MetricsReport struct {
 	Scope string `json:"scope"` // "global" or a project id
 
-	WeightedAttentionPerChange WeightedAttentionMetric `json:"weighted_attention_per_merged_change"`
-	FalseReleaseRate           RatioMetric             `json:"false_release_rate"`
-	GateBypassRate             RatioMetric             `json:"gate_bypass_rate"`
-	GateMissRate               RatioMetric             `json:"gate_miss_rate"`
-	GateFalseBlockRate         RatioMetric             `json:"gate_false_block_rate"`
-	HITLRate                   RatioMetric             `json:"hitl_rate"`
-	AttentionQuotaConsumption  []QuotaConsumption      `json:"attention_quota_consumption"`
-	DispatchAccuracy           RatioMetric             `json:"dispatch_accuracy"`
-	LLMCostPerMergedChange     LLMCostMetric           `json:"llm_cost_per_merged_change"`
+	WeightedAttentionPerChange WeightedAttentionMetric    `json:"weighted_attention_per_merged_change"`
+	FalseReleaseRate           RatioMetric                `json:"false_release_rate"`
+	GateBypassRate             RatioMetric                `json:"gate_bypass_rate"`
+	GateMissRate               RatioMetric                `json:"gate_miss_rate"`
+	GateFalseBlockRate         RatioMetric                `json:"gate_false_block_rate"`
+	HITLRate                   RatioMetric                `json:"hitl_rate"`
+	AttentionQuotaConsumption  []QuotaConsumption         `json:"attention_quota_consumption"`
+	DispatchAccuracy           RatioMetric                `json:"dispatch_accuracy"`
+	LLMCostPerMergedChange     LLMCostMetric              `json:"llm_cost_per_merged_change"`
+	ForgeAPIQuotaConsumption   []ForgeAPIQuotaConsumption `json:"forge_api_quota_consumption"`
 }
 
 // Metrics derives the nine PRD §10.2 metric series deterministically. It is a

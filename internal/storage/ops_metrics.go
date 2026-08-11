@@ -16,7 +16,7 @@ func (d *DB) Metrics(ctx context.Context, q MetricsQuery) (MetricsReport, error)
 		runWhere = "WHERE project_id=?"
 		runArgs = []any{q.ProjectID}
 	}
-	report := MetricsReport{Scope: scope, AttentionQuotaConsumption: []QuotaConsumption{}}
+	report := MetricsReport{Scope: scope, AttentionQuotaConsumption: []QuotaConsumption{}, ForgeAPIQuotaConsumption: []ForgeAPIQuotaConsumption{}}
 
 	mergedChanges, err := d.countDoneChanges(ctx, runWhere, runArgs)
 	if err != nil {
@@ -49,6 +49,10 @@ func (d *DB) Metrics(ctx context.Context, q MetricsQuery) (MetricsReport, error)
 	if err != nil {
 		return report, err
 	}
+	report.ForgeAPIQuotaConsumption, err = d.forgeAPIQuotaConsumption(ctx, q)
+	if err != nil {
+		return report, err
+	}
 	report.DispatchAccuracy, err = d.dispatchAccuracy(ctx, q.ProjectID)
 	if err != nil {
 		return report, err
@@ -58,6 +62,47 @@ func (d *DB) Metrics(ctx context.Context, q MetricsQuery) (MetricsReport, error)
 		return report, err
 	}
 	return report, nil
+}
+
+// forgeAPIQuotaConsumption projects the current hourly budget for every
+// selected project through the same status read that Intake uses. No counter is
+// created for an uncharged project; its configured limit is reported as unused.
+func (d *DB) forgeAPIQuotaConsumption(ctx context.Context, q MetricsQuery) ([]ForgeAPIQuotaConsumption, error) {
+	out := []ForgeAPIQuotaConsumption{}
+	if q.NowMS <= 0 || q.ForgeAPIHourlyLimit < 1 || q.ForgeAPIWarningRatio <= 0 || q.ForgeAPIWarningRatio >= 1 {
+		return out, nil
+	}
+	query, args := `SELECT id FROM projects`, []any{}
+	if q.ProjectID != "" {
+		query += ` WHERE id=?`
+		args = append(args, q.ProjectID)
+	}
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("storage: forge api metric projects: %w", err)
+	}
+	projectIDs := []string{}
+	for rows.Next() {
+		var projectID string
+		if err := rows.Scan(&projectID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		projectIDs = append(projectIDs, projectID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	for _, projectID := range projectIDs {
+		status, err := d.ForgeAPIBudgetStatus(ctx, projectID, q.NowMS, q.ForgeAPIHourlyLimit, q.ForgeAPIWarningRatio)
+		if err != nil {
+			return nil, fmt.Errorf("storage: forge api metric status: %w", err)
+		}
+		out = append(out, ForgeAPIQuotaConsumption{ProjectID: projectID, Consumed: status.Consumed, Limit: status.Limit, Unit: "calls"})
+	}
+	return out, nil
 }
 
 // LatencySample is one run's trigger→started latency (PRD §10.2).

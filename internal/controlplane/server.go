@@ -34,19 +34,21 @@ type reportParams struct {
 }
 
 type Server struct {
-	Home            config.Home
-	operatorToken   string
-	lock            *os.File
-	operator        *net.UnixListener
-	run             *net.UnixListener
-	wg              sync.WaitGroup
-	db              *storage.DB
-	operations      func(context.Context, string, string, int64) error
-	hookBootstrap   func(context.Context, string) error
-	configuredQuota map[string]int
-	tmuxPath        string
-	tmuxSocketPath  string
-	tmuxObserver    func(context.Context, string, string, string, string) error
+	Home                 config.Home
+	operatorToken        string
+	lock                 *os.File
+	operator             *net.UnixListener
+	run                  *net.UnixListener
+	wg                   sync.WaitGroup
+	db                   *storage.DB
+	operations           func(context.Context, string, string, int64) error
+	hookBootstrap        func(context.Context, string) error
+	configuredQuota      map[string]int
+	forgeAPIHourlyLimit  int64
+	forgeAPIWarningRatio float64
+	tmuxPath             string
+	tmuxSocketPath       string
+	tmuxObserver         func(context.Context, string, string, string, string) error
 }
 
 // Start obtains the process-lifetime mutex, creates the capability token when
@@ -64,7 +66,8 @@ func Start(home config.Home, db ...*storage.DB) (*Server, error) {
 	if err != nil {
 		return cleanup(err)
 	}
-	s := &Server{Home: home, operatorToken: token, lock: lock}
+	defaults := config.DefaultConfig().Forge
+	s := &Server{Home: home, operatorToken: token, lock: lock, forgeAPIHourlyLimit: int64(defaults.HourlyAPILimit), forgeAPIWarningRatio: defaults.WarningRatio}
 	if len(db) > 1 {
 		return cleanup(errf("at most one storage database may be supplied"))
 	}
@@ -267,6 +270,13 @@ func (s *Server) SetTmuxObserver(tmuxPath, socketPath string) {
 // consumption. Without it the server reports only persisted ceilings.
 func (s *Server) SetAttentionQuota(quota map[string]int) {
 	s.configuredQuota = quota
+}
+
+// SetForgeAPIBudget installs the live Forge API budget configuration used by
+// ops.metrics to read the current hourly per-project quota.
+func (s *Server) SetForgeAPIBudget(hourlyLimit int64, warningRatio float64) {
+	s.forgeAPIHourlyLimit = hourlyLimit
+	s.forgeAPIWarningRatio = warningRatio
 }
 
 func (s *Server) operatorRequest(req Request) Response {

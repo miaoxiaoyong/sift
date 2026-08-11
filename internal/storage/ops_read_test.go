@@ -45,8 +45,8 @@ func TestRunPSProjectsRunAttempt(t *testing.T) {
 	if r.RunID != "runPS" || r.Status != "queued" {
 		t.Fatalf("run = %+v, want runPS/queued", r)
 	}
-	if r.Attempt == nil || r.Attempt.AttemptNo != 1 || r.Attempt.Phase != "pending" {
-		t.Fatalf("attempt = %+v, want pending attempt 1", r.Attempt)
+	if r.Attempt == nil || r.Attempt.AttemptNo != 1 || r.Attempt.Phase != "pending" || r.Attempt.AgentID != "agent" {
+		t.Fatalf("attempt = %+v, want pending attempt 1 for agent", r.Attempt)
 	}
 	if r.OpenInterruptCount != 1 {
 		t.Fatalf("open interrupt count = %d, want 1", r.OpenInterruptCount)

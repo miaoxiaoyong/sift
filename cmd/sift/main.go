@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1104,6 +1105,7 @@ func renderPS(w io.Writer, value any) {
 			Version   float64 `json:"version"`
 			Attempt   *struct {
 				AttemptNo float64 `json:"attempt_no"`
+				AgentID   string  `json:"agent_id"`
 				Phase     string  `json:"phase"`
 			} `json:"attempt"`
 			OpenInterruptCount float64 `json:"open_interrupt_count"`
@@ -1126,14 +1128,18 @@ func renderPS(w io.Writer, value any) {
 				phase = phaseLabel(r.Attempt.Phase)
 				attempt = fmt.Sprintf("第 %d 次", int(r.Attempt.AttemptNo))
 			}
+			agent := "-"
+			if r.Attempt != nil && r.Attempt.AgentID != "" {
+				agent = r.Attempt.AgentID
+			}
 			rows = append(rows, []string{
-				r.RunID, r.ProjectID, runStatusLabel(r.Status), phase, attempt,
+				r.RunID, r.ProjectID, agent, runStatusLabel(r.Status), phase, attempt,
 				fmt.Sprintf("%d", int(r.Version)),
 				fmt.Sprintf("%d", int(r.OpenInterruptCount)),
 				fmt.Sprintf("%d", int(r.PendingOutboxCount)),
 			})
 		}
-		fmt.Fprint(w, render.Table([]string{"运行 ID", "项目", "状态", "阶段", "尝试", "版本", "中断", "待发"}, rows))
+		fmt.Fprint(w, render.Table([]string{"运行 ID", "项目", "Agent", "状态", "阶段", "尝试", "版本", "中断", "待发"}, rows))
 	}
 	if len(result.AttentionRemaining) > 0 {
 		fmt.Fprintln(w, "今日注意力剩余：")
@@ -1172,11 +1178,14 @@ func renderTimeline(w io.Writer, value any) {
 		fmt.Fprintln(w, "事件时间线（暂无事件）")
 		return
 	}
-	// The stream arrives ascending by seq; present it newest-first.
+	// Present newest-first by occurrence time; seq provides a stable tie-breaker.
 	evs := result.Events
-	for i, j := 0, len(evs)-1; i < j; i, j = i+1, j-1 {
-		evs[i], evs[j] = evs[j], evs[i]
-	}
+	sort.SliceStable(evs, func(i, j int) bool {
+		if evs[i].OccurredAtMS != evs[j].OccurredAtMS {
+			return evs[i].OccurredAtMS > evs[j].OccurredAtMS
+		}
+		return evs[i].Seq > evs[j].Seq
+	})
 	fmt.Fprintf(w, "事件时间线（最新在前，共 %d 条）\n", len(evs))
 	lastDate := ""
 	for _, e := range evs {
@@ -1274,6 +1283,12 @@ func renderMetrics(w io.Writer, value any) {
 				Limit    float64 `json:"limit"`
 				Rate     float64 `json:"rate"`
 			} `json:"attention_quota_consumption"`
+			ForgeAPIQuotaConsumption []struct {
+				ProjectID string  `json:"project_id"`
+				Consumed  float64 `json:"consumed"`
+				Limit     float64 `json:"limit"`
+				Unit      string  `json:"unit"`
+			} `json:"forge_api_quota_consumption"`
 			LLMCostPerMergedChange struct {
 				PerMergedChangeInput  float64 `json:"per_merged_change_input_tokens"`
 				PerMergedChangeOutput float64 `json:"per_merged_change_output_tokens"`
@@ -1307,6 +1322,15 @@ func renderMetrics(w io.Writer, value any) {
 		fmt.Fprintln(w, "注意力配额（今日已用 / 上限）：")
 		for _, q := range m.AttentionQuotaConsumption {
 			fmt.Fprintf(w, "  %s：%d / %d（%.1f%%）\n", severityLabel(q.Severity), int(q.Consumed), int(q.Limit), q.Rate*100)
+		}
+	}
+
+	if len(m.ForgeAPIQuotaConsumption) == 0 {
+		fmt.Fprintln(w, "Forge API 用量：暂无项目")
+	} else {
+		fmt.Fprintln(w, "Forge API 用量（本小时已用 / 上限）：")
+		for _, q := range m.ForgeAPIQuotaConsumption {
+			fmt.Fprintf(w, "  项目 %s：%d / %d %s\n", q.ProjectID, int(q.Consumed), int(q.Limit), q.Unit)
 		}
 	}
 

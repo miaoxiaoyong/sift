@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/miaoxiaoyong/sift/internal/storage"
 )
@@ -140,7 +141,12 @@ func (s *Server) handleOpsMetrics(req Request) Response {
 	if s.db == nil {
 		return failure(req.RequestID, "storage", "metrics unavailable", true)
 	}
-	q := storage.MetricsQuery{ProjectID: optString(req.Params["project_id"])}
+	q := storage.MetricsQuery{
+		ProjectID:            optString(req.Params["project_id"]),
+		NowMS:                time.Now().UnixMilli(),
+		ForgeAPIHourlyLimit:  s.forgeAPIHourlyLimit,
+		ForgeAPIWarningRatio: s.forgeAPIWarningRatio,
+	}
 	report, err := s.db.Metrics(context.Background(), q)
 	if err != nil {
 		return failure(req.RequestID, "storage", "metrics unavailable", true)

@@ -23,6 +23,7 @@ type PSAttempt struct {
 	Phase          string `json:"phase"`
 	IsolationState string `json:"isolation_state"`
 	HeartbeatAtMS  int64  `json:"heartbeat_at_ms"`
+	AgentID        string `json:"agent_id"`
 }
 
 // PSRun is one row of an ops.ps listing.
@@ -82,7 +83,7 @@ func (d *DB) RunPS(ctx context.Context, q PSQuery) (PSReport, error) {
 	}
 	args = append(args, q.Limit)
 	query := `SELECT r.id,r.project_id,r.status,r.version,r.gate_bypassed,r.updated_at_ms,
-		a.attempt_no,a.generation,a.phase,a.isolation_state,COALESCE(a.heartbeat_at_ms,0)
+		a.attempt_no,a.agent_id,a.generation,a.phase,a.isolation_state,COALESCE(a.heartbeat_at_ms,0)
 		FROM runs r
 		LEFT JOIN attempts a ON a.run_id=r.id AND a.attempt_no=(SELECT MAX(attempt_no) FROM attempts WHERE run_id=r.id)
 		` + where + ` ORDER BY r.id ASC LIMIT ?`
@@ -99,16 +100,17 @@ func (d *DB) RunPS(ctx context.Context, q PSQuery) (PSReport, error) {
 		var status string
 		var bypass int
 		var attemptNo sql.NullInt64
+		var agentID sql.NullString
 		var gen sql.NullInt64
 		var phase, isolation sql.NullString
 		var hb sql.NullInt64
-		if err := rows.Scan(&r.RunID, &r.ProjectID, &status, &r.Version, &bypass, &r.UpdatedAtMS, &attemptNo, &gen, &phase, &isolation, &hb); err != nil {
+		if err := rows.Scan(&r.RunID, &r.ProjectID, &status, &r.Version, &bypass, &r.UpdatedAtMS, &attemptNo, &agentID, &gen, &phase, &isolation, &hb); err != nil {
 			rows.Close()
 			return report, err
 		}
 		r.Status, r.GateBypassed = status, bypass != 0
 		if attemptNo.Valid {
-			r.Attempt = &PSAttempt{AttemptNo: int(attemptNo.Int64), Generation: int(gen.Int64), Phase: phase.String, IsolationState: isolation.String, HeartbeatAtMS: hb.Int64}
+			r.Attempt = &PSAttempt{AttemptNo: int(attemptNo.Int64), AgentID: agentID.String, Generation: int(gen.Int64), Phase: phase.String, IsolationState: isolation.String, HeartbeatAtMS: hb.Int64}
 		}
 		list = append(list, runRow{ps: r})
 	}

@@ -31,13 +31,13 @@ func TestHumanPSEmptyAndRows(t *testing.T) {
 	renderPS(&out, map[string]any{
 		"runs": []any{map[string]any{
 			"run_id": "run-1", "project_id": "proj-1", "status": "running", "version": 3,
-			"attempt":              map[string]any{"attempt_no": 1, "phase": "running", "isolation_state": "none", "heartbeat_at_ms": 0},
+			"attempt":              map[string]any{"attempt_no": 1, "agent_id": "claude", "phase": "running", "isolation_state": "none", "heartbeat_at_ms": 0},
 			"open_interrupt_count": 0, "pending_outbox_count": 1, "gate_bypassed": false,
 		}},
 		"attention_remaining": map[string]any{"low": 3, "normal": 5, "high": 2},
 	})
 	got := out.String()
-	for _, want := range []string{"运行列表", "运行 ID", "项目", "run-1", "proj-1", "✓ 运行中", "运行中", "今日注意力剩余", "低 3", "普通 5", "高 2"} {
+	for _, want := range []string{"运行列表", "运行 ID", "项目", "Agent", "run-1", "proj-1", "claude", "✓ 运行中", "运行中", "今日注意力剩余", "低 3", "普通 5", "高 2"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("ps row output lacks %q:\n%s", want, got)
 		}
@@ -54,8 +54,8 @@ func TestHumanTimelinePinsEventLabels(t *testing.T) {
 	var out bytes.Buffer
 	renderTimeline(&out, map[string]any{
 		"events": []any{
-			map[string]any{"Seq": 1, "RunID": "run-1", "ProjectID": "proj-1", "Type": "intake.trigger_observed", "Source": "forge", "Actor": "", "AttemptNo": nil, "OccurredAtMS": 1_700_000_000_000},
-			map[string]any{"Seq": 2, "RunID": "run-1", "ProjectID": "proj-1", "Type": "report.progress", "Source": "agent", "Actor": "claude", "AttemptNo": float64(1), "OccurredAtMS": 1_700_000_000_500},
+			map[string]any{"Seq": 2, "RunID": "run-1", "ProjectID": "proj-1", "Type": "intake.trigger_observed", "Source": "forge", "Actor": "", "AttemptNo": nil, "OccurredAtMS": 1_700_000_000_000},
+			map[string]any{"Seq": 1, "RunID": "run-1", "ProjectID": "proj-1", "Type": "report.progress", "Source": "agent", "Actor": "claude", "AttemptNo": float64(1), "OccurredAtMS": 1_700_000_000_500},
 		},
 		"has_more": true,
 		"next_seq": 2,
@@ -66,7 +66,7 @@ func TestHumanTimelinePinsEventLabels(t *testing.T) {
 			t.Fatalf("timeline output lacks %q:\n%s", want, got)
 		}
 	}
-	// Newest first: report.progress (seq 2) must precede trigger (seq 1).
+	// Newest first: report.progress has the lower seq but later occurrence time.
 	if strings.Index(got, "进度报告") > strings.Index(got, "触发已观测") {
 		t.Fatalf("timeline is not newest-first:\n%s", got)
 	}
@@ -112,6 +112,9 @@ func TestHumanMetricsPinsSectionsAndUnits(t *testing.T) {
 				map[string]any{"severity": "normal", "consumed": 5, "limit": 5, "rate": 1},
 				map[string]any{"severity": "high", "consumed": 2, "limit": 5, "rate": 0.4},
 			},
+			"forge_api_quota_consumption": []any{
+				map[string]any{"project_id": "proj-1", "consumed": 7, "limit": 10, "unit": "calls"},
+			},
 			"llm_cost_per_merged_change": map[string]any{
 				"input_tokens": 1000, "output_tokens": 500, "merged_changes": 2,
 				"per_merged_change_total_tokens": 750, "per_merged_change_input_tokens": 500, "per_merged_change_output_tokens": 250, "coverage": "tokens only",
@@ -126,7 +129,7 @@ func TestHumanMetricsPinsSectionsAndUnits(t *testing.T) {
 	for _, want := range []string{
 		"指标（全局）", "注意力配额", "低：3 / 5", "普通：5 / 5", "高：2 / 5",
 		"每合并变更注意力：12.5 分钟", "误放行率", "人工介入率：50.0%", "分派准确率：100.0%",
-		"LLM 用量", "输入 500 / 输出 250 tokens",
+		"Forge API 用量", "项目 proj-1：7 / 10 calls", "LLM 用量", "输入 500 / 输出 250 tokens",
 		"触发→启动延迟", "4 个样本", "P50 1.5s", "P90 2.3s",
 		"覆盖说明：fails closed", "覆盖说明：north star", "覆盖说明：real P50<60s",
 	} {
