@@ -406,16 +406,26 @@ func request(command string, args []string) (string, map[string]any, error) {
 		run := fs.String("run", "", "filter timeline to a run id")
 		project := fs.String("project", "", "filter timeline to a project id")
 		eventType := fs.String("type", "", "filter by event type")
-		afterSeq := fs.Int64("after-seq", 0, "keyset pagination cursor (seq, with --after-ms)")
-		afterMS := fs.Int64("after-ms", 0, "keyset pagination cursor (occurred_at_ms, with --after-seq)")
+		afterSeq := fs.Int64("after-seq", 0, "keyset pagination cursor (seq; may be passed alone)")
+		afterMS := fs.Int64("after-ms", 0, "explicit occurred_at_ms cursor half (optional; the server resolves it from --after-seq when omitted)")
 		limit := fs.Int("limit", 100, "max events (1..1000)")
 		if err := fs.Parse(args); err != nil {
 			return "", nil, err
 		}
-		if fs.NArg() != 0 || *limit < 1 || *limit > 1000 || *afterSeq < 0 || *afterMS < 0 || (*afterSeq > 0) != (*afterMS > 0) {
-			return "", nil, fmt.Errorf("usage: sift timeline [--run ID] [--project ID] [--type T] [--limit N] [--after-seq N --after-ms MS]")
+		if fs.NArg() != 0 || *limit < 1 || *limit > 1000 || *afterSeq < 0 || *afterMS < 0 {
+			return "", nil, fmt.Errorf("usage: sift timeline [--run ID] [--project ID] [--type T] [--limit N] [--after-seq N [--after-ms MS]]")
 		}
-		params := map[string]any{"run_id": nullableStringCLI(*run), "project_id": nullableStringCLI(*project), "type": nullableStringCLI(*eventType), "after_seq": *afterSeq, "after_occurred_at_ms": *afterMS, "limit": *limit}
+		// --after-ms is optional: legacy callers page with --after-seq alone, and
+		// the server resolves the seq's occurred_at_ms before the keyset (B3).
+		// Only non-zero cursor halves are sent, so a lone --after-seq yields the
+		// legacy param set without after_occurred_at_ms.
+		params := map[string]any{"run_id": nullableStringCLI(*run), "project_id": nullableStringCLI(*project), "type": nullableStringCLI(*eventType), "limit": *limit}
+		if *afterSeq > 0 {
+			params["after_seq"] = *afterSeq
+		}
+		if *afterMS > 0 {
+			params["after_occurred_at_ms"] = *afterMS
+		}
 		return "ops.timeline", params, nil
 	default:
 		return "", nil, fmt.Errorf("unknown command %q", command)

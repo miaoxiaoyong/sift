@@ -1072,9 +1072,30 @@ func TestRequestTimelineMaps(t *testing.T) {
 	if params["run_id"] != "run-1" || params["type"] != "report.progress" || params["after_seq"] != int64(5) || params["after_occurred_at_ms"] != int64(1_700_000_000_000) || params["limit"] != 10 {
 		t.Fatalf("timeline params = %v", params)
 	}
-	// The keyset cursor requires both halves; a lone --after-seq is a usage error.
-	if _, _, err := request("timeline", []string{"--after-seq", "5"}); err == nil {
-		t.Fatal("timeline --after-seq without --after-ms should fail usage")
+	// A lone --after-seq is the legacy cursor: it must succeed and build the
+	// legacy param set without after_occurred_at_ms (server resolves the seq).
+	method, params, err = request("timeline", []string{"--after-seq", "5"})
+	if err != nil || method != "ops.timeline" {
+		t.Fatalf("timeline --after-seq alone = %q %v err=%v", method, params, err)
+	}
+	if params["after_seq"] != int64(5) || params["after_occurred_at_ms"] != nil {
+		t.Fatalf("timeline --after-seq alone params = %v", params)
+	}
+}
+
+// TestRequestTimelineLegacyAfterSeq verifies the legacy CLI contract: a lone
+// --after-seq is accepted and produces a request without the
+// after_occurred_at_ms half, letting the server resolve the seq cursor (B3).
+func TestRequestTimelineLegacyAfterSeq(t *testing.T) {
+	method, params, err := request("timeline", []string{"--after-seq", "9"})
+	if err != nil || method != "ops.timeline" {
+		t.Fatalf("timeline --after-seq alone = %q %v err=%v", method, params, err)
+	}
+	if params["after_seq"] != int64(9) {
+		t.Fatalf("after_seq = %v, want int64(9)", params["after_seq"])
+	}
+	if _, ok := params["after_occurred_at_ms"]; ok {
+		t.Fatalf("lone --after-seq must not send after_occurred_at_ms: %v", params)
 	}
 }
 
