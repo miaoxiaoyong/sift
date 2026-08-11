@@ -330,6 +330,23 @@ func TestPlanInstallWritesUnitAndLoads(t *testing.T) {
 	}
 }
 
+func TestLegacyLaunchdMigrationPlans(t *testing.T) {
+	pinDirs(t)
+	path, err := LegacyLaunchdUnitPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(path, filepath.Join("Library", "LaunchAgents", LegacyLabel+".plist")) {
+		t.Errorf("legacy unit path = %q", path)
+	}
+	if got := LegacyLaunchdStatusPlan().RunCmd; strings.Join(got, " ") != "launchctl list "+LegacyLabel {
+		t.Errorf("legacy status command = %v", got)
+	}
+	if got := LegacyLaunchdBootoutPlan().RunCmd; len(got) != 3 || got[0] != "launchctl" || got[1] != "bootout" || !strings.HasSuffix(got[2], "/"+LegacyLabel) {
+		t.Errorf("legacy bootout command = %v", got)
+	}
+}
+
 func TestPlanInstallForegroundHasNoWrite(t *testing.T) {
 	home, _ := installFakeRelease(t)
 	spec, err := NewSpecFor(home, "freebsd")

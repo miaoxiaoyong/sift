@@ -53,6 +53,9 @@ const (
 	// stable, platform-neutral service handle. It never contains a path
 	// separator.
 	Label = "cn.hexai.sift"
+	// LegacyLabel was used by v0.1.0. Install removes its launchd agent before
+	// creating Label so an upgrade cannot leave two competing daemons.
+	LegacyLabel = "com.miaoxiaoyong.sift"
 	// ServiceName is the file stem for the systemd unit (`sift.service`).
 	ServiceName = "sift"
 )
@@ -183,11 +186,7 @@ func readRelease(current string) (string, error) {
 func unitDestination(b Backend) (string, error) {
 	switch b {
 	case BackendLaunchd:
-		home, err := userHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("hosting: resolve user home for launchd unit: %w", err)
-		}
-		return filepath.Join(home, "Library", "LaunchAgents", Label+".plist"), nil
+		return launchdUnitPath(Label)
 	case BackendSystemd:
 		cfg, err := userConfigDir()
 		if err != nil {
@@ -198,6 +197,21 @@ func unitDestination(b Backend) (string, error) {
 		// The foreground backend writes nothing; it only prints a hint.
 		return "", nil
 	}
+}
+
+// LegacyLaunchdUnitPath returns the v0.1.0 launchd plist location. It is
+// intentionally separate from the current Spec because it is only used by the
+// one-time install migration.
+func LegacyLaunchdUnitPath() (string, error) {
+	return launchdUnitPath(LegacyLabel)
+}
+
+func launchdUnitPath(label string) (string, error) {
+	home, err := userHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("hosting: resolve user home for launchd unit: %w", err)
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", label+".plist"), nil
 }
 
 // Plan is what the CLI does for one action: optionally write a generated unit
@@ -348,6 +362,17 @@ func (s Spec) planReload() Plan {
 	plan.Action = ActionReload
 	plan.Summary = "reload service (currently restarts)"
 	return plan
+}
+
+// LegacyLaunchdStatusPlan probes the v0.1.0 agent during the one-time label
+// migration. A non-zero result means it is not loaded.
+func LegacyLaunchdStatusPlan() Plan {
+	return Plan{Action: ActionStatus, RunCmd: []string{"launchctl", "list", LegacyLabel}}
+}
+
+// LegacyLaunchdBootoutPlan unloads the v0.1.0 agent during migration.
+func LegacyLaunchdBootoutPlan() Plan {
+	return Plan{Action: ActionUninstall, RunCmd: []string{"launchctl", "bootout", "gui/" + osUserUID() + "/" + LegacyLabel}}
 }
 
 func (s Spec) planStatus() Plan {
@@ -575,6 +600,13 @@ func Write(plan Plan) error {
 		return fmt.Errorf("hosting: install unit file: %w", err)
 	}
 	return nil
+}
+
+// IsAlreadyUnloaded reports launchctl's documented "No such process" result
+// for bootout. That result makes uninstall and label migration idempotent.
+func IsAlreadyUnloaded(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 3 && strings.Contains(strings.ToLower(err.Error()), "no such process")
 }
 
 // Exec runs a plan's RunCmd when the platform tool is present. It returns

@@ -533,31 +533,59 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 		report(stderr, err)
 		return 1
 	}
-	if err := hosting.Write(plan); err != nil {
-		report(stderr, err)
-		return 1
+	if action == hosting.ActionInstall && spec.Backend == hosting.BackendLaunchd {
+		if err := migrateLegacyLaunchd(stdout); err != nil {
+			report(stderr, err)
+			return 1
+		}
 	}
-	if plan.WriteFile != "" {
+	installed := false
+	if action == hosting.ActionStatus && spec.Backend != hosting.BackendForeground {
+		_, err := os.Stat(spec.UnitPath)
+		installed = err == nil
+		if os.IsNotExist(err) {
+			renderServiceStatus(stdout, spec, "", false)
+			return 0
+		}
+		if err != nil {
+			report(stderr, fmt.Errorf("stat service unit %s: %w", spec.UnitPath, err))
+			return 1
+		}
+	}
+	// launchctl bootout must happen before removing the plist. A stopped agent
+	// returns exit 3 / "No such process", which is already the desired state.
+	if action != hosting.ActionUninstall {
+		if err := hosting.Write(plan); err != nil {
+			report(stderr, err)
+			return 1
+		}
+	}
+	out, execErr := hosting.Exec(plan)
+	if action == hosting.ActionUninstall && hosting.IsAlreadyUnloaded(execErr) {
+		// "No such process" is the successful idempotent case; do not render
+		// launchctl's diagnostic as though the CLI had failed.
+		out, execErr = nil, nil
+	}
+	if action == hosting.ActionUninstall && (execErr == nil || errors.Is(execErr, hosting.ErrNoBackend)) {
+		if err := hosting.Write(plan); err != nil {
+			report(stderr, err)
+			return 1
+		}
+	}
+	if execErr == nil && plan.WriteFile != "" {
 		if plan.Content != nil {
 			fmt.Fprintf(stdout, "wrote %s unit: %s\n", spec.Backend, plan.WriteFile)
 		} else {
 			fmt.Fprintf(stdout, "removed %s unit: %s\n", spec.Backend, plan.WriteFile)
 		}
 	}
-	if action == hosting.ActionStatus && spec.Backend != hosting.BackendForeground {
-		if _, err := os.Stat(spec.UnitPath); os.IsNotExist(err) {
-			renderServiceStatus(stdout, spec, "", false)
-			return 0
-		}
-	}
-	out, execErr := hosting.Exec(plan)
 	if len(out) > 0 && action != hosting.ActionStatus {
 		stdout.Write(out)
 	}
 	switch {
 	case execErr == nil:
 		if action == hosting.ActionStatus {
-			renderServiceStatus(stdout, spec, string(out), true)
+			renderServiceStatus(stdout, spec, string(out), installed)
 		} else {
 			fmt.Fprintf(stdout, "%s: %s\n", spec.Backend, plan.Summary)
 			if action == hosting.ActionReload {
@@ -572,8 +600,8 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 		return 0
 	case action == hosting.ActionStatus:
 		// Both launchctl list and systemctl status use non-zero exits for a
-		// stopped unit. That is a service state, not a CLI failure.
-		renderServiceStatus(stdout, spec, string(out), false)
+		// stopped unit. The retained unit file still means installed.
+		renderServiceStatus(stdout, spec, string(out), installed)
 		return 0
 	default:
 		report(stderr, execErr)
@@ -581,12 +609,43 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 	}
 }
 
+// migrateLegacyLaunchd removes the v0.1.0 label before installing the current
+// one. Without this, both labels can supervise daemons that contend for the
+// same SIFT_HOME lock after an upgrade.
+func migrateLegacyLaunchd(stdout io.Writer) error {
+	oldUnit, err := hosting.LegacyLaunchdUnitPath()
+	if err != nil {
+		return err
+	}
+	_, statErr := os.Stat(oldUnit)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("stat legacy launchd unit %s: %w", oldUnit, statErr)
+	}
+	legacyFile := statErr == nil
+	_, probeErr := hosting.Exec(hosting.LegacyLaunchdStatusPlan())
+	legacyLoaded := probeErr == nil
+	if !legacyFile && !legacyLoaded {
+		return nil
+	}
+	if !errors.Is(probeErr, hosting.ErrNoBackend) {
+		_, bootoutErr := hosting.Exec(hosting.LegacyLaunchdBootoutPlan())
+		if bootoutErr != nil && !hosting.IsAlreadyUnloaded(bootoutErr) {
+			return bootoutErr
+		}
+	}
+	if err := hosting.Write(hosting.Plan{Action: hosting.ActionUninstall, WriteFile: oldUnit}); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "迁移：已移除旧 label %s\n", hosting.LegacyLabel)
+	return nil
+}
+
 // renderServiceStatus keeps platform command output out of the default CLI
 // surface while retaining the facts an operator needs: supervisor backend,
 // running state, PID when available, and the control socket path.
-func renderServiceStatus(stdout io.Writer, spec hosting.Spec, output string, queried bool) {
+func renderServiceStatus(stdout io.Writer, spec hosting.Spec, output string, installed bool) {
 	state, pid := "未运行", ""
-	if !queried {
+	if !installed {
 		state = "未安装"
 	} else if serviceRunning(spec.Backend, output) {
 		state = "运行中"
@@ -610,7 +669,7 @@ func serviceRunning(backend hosting.Backend, output string) bool {
 	case hosting.BackendLaunchd:
 		return servicePID(backend, output) != ""
 	case hosting.BackendSystemd:
-		return strings.Contains(output, "Active: active (running)")
+		return strings.Contains(output, "Active: active (running)") && servicePID(backend, output) != ""
 	default:
 		return false
 	}
@@ -632,7 +691,10 @@ func servicePID(backend hosting.Backend, output string) string {
 		fields := strings.Fields(output)
 		for i, field := range fields {
 			if field == "PID:" && i+1 < len(fields) {
-				return fields[i+1]
+				pid, err := strconv.ParseUint(fields[i+1], 10, 32)
+				if err == nil && pid > 0 {
+					return fields[i+1]
+				}
 			}
 		}
 	}

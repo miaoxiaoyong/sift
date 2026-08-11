@@ -250,6 +250,23 @@ func TestRenderServiceStatusHumanizesBackendPIDAndSocket(t *testing.T) {
 		}
 	}
 
+	// launchctl list and systemctl status both exit non-zero for this state.
+	// The retained unit file, not that exit code, establishes installation.
+	for _, tc := range []struct {
+		backend hosting.Backend
+		output  string
+	}{
+		{hosting.BackendLaunchd, "Boot-out failed: 3: No such process"},
+		{hosting.BackendSystemd, "   Active: inactive (dead)\n Main PID: 0 (code=exited)"},
+	} {
+		spec.Backend = tc.backend
+		out.Reset()
+		renderServiceStatus(&out, spec, tc.output, true)
+		if got := out.String(); !strings.Contains(got, "✗ 未运行") || strings.Contains(got, "未安装") {
+			t.Errorf("installed stopped %s status = %q, want 未运行", tc.backend, got)
+		}
+	}
+
 	out.Reset()
 	renderServiceStatus(&out, spec, "", false)
 	if got := out.String(); !strings.Contains(got, "✗ 未安装") {
