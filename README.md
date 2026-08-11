@@ -2,7 +2,19 @@
 
 本地多 Agent 任务编排中枢：把 GitHub / GitLab 的 Issue **筛**成已合并的变更，该自动的自动，该人审的绝不放过。
 
-> 概念验证（PoC）。无历史包袱，按 [docs/PRD.md](docs/PRD.md) 从 0 构建。
+> 概念验证（PoC）：M1–M6 已完成，M7 PoC 已验证，M8 自动化核心持续完善中。
+
+## 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | bash
+```
+
+安装指定版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | SIFT_VERSION=0.1.0 bash
+```
 
 ---
 
@@ -36,18 +48,19 @@
 
 ## 快速开始
 
-> 待实现。项目当前处于 PoC 阶段。
+安装完成后，启动 daemon：
 
 ```bash
-# 克隆仓库
+sift daemon
+```
+
+从源码运行或开发时，也可以按下面的方式构建两个发布二进制：
+
+```bash
 git clone https://github.com/miaoxiaoyong/sift.git
 cd sift
-
-# 构建两个发布二进制
 go build -o sift ./cmd/sift
 go build -o sift-agent-wrapper ./cmd/sift-agent-wrapper
-
-# 启动 daemon
 ./sift daemon
 ```
 
@@ -70,11 +83,11 @@ go build -o sift ./cmd/sift
 go build -o sift-agent-wrapper ./cmd/sift-agent-wrapper
 ```
 
-> 项目尚处早期，以上命令在实现完成后生效。
+> 开发命令适用于本地源码检出；发布版本请优先使用上方安装器。
 
 ## 状态
 
-当前仅落地需求文档，实现尚未开始。
+Sift 仍是 PoC，但控制面、策略、运行时、注意力/命令/报告与发布自动化核心已经实质落地；真实生产规模与完整多平台发布证据仍在持续补齐。
 
 ## 许可
 
