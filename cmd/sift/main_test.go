@@ -229,7 +229,7 @@ func TestServiceRejectsUnknownAction(t *testing.T) {
 func TestRenderServiceStatusHumanizesBackendPIDAndSocket(t *testing.T) {
 	spec := hosting.Spec{Backend: hosting.BackendLaunchd, HomePath: "/tmp/sift"}
 	var out bytes.Buffer
-	renderServiceStatus(&out, spec, "123\t0\tcom.miaoxiaoyong.sift\n", true)
+	renderServiceStatus(&out, spec, "{\n\t\"PID\" = 123;\n\t\"LastExitStatus\" = 0;\n\t\"Label\" = \"cn.hexai.sift\";\n}\n", true)
 	if got := out.String(); !strings.Contains(got, "✓ 运行中") || !strings.Contains(got, "launchd") || !strings.Contains(got, "PID 123") || !strings.Contains(got, "/tmp/sift/siftd.sock") {
 		t.Errorf("launchd status = %q, want humanized backend, pid, and socket", got)
 	}
@@ -239,6 +239,15 @@ func TestRenderServiceStatusHumanizesBackendPIDAndSocket(t *testing.T) {
 	renderServiceStatus(&out, spec, "   Active: active (running) since now\n Main PID: 456 (sift)\n", true)
 	if got := out.String(); !strings.Contains(got, "✓ 运行中") || !strings.Contains(got, "systemd") || !strings.Contains(got, "PID 456") {
 		t.Errorf("systemd status = %q, want humanized backend and pid", got)
+	}
+
+	for _, output := range []string{
+		"{\n\t\"PID\" = -;\n\t\"LastExitStatus\" = 0;\n}\n",
+		"{\n\t\"LastExitStatus\" = 0;\n}\n",
+	} {
+		if serviceRunning(hosting.BackendLaunchd, output) || servicePID(hosting.BackendLaunchd, output) != "" {
+			t.Errorf("launchd output %q incorrectly reports a running service", output)
+		}
 	}
 
 	out.Reset()

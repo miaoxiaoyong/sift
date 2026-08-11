@@ -52,7 +52,7 @@ const (
 	// Label is the reverse-DNS identifier used for the launchd agent and as a
 	// stable, platform-neutral service handle. It never contains a path
 	// separator.
-	Label = "com.miaoxiaoyong.sift"
+	Label = "cn.hexai.sift"
 	// ServiceName is the file stem for the systemd unit (`sift.service`).
 	ServiceName = "sift"
 )
@@ -273,8 +273,8 @@ func (s Spec) planUninstall() Plan {
 		return Plan{
 			Action: ActionUninstall, Summary: "unload and remove launchd user agent",
 			WriteFile: s.UnitPath, Content: nil, // nil content => remove the file
-			RunCmd: []string{"launchctl", "unload", s.UnitPath},
-			Hint:   "launchctl unload " + s.UnitPath,
+			RunCmd: []string{"launchctl", "bootout", "gui/" + osUserUID() + "/" + s.Label},
+			Hint:   "launchctl bootout gui/$(id -u)/" + s.Label,
 		}
 	case BackendSystemd:
 		return Plan{

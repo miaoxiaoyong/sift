@@ -33,8 +33,8 @@ WORK="$(mktemp -d)"
 cleanup() {
 	if [[ -n "${SMOKE_HOME:-}" ]] && [[ -d "$SMOKE_HOME" ]]; then
 		if command -v launchctl >/dev/null 2>&1; then
-			launchctl bootout "gui/$(id -u)/com.miaoxiaoyong.sift" >/dev/null 2>&1 || \
-				launchctl remove com.miaoxiaoyong.sift >/dev/null 2>&1 || true
+			launchctl bootout "gui/$(id -u)/cn.hexai.sift" >/dev/null 2>&1 || \
+				launchctl remove cn.hexai.sift >/dev/null 2>&1 || true
 		fi
 		if command -v systemctl >/dev/null 2>&1; then
 			systemctl --user disable --now "${HOSTING_UNIT:-sift}.service" >/dev/null 2>&1 || true
@@ -240,7 +240,7 @@ if [[ "$backend" == "systemd" ]]; then
 		exit 1
 	fi
 elif [[ "$backend" == "launchd" ]]; then
-	plist_pid="$(launchctl list com.miaoxiaoyong.sift 2>/dev/null | awk '/"PID"/{gsub(/[^0-9]/,""); print}' | head -1 || echo "")"
+	plist_pid="$(launchctl list cn.hexai.sift 2>/dev/null | awk '/"PID"/{gsub(/[^0-9]/,""); print}' | head -1 || echo "")"
 	if [[ -n "$plist_pid" ]] && (( plist_pid > 1 )); then
 		# Record the pre-kill operator-socket identity. After kill -KILL the
 		# listener dies but the socket FILE remains on disk; `[ -S siftd.sock ]`
@@ -257,7 +257,7 @@ elif [[ "$backend" == "launchd" ]]; then
 		lost=0
 		deadline=$((SECONDS + 30))
 		while (( SECONDS < deadline )); do
-			listed="$(launchctl list com.miaoxiaoyong.sift 2>/dev/null || true)"
+			listed="$(launchctl list cn.hexai.sift 2>/dev/null || true)"
 			if [[ -z "$listed" ]]; then
 				# launchd lost the label entirely; autorestart cannot happen.
 				lost=$((lost + 1))

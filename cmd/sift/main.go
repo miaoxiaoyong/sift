@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -601,11 +603,12 @@ func renderServiceStatus(stdout io.Writer, spec hosting.Spec, output string, que
 	fmt.Fprintf(stdout, "，socket %s）\n", filepath.Join(spec.HomePath, "siftd.sock"))
 }
 
+var launchdPIDPattern = regexp.MustCompile(`(?m)^\s*"PID"\s*=\s*([0-9]+|-)\s*;`)
+
 func serviceRunning(backend hosting.Backend, output string) bool {
 	switch backend {
 	case hosting.BackendLaunchd:
-		fields := strings.Fields(output)
-		return len(fields) >= 3 && fields[0] != "-"
+		return servicePID(backend, output) != ""
 	case hosting.BackendSystemd:
 		return strings.Contains(output, "Active: active (running)")
 	default:
@@ -614,13 +617,19 @@ func serviceRunning(backend hosting.Backend, output string) bool {
 }
 
 func servicePID(backend hosting.Backend, output string) string {
-	fields := strings.Fields(output)
 	switch backend {
 	case hosting.BackendLaunchd:
-		if len(fields) >= 3 && fields[0] != "-" {
-			return fields[0]
+		match := launchdPIDPattern.FindStringSubmatch(output)
+		if len(match) != 2 || match[1] == "-" {
+			return ""
 		}
+		pid, err := strconv.ParseUint(match[1], 10, 32)
+		if err != nil || pid == 0 {
+			return ""
+		}
+		return match[1]
 	case hosting.BackendSystemd:
+		fields := strings.Fields(output)
 		for i, field := range fields {
 			if field == "PID:" && i+1 < len(fields) {
 				return fields[i+1]

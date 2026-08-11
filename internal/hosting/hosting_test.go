@@ -385,6 +385,7 @@ func TestPlanLifecycleCommands(t *testing.T) {
 	}{
 		{"launchd start", "darwin", ActionStart, []string{"launchctl", "load"}},
 		{"launchd stop", "darwin", ActionStop, []string{"launchctl", "bootout"}},
+		{"launchd uninstall", "darwin", ActionUninstall, []string{"launchctl", "bootout"}},
 		{"launchd reload", "darwin", ActionReload, []string{"launchctl", "kickstart", "-k"}},
 		{"systemd start", "linux", ActionStart, []string{"systemctl", "--user", "start", ServiceName + ".service"}},
 		{"systemd stop", "linux", ActionStop, []string{"systemctl", "--user", "stop", ServiceName + ".service"}},

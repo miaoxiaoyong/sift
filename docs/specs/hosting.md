@@ -32,7 +32,7 @@ summary: 用户级托管单元（launchd/systemd/foreground）的生成、安装
 
 | 平台 | 后端 | 单元位置 | 自启语义 |
 |------|------|----------|----------|
-| macOS | launchd user agent | `~/Library/LaunchAgents/com.miaoxiaoyong.sift.plist` | `RunAtLoad` + `KeepAlive=true`（登录即起、崩溃即重启）；`ThrottleInterval=10` 防崩溃紧循环 |
+| macOS | launchd user agent | `~/Library/LaunchAgents/cn.hexai.sift.plist` | `RunAtLoad` + `KeepAlive=true`（登录即起、崩溃即重启）；`ThrottleInterval=10` 防崩溃紧循环 |
 | Linux | systemd user unit | `$XDG_CONFIG_HOME/systemd/user/sift.service`（默认 `~/.config/systemd/user/sift.service`） | `Restart=on-failure` + `RestartSec=10`；`loginctl enable-linger $USER` 后可在未登录时常驻 |
 | 其它 / 无 supervisor | foreground | 无单元文件 | 用户在前台 / tmux / screen 直接跑 `sift daemon`；V0 **不承诺**自动常驻 |
 
@@ -52,7 +52,7 @@ summary: 用户级托管单元（launchd/systemd/foreground）的生成、安装
 
 | 字段 | 值 | 理由 |
 |------|----|------|
-| `Label` | `com.miaoxiaoyong.sift` | 稳定句柄；`launchctl kickstart -k gui/<uid>/<Label>` 原子重启 |
+| `Label` | `cn.hexai.sift` | 稳定句柄；`launchctl kickstart -k gui/<uid>/<Label>` 原子重启 |
 | `ProgramArguments` | `[<home>/bin/current/sift, daemon]` | 跟随 `current` |
 | `RunAtLoad` | `true` | 登录即起 |
 | `KeepAlive` | `true` | 崩溃自启（§4） |
