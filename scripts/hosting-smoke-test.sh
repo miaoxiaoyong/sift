@@ -16,7 +16,8 @@
 #   happy-systemd        systemd (fake)  linux   smoke exits == 0 (alive / new pid / new release)
 #   unregistered-launchd launchd (fake)  darwin  smoke exits != 0 (kill, agent lost)
 #   stale-upgrade-launchd launchd (fake) darwin  smoke exits != 0 (restart, no new release)
-#   happy-launchd        launchd (fake)  darwin  smoke exits == 0 (alive / registered / new release)
+#   stale-socket-launchd launchd (fake)  darwin  smoke exits != 0 (stale leftover socket, not rebound)
+#   happy-launchd        launchd (fake)  darwin  smoke exits == 0 (alive / rebound socket / new release)
 #
 # Happy scenarios additionally assert their smoke.log carries the full
 # install → alive → kill/restart → new-release chain, so the log itself is
@@ -52,7 +53,7 @@ fi
 # systemctl (the harness fakes those and must keep the real ones invisible).
 tools_dir="$scratch_root/tools"
 mkdir -p "$tools_dir"
-for tool in mktemp mkdir chmod cp tar gzip sha256sum shasum awk sed uname tr cat readlink kill sleep rm basename head id bash; do
+for tool in mktemp mkdir chmod cp tar gzip sha256sum shasum awk sed uname tr cat readlink kill sleep rm basename head id bash stat grep; do
 	real="$(command -v "$tool" 2>/dev/null || true)"
 	# Skip bash builtins (kill etc.) — command -v returns the bare name.
 	[[ -n "$real" && "$real" != "$tool" ]] || continue
@@ -139,12 +140,29 @@ stop_daemon() {
 }
 maybe_restart_on_kill() {
 	if [[ -f "$pid_file" ]] && ! kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-		if [[ "${FAKE_ON_KILL:-1}" == "1" ]]; then start_daemon; else rm -f "$pid_file"; fi
+		if [[ "${FAKE_STALE_SOCKET:-0}" == "1" ]]; then
+			# Pretend launchd re-registered under a fresh pid WITHOUT starting a
+			# real daemon: the killed operator socket stays as a stale leftover
+			# (same inode, no listener). A naive `[ -S siftd.sock ]` check would
+			# pass; the inode/doctor gate must reject it.
+			sleep 20 & echo $! >"$pid_file"; touch "$STATE/stale_rebound"
+		elif [[ "${FAKE_ON_KILL:-1}" == "1" ]]; then start_daemon; else rm -f "$pid_file"; fi
 	fi
 }
 case "${1:-}" in
 	list)
 		maybe_restart_on_kill
+		if [[ "${FAKE_STALE_SOCKET:-0}" == "1" ]] && [[ -f "$STATE/stale_rebound" ]]; then
+			# Post-kill: surface the bogus fresh pid exactly once (so the smoke
+			# observes a re-registration) then drop the label so the poll fails
+			# fast instead of waiting out the full deadline.
+			n=$(cat "$STATE/post_kill_lists" 2>/dev/null || echo 0)
+			if (( n == 0 )) && [[ -f "$pid_file" ]]; then
+				echo $((n + 1)) >"$STATE/post_kill_lists"
+				printf '"PID" = %s;\n' "$(cat "$pid_file")"; exit 0
+			fi
+			exit 1
+		fi
 		if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
 			printf '"PID" = %s;\n' "$(cat "$pid_file")"
 			exit 0
@@ -286,6 +304,16 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
 	rc="$(run_smoke stale-upgrade-launchd "FAKE_LAUNCHD_STATE=$scratch_root/stale-upgrade-launchd/state FAKE_ON_KILL=1 FAKE_RESTART_CMD=0")"
 	check "stale-upgrade-launchd: daemon not running on the new release after restart must fail the smoke" nonzero "$rc"
 	check_log_absent stale-upgrade-launchd "==> SMOKE OK"
+
+	# stale-socket-launchd: the supervisor reports a fresh registration after
+	# kill but never rebinds the operator socket, so the killed socket file is a
+	# stale leftover (same inode, no listener). A naive `[ -S siftd.sock ]`
+	# check would pass; the smoke must reject it via the inode-change +
+	# live-doctor gate (R1-P1-3 / R3).
+	write_fake_launchctl "$scratch_root/stale-socket-launchd/state" 1 1
+	rc="$(run_smoke stale-socket-launchd "FAKE_LAUNCHD_STATE=$scratch_root/stale-socket-launchd/state FAKE_ON_KILL=1 FAKE_RESTART_CMD=1 FAKE_STALE_SOCKET=1")"
+	check "stale-socket-launchd: stale leftover socket misreported as a rebound instance must fail the smoke" nonzero "$rc"
+	check_log_absent stale-socket-launchd "==> SMOKE OK"
 
 	write_fake_launchctl "$scratch_root/happy-launchd/state" 1 1
 	rc="$(run_smoke happy-launchd "FAKE_LAUNCHD_STATE=$scratch_root/happy-launchd/state FAKE_ON_KILL=1 FAKE_RESTART_CMD=1")"

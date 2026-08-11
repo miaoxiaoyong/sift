@@ -115,6 +115,33 @@ wait_for_marker() {
 	return 1
 }
 
+# socket_inode prints the filesystem inode of a unix socket path, or "" when
+# the path is absent. It is the kill-before/after identity the autorestart gate
+# compares: bindSocket unlinks the leftover socket and recreates it on rebind, so
+# a rebound operator socket has a NEW inode while a stale leftover file keeps
+# the OLD one. Portable across BSD stat (-f %i) and coreutils stat (-c %i).
+socket_inode() {
+	local p="$1"
+	if [[ "$(uname -s)" == "Darwin" ]]; then
+		stat -f %i "$p" 2>/dev/null || true
+	else
+		stat -c %i "$p" 2>/dev/null || true
+	fi
+}
+
+# socket_responds proves the operator socket is connectable AND a live daemon
+# answers on it, not merely that the socket file exists. It runs `sift doctor`
+# (online) which dials siftd.sock through the operator client: a stale leftover
+# socket file (no listener) fails the dial with "connection refused" and writes
+# NO JSON to stdout, while a live daemon returns its doctor result as JSON
+# regardless of that result's exit_code. stdout-JSON is therefore the live-
+# listener signal, independent of doctor's findings.
+socket_responds() {
+	local out
+	out="$("$SIFT_BIN" doctor 2>/dev/null || true)"
+	[[ -n "$out" ]] && grep -q '"ok"' <<<"$out"
+}
+
 # A real install requires a release archive. Build one for the current platform
 # from the two binaries on PATH (this mirrors what the release pipeline ships).
 archive="$WORK/sift_${release_a}_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/').tar.gz"
@@ -215,13 +242,18 @@ if [[ "$backend" == "systemd" ]]; then
 elif [[ "$backend" == "launchd" ]]; then
 	plist_pid="$(launchctl list com.miaoxiaoyong.sift 2>/dev/null | awk '/"PID"/{gsub(/[^0-9]/,""); print}' | head -1 || echo "")"
 	if [[ -n "$plist_pid" ]] && (( plist_pid > 1 )); then
+		# Record the pre-kill operator-socket identity. After kill -KILL the
+		# listener dies but the socket FILE remains on disk; `[ -S siftd.sock ]`
+		# stays true for that stale leftover, so file-existence alone would
+		# misreport a dead instance as recovered. The autorestart gate must prove
+		# launchd handed the label to a FRESH instance that REBOUND the control
+		# plane (new inode) and is ANSWERING on it (live doctor RPC), not that a
+		# leftover socket file still exists (hosting §8).
+		launchd_sock="$SIFT_HOME/siftd.sock"
+		old_inode="$(socket_inode "$launchd_sock")"
 		kill -KILL "$plist_pid" 2>/dev/null || true
-		# Poll for a NEW pid under the same label plus the operator socket: a
-		# registration that survives with the old (dead) pid, or a socket that
-		# is only the leftover file, must fail the smoke. launchd has to hand
-		# the label to a fresh instance and that instance has to rebind the
-		# control plane (hosting §8).
 		new_pid=""
+		new_inode=""
 		lost=0
 		deadline=$((SECONDS + 30))
 		while (( SECONDS < deadline )); do
@@ -236,15 +268,25 @@ elif [[ "$backend" == "launchd" ]]; then
 				continue
 			fi
 			new_pid="$(printf '%s\n' "$listed" | awk '/"PID"/{gsub(/[^0-9]/,""); print}' | head -1 || echo "")"
-			if [[ -n "$new_pid" ]] && (( new_pid > 1 )) && (( new_pid != plist_pid )) && [[ -S "$SIFT_HOME/siftd.sock" ]]; then
+			new_inode="$(socket_inode "$launchd_sock")"
+			# A recovered instance satisfies ALL THREE at once: a fresh pid under
+			# the same label, a rebound socket whose inode differs from the stale
+			# leftover, and a live listener that answers a doctor RPC. The stale
+			# leftover keeps the old inode and refuses the dial, so it can never
+			# pass even if a stale pid lingered in the registration.
+			if [[ -n "$new_pid" ]] && (( new_pid > 1 )) && (( new_pid != plist_pid )) \
+				&& [[ -n "$new_inode" ]] && [[ "$new_inode" != "$old_inode" ]] \
+				&& socket_responds; then
 				break
 			fi
 			sleep 1
 		done
-		if [[ -n "$new_pid" ]] && (( new_pid > 1 )) && (( new_pid != plist_pid )) && [[ -S "$SIFT_HOME/siftd.sock" ]]; then
-			echo "==> autorestart verified: launchd restarted the agent pid $plist_pid -> $new_pid; operator socket present"
+		if [[ -n "$new_pid" ]] && (( new_pid > 1 )) && (( new_pid != plist_pid )) \
+			&& [[ -n "$new_inode" ]] && [[ "$new_inode" != "$old_inode" ]] \
+			&& socket_responds; then
+			echo "==> autorestart verified: launchd restarted the agent pid $plist_pid -> $new_pid; operator socket rebound (inode ${old_inode:-none} -> ${new_inode}) and answered a live doctor RPC"
 		else
-			echo "!! launchd did not restart the agent under a new pid (was $plist_pid, now ${new_pid:-none})" >&2
+			echo "!! launchd did not restart the agent under a new pid / rebound operator socket (pid $plist_pid -> ${new_pid:-none}; inode ${old_inode:-none} -> ${new_inode:-none})" >&2
 			exit 1
 		fi
 	else
