@@ -63,6 +63,22 @@ projects:
 	}
 }
 
+func TestDoctorReportsInvalidConfig(t *testing.T) {
+	home := testHome(t)
+	if err := os.WriteFile(filepath.Join(home.Path, "config.yaml"), []byte("agents: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := doctor(context.Background(), true, home)
+	if result["exit_code"] != 2 {
+		t.Fatalf("exit_code = %v, want 2", result["exit_code"])
+	}
+	checks := doctorChecks(t, result)
+	if checks["config"].Level != "error" {
+		t.Fatalf("config check = %#v, want error", checks["config"])
+	}
+}
+
 func TestDoctorReportsProjectPolicyDrift(t *testing.T) {
 	home := testHome(t)
 	for _, name := range []string{"agent", "gh"} {
