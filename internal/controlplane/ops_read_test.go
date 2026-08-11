@@ -94,7 +94,7 @@ func TestOpsTimelineReturnsPersistedEvents(t *testing.T) {
 	if _, err := db.AppendEvent(ctx, storage.EventCmd{RunID: "runCP", Type: "report.progress", Source: storage.SourceAgent, PayloadJSON: []byte("{}"), OccurredAtMS: cpNow, RecordedAtMS: cpNow}); err != nil {
 		t.Fatal(err)
 	}
-	resp := s.operatorRequest(Request{RequestID: "0123456789abcdef0123456789abcdef", Method: "ops.timeline", Auth: Auth{Kind: "operator", Token: s.operatorToken}, Params: map[string]any{"run_id": "runCP", "project_id": nil, "type": nil, "after_seq": float64(0), "limit": float64(100)}})
+	resp := s.operatorRequest(Request{RequestID: "0123456789abcdef0123456789abcdef", Method: "ops.timeline", Auth: Auth{Kind: "operator", Token: s.operatorToken}, Params: map[string]any{"run_id": "runCP", "project_id": nil, "type": nil, "after_seq": float64(0), "after_occurred_at_ms": float64(0), "limit": float64(100)}})
 	if !resp.OK {
 		t.Fatalf("ops.timeline = %#v", resp)
 	}

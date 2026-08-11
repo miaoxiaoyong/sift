@@ -54,7 +54,7 @@ summary: PRD §10.2 九项指标、CLI 与事件时间线的派生口径
 - `sift ps [--run ID] [--project ID] [--status S] [--limit N] [--after-run-id ID]`：Run/attempt、今日注意力余量（按 severity 的 `limit−consumed`）、开放 Interrupt / pending outbox 计数、隔离状态与 Channel 推送故障（durable delivery/episode 投影）。
 - `sift logs <run-id> [--attempt N] [--offset B] [--limit B]`：该 attempt `agent.log` 的有界 base64 读取；轮转导致 offset 不可达时返回 `not_found`，不从当前文件偷偷回零。
 - `sift metrics [--project ID]`：§2 九项指标 + 触发→启动延迟分布。
-- `sift timeline [--run ID] [--project ID] [--type T] [--after-seq N] [--limit N]`：append-only 事件流的 keyset 分页查询。
+- `sift timeline [--run ID] [--project ID] [--type T] [--limit N] [--after-seq N --after-ms MS]`：append-only 事件流的 keyset 分页查询，按 `occurred_at_ms` 全局倒序（`seq` 为次序键）。
 
 ## 4. 触发→启动延迟分布
 

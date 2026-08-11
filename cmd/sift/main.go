@@ -406,15 +406,16 @@ func request(command string, args []string) (string, map[string]any, error) {
 		run := fs.String("run", "", "filter timeline to a run id")
 		project := fs.String("project", "", "filter timeline to a project id")
 		eventType := fs.String("type", "", "filter by event type")
-		afterSeq := fs.Int64("after-seq", 0, "keyset pagination cursor (seq)")
+		afterSeq := fs.Int64("after-seq", 0, "keyset pagination cursor (seq, with --after-ms)")
+		afterMS := fs.Int64("after-ms", 0, "keyset pagination cursor (occurred_at_ms, with --after-seq)")
 		limit := fs.Int("limit", 100, "max events (1..1000)")
 		if err := fs.Parse(args); err != nil {
 			return "", nil, err
 		}
-		if fs.NArg() != 0 || *limit < 1 || *limit > 1000 || *afterSeq < 0 {
-			return "", nil, fmt.Errorf("usage: sift timeline [--run ID] [--project ID] [--type T] [--after-seq N] [--limit N]")
+		if fs.NArg() != 0 || *limit < 1 || *limit > 1000 || *afterSeq < 0 || *afterMS < 0 || (*afterSeq > 0) != (*afterMS > 0) {
+			return "", nil, fmt.Errorf("usage: sift timeline [--run ID] [--project ID] [--type T] [--limit N] [--after-seq N --after-ms MS]")
 		}
-		params := map[string]any{"run_id": nullableStringCLI(*run), "project_id": nullableStringCLI(*project), "type": nullableStringCLI(*eventType), "after_seq": *afterSeq, "limit": *limit}
+		params := map[string]any{"run_id": nullableStringCLI(*run), "project_id": nullableStringCLI(*project), "type": nullableStringCLI(*eventType), "after_seq": *afterSeq, "after_occurred_at_ms": *afterMS, "limit": *limit}
 		return "ops.timeline", params, nil
 	default:
 		return "", nil, fmt.Errorf("unknown command %q", command)
@@ -1167,8 +1168,9 @@ func renderTimeline(w io.Writer, value any) {
 			AttemptNo    *float64 `json:"AttemptNo"`
 			OccurredAtMS float64  `json:"OccurredAtMS"`
 		} `json:"events"`
-		HasMore bool    `json:"has_more"`
-		NextSeq float64 `json:"next_seq"`
+		HasMore          bool    `json:"has_more"`
+		NextSeq          float64 `json:"next_seq"`
+		NextOccurredAtMS float64 `json:"next_occurred_at_ms"`
 	}
 	if err := renormalize(value, &result); err != nil {
 		fmt.Fprintln(w, "✗ 无法读取事件时间线")
@@ -1205,7 +1207,7 @@ func renderTimeline(w io.Writer, value any) {
 		fmt.Fprintf(w, "%s  %s  %s%s%s（%s）\n", t.Format("15:04:05"), eventTypeLabel(e.Type), e.RunID, attempt, actor, sourceLabel(e.Source))
 	}
 	if result.HasMore {
-		fmt.Fprintf(w, "（还有更多事件：运行 sift timeline --after-seq %d 查看下一页）\n", int64(result.NextSeq))
+		fmt.Fprintf(w, "（还有更多事件：运行 sift timeline --after-seq %d --after-ms %d 查看下一页）\n", int64(result.NextSeq), int64(result.NextOccurredAtMS))
 	}
 }
 

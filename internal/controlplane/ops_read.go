@@ -159,9 +159,10 @@ func (s *Server) handleOpsMetrics(req Request) Response {
 }
 
 // handleOpsTimeline returns a bounded, keyset-paginated slice of the persisted
-// event stream (storage.md §7.1). It never reconstructs events from memory.
+// event stream (storage.md §7.1), globally ordered by occurred_at_ms
+// descending (seq tie-breaker). It never reconstructs events from memory.
 func (s *Server) handleOpsTimeline(req Request) Response {
-	if !onlyKeys(req.Params, "run_id", "project_id", "type", "after_seq", "limit") {
+	if !onlyKeys(req.Params, "run_id", "project_id", "type", "after_occurred_at_ms", "after_seq", "limit") {
 		return failure(req.RequestID, "invalid_request", "invalid params", false)
 	}
 	if s.db == nil {
@@ -171,8 +172,9 @@ func (s *Server) handleOpsTimeline(req Request) Response {
 		RunID:     optString(req.Params["run_id"]),
 		ProjectID: optString(req.Params["project_id"]),
 		Type:      optString(req.Params["type"]),
-		AfterSeq:  optInt64(req.Params["after_seq"], 0),
-		Limit:     optInt(req.Params["limit"], 100),
+		AfterSeq:          optInt64(req.Params["after_seq"], 0),
+		AfterOccurredAtMS: optInt64(req.Params["after_occurred_at_ms"], 0),
+		Limit:             optInt(req.Params["limit"], 100),
 	}
 	report, err := s.db.RunTimeline(context.Background(), q)
 	if err != nil {

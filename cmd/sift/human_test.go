@@ -57,11 +57,12 @@ func TestHumanTimelinePinsEventLabels(t *testing.T) {
 			map[string]any{"Seq": 2, "RunID": "run-1", "ProjectID": "proj-1", "Type": "intake.trigger_observed", "Source": "forge", "Actor": "", "AttemptNo": nil, "OccurredAtMS": 1_700_000_000_000},
 			map[string]any{"Seq": 1, "RunID": "run-1", "ProjectID": "proj-1", "Type": "report.progress", "Source": "agent", "Actor": "claude", "AttemptNo": float64(1), "OccurredAtMS": 1_700_000_000_500},
 		},
-		"has_more": true,
-		"next_seq": 2,
+		"has_more":            true,
+		"next_seq":            2,
+		"next_occurred_at_ms": 1_700_000_000_000,
 	})
 	got := out.String()
-	for _, want := range []string{"事件时间线", "最新在前", "──", "进度报告", "触发已观测", "run-1", "尝试 1", "Agent", "Forge", "--after-seq 2"} {
+	for _, want := range []string{"事件时间线", "最新在前", "──", "进度报告", "触发已观测", "run-1", "尝试 1", "Agent", "Forge", "--after-seq 2 --after-ms 1700000000000"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("timeline output lacks %q:\n%s", want, got)
 		}

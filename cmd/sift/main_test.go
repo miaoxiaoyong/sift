@@ -1065,12 +1065,16 @@ func TestRequestMetricsMaps(t *testing.T) {
 // TestRequestTimelineMaps verifies the timeline command builds the closed
 // ops.timeline param set with keyset/type filters.
 func TestRequestTimelineMaps(t *testing.T) {
-	method, params, err := request("timeline", []string{"--run", "run-1", "--type", "report.progress", "--after-seq", "5", "--limit", "10"})
+	method, params, err := request("timeline", []string{"--run", "run-1", "--type", "report.progress", "--after-seq", "5", "--after-ms", "1700000000000", "--limit", "10"})
 	if err != nil || method != "ops.timeline" {
 		t.Fatalf("timeline = %q %v err=%v", method, params, err)
 	}
-	if params["run_id"] != "run-1" || params["type"] != "report.progress" || params["after_seq"] != int64(5) || params["limit"] != 10 {
+	if params["run_id"] != "run-1" || params["type"] != "report.progress" || params["after_seq"] != int64(5) || params["after_occurred_at_ms"] != int64(1_700_000_000_000) || params["limit"] != 10 {
 		t.Fatalf("timeline params = %v", params)
+	}
+	// The keyset cursor requires both halves; a lone --after-seq is a usage error.
+	if _, _, err := request("timeline", []string{"--after-seq", "5"}); err == nil {
+		t.Fatal("timeline --after-seq without --after-ms should fail usage")
 	}
 }
 
@@ -1174,6 +1178,135 @@ func TestRunTimelineHumanOnline(t *testing.T) {
 	for _, want := range []string{"事件时间线", "进度报告", "runCLI"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("human timeline output lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// TestRunTimelineHumanPagination pages the real CLI with --limit 2 over an
+// event stream whose seq order interleaves with occurred_at_ms (replay-like).
+// Every page must be globally occurred_at_ms descending, the first screen must
+// contain the globally newest event, and concatenating pages via the printed
+// keyset cursor must cover all events without duplicates.
+func TestRunTimelineHumanPagination(t *testing.T) {
+	home := freshHome(t)
+	db, err := storage.Open(context.Background(), storage.OpenConfig{Path: filepath.Join(home, "sift.db"), BinaryVersion: controlplane.Version, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	const base = int64(1_700_000_000_000)
+	if err := db.SeedProjectForTest(ctx, "cfg-cli", "proj-cli", base); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedForgeRunForTest(ctx, "runCLI", "proj-cli", "cfg-cli", "issue-1", base); err != nil {
+		t.Fatal(err)
+	}
+	// Insertion (seq) order interleaves with occurrence time; the global
+	// newest-first order is +5000, +4000, +3000, +2000, +1000.
+	offsets := []int64{1000, 3000, 2000, 5000, 4000}
+	for i, off := range offsets {
+		if _, err := db.AppendEvent(ctx, storage.EventCmd{RunID: "runCLI", Type: "report.progress", Source: storage.SourceAgent, Actor: fmt.Sprintf("agent-%d", i), PayloadJSON: []byte("{}"), OccurredAtMS: base + off, RecordedAtMS: base + off}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := controlplane.Start(config.Home{Path: home}, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	srvCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = s.Serve(srvCtx) }()
+	waitSocket(t, filepath.Join(home, "siftd.sock"))
+
+	type page struct {
+		events []struct {
+			Seq          int64
+			OccurredAtMS int64
+		}
+		nextSeq int64
+		nextMS  int64
+		hasMore bool
+	}
+	fetch := func(args ...string) page {
+		t.Helper()
+		var out bytes.Buffer
+		if code := run(append([]string{"sift", "timeline", "--run", "runCLI", "--limit", "2", "--json"}, args...), &out, io.Discard); code != 0 {
+			t.Fatalf("exit code = %d; output:\n%s", code, out.String())
+		}
+		var response struct {
+			Result struct {
+				Events []struct {
+					Seq          int64
+					OccurredAtMS int64
+				} `json:"events"`
+				NextSeq          int64 `json:"next_seq"`
+				NextOccurredAtMS int64 `json:"next_occurred_at_ms"`
+				HasMore          bool  `json:"has_more"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+			t.Fatalf("decode page: %v\n%s", err, out.String())
+		}
+		r := response.Result
+		return page{events: r.Events, nextSeq: r.NextSeq, nextMS: r.NextOccurredAtMS, hasMore: r.HasMore}
+	}
+
+	page1 := fetch()
+	if len(page1.events) != 2 || !page1.hasMore {
+		t.Fatalf("page1 = %+v, want 2 events with more", page1)
+	}
+	// The first screen contains the globally newest event and is descending.
+	if page1.events[0].OccurredAtMS != base+5000 || page1.events[1].OccurredAtMS != base+4000 {
+		t.Fatalf("page1 not globally newest-first: %+v", page1.events)
+	}
+
+	// The human output of the same page leads with the newest event and prints
+	// the full (seq, occurred_at_ms) cursor for the next page.
+	var human bytes.Buffer
+	if code := run([]string{"sift", "timeline", "--run", "runCLI", "--limit", "2"}, &human, io.Discard); code != 0 {
+		t.Fatalf("human page exit code = %d; output:\n%s", code, human.String())
+	}
+	hint := fmt.Sprintf("--after-seq %d --after-ms %d", page1.nextSeq, page1.nextMS)
+	if !strings.Contains(human.String(), hint) {
+		t.Fatalf("human page lacks cursor hint %q:\n%s", hint, human.String())
+	}
+	first := time.UnixMilli(base + 5000).Format("15:04:05")
+	second := time.UnixMilli(base + 4000).Format("15:04:05")
+	if strings.Index(human.String(), first) > strings.Index(human.String(), second) {
+		t.Fatalf("human page is not newest-first:\n%s", human.String())
+	}
+
+	page2 := fetch("--after-seq", fmt.Sprintf("%d", page1.nextSeq), "--after-ms", fmt.Sprintf("%d", page1.nextMS))
+	if len(page2.events) != 2 || !page2.hasMore {
+		t.Fatalf("page2 = %+v, want 2 events with more", page2)
+	}
+	page3 := fetch("--after-seq", fmt.Sprintf("%d", page2.nextSeq), "--after-ms", fmt.Sprintf("%d", page2.nextMS))
+	if len(page3.events) != 1 || page3.hasMore {
+		t.Fatalf("page3 = %+v, want 1 final event", page3)
+	}
+
+	// Concatenated pages are globally occurred_at_ms descending, duplicate-free,
+	// and cover all five seeded events.
+	seen := map[int64]bool{}
+	var all []struct {
+		Seq          int64
+		OccurredAtMS int64
+	}
+	for _, p := range []page{page1, page2, page3} {
+		all = append(all, p.events...)
+	}
+	if len(all) != 5 {
+		t.Fatalf("pages cover %d events, want 5: %+v", len(all), all)
+	}
+	for i, e := range all {
+		if seen[e.Seq] {
+			t.Fatalf("duplicate seq %d across pages: %+v", e.Seq, all)
+		}
+		seen[e.Seq] = true
+		if i > 0 && all[i-1].OccurredAtMS < e.OccurredAtMS {
+			t.Fatalf("pages not globally descending at %d: %+v", i, all)
 		}
 	}
 }
