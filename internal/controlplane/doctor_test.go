@@ -389,6 +389,11 @@ func doctorChecks(t *testing.T, result map[string]any) map[string]doctorCheck {
 	if !ok {
 		t.Fatalf("checks type = %T", result["checks"])
 	}
+	for i := 1; i < len(checks); i++ {
+		if checks[i-1].ID > checks[i].ID {
+			t.Fatalf("doctor checks out of order at %d: %q > %q", i, checks[i-1].ID, checks[i].ID)
+		}
+	}
 	byID := make(map[string]doctorCheck, len(checks))
 	for _, check := range checks {
 		byID[check.ID] = check

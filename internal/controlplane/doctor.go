@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -65,6 +66,9 @@ func doctorWithVersions(ctx context.Context, offline bool, home config.Home, cli
 	checks = append(checks, homePermissions(home.Path, offline)...)
 	checks = append(checks, platformPostureChecks()...)
 	checks = append(checks, tm6ExposureChecks()...)
+	sort.Slice(checks, func(i, j int) bool {
+		return checks[i].ID < checks[j].ID
+	})
 
 	exitCode := 0
 	for _, check := range checks {

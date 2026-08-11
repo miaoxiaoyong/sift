@@ -124,11 +124,7 @@ sift doctor             # daemon 可用时的完整在线视图
 sift doctor --offline   # daemon 不可用时的只读视图
 ```
 
-退出码：
-
-- `0`：无 warning/error；
-- `1`：至少一个 warning；
-- `2`：至少一个 error。
+退出码语义见 [`../specs/config.md` §7](../specs/config.md#7-sift-doctor-基线退出码)。
 
 常见检查：
 

@@ -12,7 +12,11 @@ summary: 发布归档、升级与干净机验收操作手册
 
 ## 1. 发布前门禁
 
-发布机需要 Go（当前稳定版）、GoReleaser v2、Git 和 GitHub 发布凭据。目标机不需要 Go。
+发布机需要 Go（当前稳定版）、GoReleaser v2、Git 和 GitHub 发布凭据。目标机不需要 Go。安装 GoReleaser v2：
+
+```bash
+go install github.com/goreleaser/goreleaser/v2@latest
+```
 
 在干净 checkout 中执行：
 
