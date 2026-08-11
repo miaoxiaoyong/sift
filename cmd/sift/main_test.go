@@ -101,6 +101,71 @@ func installDoctorWrapperVersion(t *testing.T, version string, protocolMajor int
 // TestVersionFlag makes `sift --version` report the release version. The
 // wrapper prints the same value via --version and the daemon via the RPC
 // envelope / doctor; the release handshake compares them (WBS M8 §8.1).
+func TestHumanOverviewAndHelp(t *testing.T) {
+	freshHome(t)
+	var overviewOut bytes.Buffer
+	if code := run([]string{"sift"}, &overviewOut, io.Discard); code != 0 {
+		t.Fatalf("overview exit code = %d", code)
+	}
+	if !strings.Contains(overviewOut.String(), "Sift ") || !strings.Contains(overviewOut.String(), "sift doctor --offline") {
+		t.Fatalf("overview = %q", overviewOut.String())
+	}
+	if strings.Contains(overviewOut.String(), "sift init") {
+		t.Fatalf("overview advertises unimplemented init: %q", overviewOut.String())
+	}
+
+	var helpOut bytes.Buffer
+	if code := run([]string{"sift", "help"}, &helpOut, io.Discard); code != 0 {
+		t.Fatalf("help exit code = %d", code)
+	}
+	if !strings.Contains(helpOut.String(), "命令参考") || strings.Contains(helpOut.String(), "init") {
+		t.Fatalf("help = %q", helpOut.String())
+	}
+	var helpErr bytes.Buffer
+	if code := run([]string{"sift", "help", "init"}, io.Discard, &helpErr); code != 2 {
+		t.Fatalf("help init exit code = %d, want 2", code)
+	}
+}
+
+func TestHumanDoctorRendersStatusesAndExitCodes(t *testing.T) {
+	result := map[string]any{
+		"exit_code": 0,
+		"checks": []any{
+			map[string]any{"id": "ok-check", "level": "ok", "message": "ready"},
+			map[string]any{"id": "warning-check", "level": "warning", "message": "attention"},
+			map[string]any{"id": "error-check", "level": "error", "message": "failed"},
+		},
+	}
+	for _, wantCode := range []int{0, 1, 2} {
+		result["exit_code"] = wantCode
+		var out bytes.Buffer
+		if code := emitDoctor(&out, io.Discard, result, false); code != wantCode {
+			t.Fatalf("doctor exit code = %d, want %d", code, wantCode)
+		}
+		for _, icon := range []string{"✓", "⚠", "✗"} {
+			if !strings.Contains(out.String(), icon) {
+				t.Fatalf("doctor output %q lacks %s", out.String(), icon)
+			}
+		}
+		if !strings.Contains(out.String(), "Sift 诊断") || !strings.Contains(out.String(), "退出码") {
+			t.Fatalf("doctor output = %q", out.String())
+		}
+	}
+}
+
+func TestDoctorJSONEnvironment(t *testing.T) {
+	freshHome(t)
+	t.Setenv("SIFT_JSON", "1")
+	var out bytes.Buffer
+	if code := run([]string{"sift", "doctor", "--offline"}, &out, io.Discard); code != 2 {
+		t.Fatalf("doctor exit code = %d, want 2", code)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("SIFT_JSON output is not JSON: %v; output=%q", err, out.String())
+	}
+}
+
 func TestVersionFlag(t *testing.T) {
 	var out bytes.Buffer
 	if code := run([]string{"sift", "--version"}, &out, io.Discard); code != 0 {

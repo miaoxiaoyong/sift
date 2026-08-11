@@ -429,10 +429,6 @@ func printJSON(w io.Writer, v any) error {
 	return err
 }
 func report(w io.Writer, err error) { fmt.Fprintln(w, "sift:", err) }
-func usage(w io.Writer) {
-	fmt.Fprintln(w, "用法：sift <命令> [选项]（运行 sift help 查看帮助）")
-}
-
 func overview(stdout, stderr io.Writer) int {
 	home, err := config.ResolveHome()
 	if err != nil {
@@ -446,7 +442,7 @@ func overview(stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "配置文件：%s（%s）\n", config.ConfigPath(home), configured)
 	if configured == "否" {
-		fmt.Fprintln(stdout, "下一步：运行 sift init（初始化配置）")
+		fmt.Fprintln(stdout, "下一步：运行 sift doctor --offline 检查环境")
 	} else {
 		fmt.Fprintln(stdout, "下一步：运行 sift daemon 启动服务，或 sift ps 查看运行")
 	}
@@ -456,7 +452,7 @@ func overview(stdout, stderr io.Writer) int {
 
 func commandHelp(command string, stdout, stderr io.Writer) int {
 	if command == "" {
-		fmt.Fprintln(stdout, "Sift 命令参考\n\n基础命令：\n  init                 初始化配置\n  daemon               启动本地守护进程\n  doctor               检查本地环境\n\n查询命令：\n  ps                   查看运行\n  logs <run-id>        查看运行日志\n  timeline             查看事件时间线\n  metrics              查看运行指标\n\n运行控制：\n  kill <run-id>        停止运行\n  retry <run-id>       重试运行\n  report <kind>        提交报告\n\n用法：sift <命令> [选项]\n示例：sift doctor --offline；sift ps")
+		fmt.Fprintln(stdout, "Sift 命令参考\n\n基础命令：\n  daemon               启动本地守护进程\n  doctor               检查本地环境\n\n查询命令：\n  ps                   查看运行\n  logs <run-id>        查看运行日志\n  timeline             查看事件时间线\n  metrics              查看运行指标\n\n运行控制：\n  kill <run-id>        停止运行\n  retry <run-id>       重试运行\n  report <kind>        提交报告\n\n用法：sift <命令> [选项]\n示例：sift doctor --offline；sift ps")
 		return 0
 	}
 	entries := map[string][3]string{
@@ -466,7 +462,6 @@ func commandHelp(command string, stdout, stderr io.Writer) int {
 		"logs":            {"查看指定运行的日志", "sift logs <run-id>", "sift logs run-123"},
 		"timeline":        {"查看事件时间线", "sift timeline", "sift timeline --limit 20"},
 		"metrics":         {"查看运行指标", "sift metrics", "sift metrics --project demo"},
-		"init":            {"初始化 Sift 配置", "sift init", "sift init"},
 		"worktree":        {"查看运行对应的工作树", "sift worktree <run-id>", "sift worktree run-123"},
 		"attach":          {"只读连接到运行会话", "sift attach <run-id>", "sift attach run-123"},
 		"kill":            {"停止指定运行", "sift kill <run-id> --expected-version N --request-key KEY", "sift kill run-123 --expected-version 2 --request-key stop-1"},
