@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,7 +82,7 @@ func seedReportDaemon(t *testing.T, phase, cfgJSON string) string {
 func TestRunReportAccepted(t *testing.T) {
 	seedReportDaemon(t, "running", reportConfigFast)
 	var out bytes.Buffer
-	code := run([]string{"sift", "report", "progress", "--key", "0123456789abcdef0123456789abcdef", "--payload", `{"message":"hi"}`}, &out, io.Discard)
+	code := run([]string{"sift", "report", "progress", "--json", "--key", "0123456789abcdef0123456789abcdef", "--payload", `{"message":"hi"}`}, &out, io.Discard)
 	if code != 0 {
 		t.Fatalf("exit code = %d; output:\n%s", code, out.String())
 	}
@@ -95,6 +96,25 @@ func TestRunReportAccepted(t *testing.T) {
 	result, _ := resp["result"].(map[string]any)
 	if result["disposition"] != "accepted" {
 		t.Fatalf("disposition = %v", result["disposition"])
+	}
+}
+
+// TestRunReportHumanized pins the default humanized submission result: a
+// Chinese confirmation with the receipt, and no raw envelope on stdout.
+func TestRunReportHumanized(t *testing.T) {
+	seedReportDaemon(t, "running", reportConfigFast)
+	var out bytes.Buffer
+	code := run([]string{"sift", "report", "progress", "--key", "0123456789abcdef0123456789abcdef", "--payload", `{"message":"hi"}`}, &out, io.Discard)
+	if code != 0 {
+		t.Fatalf("exit code = %d; output:\n%s", code, out.String())
+	}
+	for _, want := range []string{"✓ 报告已提交", "进度", "receipt"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("human report output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "protocol_major") {
+		t.Fatalf("human report output leaked the RPC envelope:\n%s", out.String())
 	}
 }
 

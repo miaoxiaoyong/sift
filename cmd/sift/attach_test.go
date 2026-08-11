@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,7 +50,7 @@ func tmuxCallCount(t *testing.T, callsPath string) int {
 func TestAttachUsesPrivateSocketAndExactReadOnlyArgv(t *testing.T) {
 	home := config.Home{Path: t.TempDir()}
 	argsPath, callsPath := installAttachTmux(t, 0)
-	if code := runAttach(attachSuccessResponse(attachSession), home, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+	if code := runAttach(attachSuccessResponse(attachSession), home, &bytes.Buffer{}, &bytes.Buffer{}, false); code != 0 {
 		t.Fatalf("runAttach exit code = %d, want 0", code)
 	}
 	args, err := os.ReadFile(argsPath)
@@ -76,7 +77,7 @@ func TestAttachRejectsMalformedDaemonSessionBeforeExec(t *testing.T) {
 		attachSession + "-suffix",
 	} {
 		t.Run(session, func(t *testing.T) {
-			if code := runAttach(attachSuccessResponse(session), home, &bytes.Buffer{}, &bytes.Buffer{}); code != 1 {
+			if code := runAttach(attachSuccessResponse(session), home, &bytes.Buffer{}, &bytes.Buffer{}, false); code != 1 {
 				t.Fatalf("runAttach(%q) = %d, want 1", session, code)
 			}
 			if calls := tmuxCallCount(t, callsPath); calls != 0 {
@@ -91,7 +92,7 @@ func TestAttachRejectsClosedRPCFailureBeforeExec(t *testing.T) {
 	_, callsPath := installAttachTmux(t, 0)
 	response := attachSuccessResponse(attachSession)
 	response.OK = false
-	if code := runAttach(response, home, &bytes.Buffer{}, &bytes.Buffer{}); code != 1 {
+	if code := runAttach(response, home, &bytes.Buffer{}, &bytes.Buffer{}, false); code != 1 {
 		t.Fatalf("runAttach failed RPC = %d, want 1", code)
 	}
 	if calls := tmuxCallCount(t, callsPath); calls != 0 {
@@ -102,10 +103,52 @@ func TestAttachRejectsClosedRPCFailureBeforeExec(t *testing.T) {
 func TestAttachReturnsTmuxExitCode(t *testing.T) {
 	home := config.Home{Path: t.TempDir()}
 	_, callsPath := installAttachTmux(t, 7)
-	if code := runAttach(attachSuccessResponse(attachSession), home, &bytes.Buffer{}, &bytes.Buffer{}); code != 7 {
+	if code := runAttach(attachSuccessResponse(attachSession), home, &bytes.Buffer{}, &bytes.Buffer{}, false); code != 7 {
 		t.Fatalf("runAttach exit code = %d, want tmux exit code 7", code)
 	}
 	if calls := tmuxCallCount(t, callsPath); calls != 1 {
 		t.Fatalf("tmux calls = %d, want 1", calls)
+	}
+}
+
+// TestAttachHumanHint pins the humanized pre-attach line (ux-3): the run id
+// and the read-only tmux session are surfaced before tmux takes over.
+func TestAttachHumanHint(t *testing.T) {
+	home := config.Home{Path: t.TempDir()}
+	_, callsPath := installAttachTmux(t, 0)
+	var out bytes.Buffer
+	if code := runAttach(attachSuccessResponse(attachSession), home, &out, &bytes.Buffer{}, false); code != 0 {
+		t.Fatalf("runAttach exit code = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "正在只读连接") || !strings.Contains(out.String(), "run-1") || !strings.Contains(out.String(), "Ctrl-b d") {
+		t.Fatalf("human attach hint = %q, want run id + 只读连接 + detach key", out.String())
+	}
+	if calls := tmuxCallCount(t, callsPath); calls != 1 {
+		t.Fatalf("tmux calls = %d, want 1", calls)
+	}
+}
+
+// TestAttachJSONPrintsEnvelopeWithoutExec pins the --json scripting surface:
+// the raw RPC envelope is printed and tmux is never invoked.
+func TestAttachJSONPrintsEnvelopeWithoutExec(t *testing.T) {
+	home := config.Home{Path: t.TempDir()}
+	_, callsPath := installAttachTmux(t, 0)
+	var out bytes.Buffer
+	if code := runAttach(attachSuccessResponse(attachSession), home, &out, &bytes.Buffer{}, true); code != 0 {
+		t.Fatalf("runAttach --json exit code = %d, want 0", code)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("--json output is not JSON: %v; output=%q", err, out.String())
+	}
+	if ok, _ := response["ok"].(bool); !ok {
+		t.Fatalf("attach --json ok = %v, want true; output=%q", response["ok"], out.String())
+	}
+	result := response["result"].(map[string]any)
+	if result["session_name"] != attachSession {
+		t.Fatalf("attach --json session_name = %v", result["session_name"])
+	}
+	if calls := tmuxCallCount(t, callsPath); calls != 0 {
+		t.Fatalf("--json invoked tmux %d times", calls)
 	}
 }

@@ -1109,7 +1109,7 @@ func TestRunMetricsOnline(t *testing.T) {
 	home := freshHome(t)
 	startServerWithDB(t, home)
 	var out bytes.Buffer
-	code := run([]string{"sift", "metrics"}, &out, io.Discard)
+	code := run([]string{"sift", "metrics", "--json"}, &out, io.Discard)
 	if code != 0 {
 		t.Fatalf("exit code = %d; output:\n%s", code, out.String())
 	}
@@ -1126,12 +1126,28 @@ func TestRunMetricsOnline(t *testing.T) {
 	}
 }
 
+// TestRunMetricsHumanOnline pins the humanized default over a real daemon:
+// the JSON envelope is replaced by Chinese section labels (ux-3).
+func TestRunMetricsHumanOnline(t *testing.T) {
+	home := freshHome(t)
+	startServerWithDB(t, home)
+	var out bytes.Buffer
+	if code := run([]string{"sift", "metrics"}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit code = %d; output:\n%s", code, out.String())
+	}
+	for _, want := range []string{"指标", "注意力配额", "误放行率", "LLM 用量", "触发→启动延迟", "覆盖说明"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("human metrics output lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
 // TestRunTimelineOnline prints the persisted event stream over a real daemon.
 func TestRunTimelineOnline(t *testing.T) {
 	home := freshHome(t)
 	startServerWithDB(t, home)
 	var out bytes.Buffer
-	code := run([]string{"sift", "timeline", "--run", "runCLI"}, &out, io.Discard)
+	code := run([]string{"sift", "timeline", "--run", "runCLI", "--json"}, &out, io.Discard)
 	if code != 0 {
 		t.Fatalf("exit code = %d; output:\n%s", code, out.String())
 	}
@@ -1146,12 +1162,28 @@ func TestRunTimelineOnline(t *testing.T) {
 	}
 }
 
+// TestRunTimelineHumanOnline pins the humanized default over a real daemon:
+// the persisted report.progress event must carry its Chinese label.
+func TestRunTimelineHumanOnline(t *testing.T) {
+	home := freshHome(t)
+	startServerWithDB(t, home)
+	var out bytes.Buffer
+	if code := run([]string{"sift", "timeline", "--run", "runCLI"}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit code = %d; output:\n%s", code, out.String())
+	}
+	for _, want := range []string{"事件时间线", "进度报告", "runCLI"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("human timeline output lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
 // TestRunPSOnline prints persisted runs over a real daemon.
 func TestRunPSOnline(t *testing.T) {
 	home := freshHome(t)
 	startServerWithDB(t, home)
 	var out bytes.Buffer
-	code := run([]string{"sift", "ps"}, &out, io.Discard)
+	code := run([]string{"sift", "ps", "--json"}, &out, io.Discard)
 	if code != 0 {
 		t.Fatalf("exit code = %d; output:\n%s", code, out.String())
 	}
@@ -1163,6 +1195,25 @@ func TestRunPSOnline(t *testing.T) {
 	runs := result["runs"].([]any)
 	if len(runs) != 1 {
 		t.Fatalf("runs = %d, want 1", len(runs))
+	}
+}
+
+// TestRunPSHumanOnline pins the humanized default over a real daemon: the run
+// table carries the run id, project, Chinese status and phase columns.
+func TestRunPSHumanOnline(t *testing.T) {
+	home := freshHome(t)
+	startServerWithDB(t, home)
+	var out bytes.Buffer
+	if code := run([]string{"sift", "ps"}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit code = %d; output:\n%s", code, out.String())
+	}
+	for _, want := range []string{"运行列表", "runCLI", "proj-cli", "运行 ID", "项目"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("human ps output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "protocol_major") {
+		t.Fatalf("human ps output leaked the RPC envelope:\n%s", out.String())
 	}
 }
 
@@ -1250,9 +1301,9 @@ func startServerWithChannelFailure(t *testing.T, home string) {
 func channelDeliveryFromCLI(t *testing.T, command string) map[string]any {
 	t.Helper()
 	var out bytes.Buffer
-	args := []string{"sift", command}
+	args := []string{"sift", command, "--json"}
 	if command == "doctor" {
-		args = append(args, "--json")
+		args = []string{"sift", command, "--json"}
 	}
 	run(args, &out, io.Discard)
 	var response map[string]any
