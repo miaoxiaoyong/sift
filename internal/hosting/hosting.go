@@ -63,19 +63,21 @@ type Action string
 const (
 	ActionInstall   Action = "install"
 	ActionUninstall Action = "uninstall"
+	ActionStart     Action = "start"
+	ActionStop      Action = "stop"
 	ActionRestart   Action = "restart"
+	ActionReload    Action = "reload"
 	ActionStatus    Action = "status"
 )
 
-// ActionFromString maps a CLI verb to an Action, rejecting anything that is
-// not one of the four supported verbs so the CLI surfaces a usage error rather
-// than a silent default.
+// ActionFromString maps a CLI verb to an Action, rejecting unknown verbs so
+// the CLI surfaces a usage error rather than a silent default.
 func ActionFromString(s string) (Action, error) {
 	switch Action(s) {
-	case ActionInstall, ActionUninstall, ActionRestart, ActionStatus:
+	case ActionInstall, ActionUninstall, ActionStart, ActionStop, ActionRestart, ActionReload, ActionStatus:
 		return Action(s), nil
 	default:
-		return "", fmt.Errorf("hosting: unknown service action %q (want install|uninstall|status|restart)", s)
+		return "", fmt.Errorf("hosting: unknown service action %q (want install|uninstall|start|stop|restart|reload|status)", s)
 	}
 }
 
@@ -224,8 +226,14 @@ func (s Spec) Plan(action Action) (Plan, error) {
 		return s.planInstall(), nil
 	case ActionUninstall:
 		return s.planUninstall(), nil
+	case ActionStart:
+		return s.planStart(), nil
+	case ActionStop:
+		return s.planStop(), nil
 	case ActionRestart:
 		return s.planRestart(), nil
+	case ActionReload:
+		return s.planReload(), nil
 	case ActionStatus:
 		return s.planStatus(), nil
 	default:
@@ -246,15 +254,15 @@ func (s Spec) planInstall() Plan {
 	case BackendSystemd:
 		content, _ := s.Render()
 		return Plan{
-			Action: ActionInstall, Summary: "install systemd user unit",
+			Action: ActionInstall, Summary: "install and start systemd user unit",
 			WriteFile: s.UnitPath, Content: content,
-			RunCmd: []string{"systemctl", "--user", "daemon-reload"},
+			RunCmd: []string{"systemctl", "--user", "enable", "--now", ServiceName + ".service"},
 			Hint:   "systemctl --user enable --now " + ServiceName + ".service  (enable-linger for headless: loginctl enable-linger $USER)",
 		}
 	default:
 		return Plan{
 			Action: ActionInstall, Summary: "foreground daemon (no supervisor)",
-			Hint:   s.foregroundHint(),
+			Hint: s.foregroundHint(),
 		}
 	}
 }
@@ -265,21 +273,45 @@ func (s Spec) planUninstall() Plan {
 		return Plan{
 			Action: ActionUninstall, Summary: "unload and remove launchd user agent",
 			WriteFile: s.UnitPath, Content: nil, // nil content => remove the file
-			RunCmd:    []string{"launchctl", "unload", s.UnitPath},
-			Hint:      "launchctl unload " + s.UnitPath,
+			RunCmd: []string{"launchctl", "unload", s.UnitPath},
+			Hint:   "launchctl unload " + s.UnitPath,
 		}
 	case BackendSystemd:
 		return Plan{
 			Action: ActionUninstall, Summary: "disable and remove systemd user unit",
 			WriteFile: s.UnitPath, Content: nil,
-			RunCmd:    []string{"systemctl", "--user", "disable", "--now", ServiceName+".service"},
-			Hint:      "systemctl --user disable --now " + ServiceName + ".service",
+			RunCmd: []string{"systemctl", "--user", "disable", "--now", ServiceName + ".service"},
+			Hint:   "systemctl --user disable --now " + ServiceName + ".service",
 		}
 	default:
 		return Plan{
 			Action: ActionUninstall, Summary: "foreground daemon (no supervisor)",
-			Hint:   "stop the foreground `sift daemon` process",
+			Hint: "stop the foreground `sift daemon` process",
 		}
+	}
+}
+
+func (s Spec) planStart() Plan {
+	switch s.Backend {
+	case BackendLaunchd:
+		return Plan{Action: ActionStart, Summary: "start launchd user agent", RunCmd: []string{"launchctl", "load", s.UnitPath}, Hint: "launchctl load " + s.UnitPath}
+	case BackendSystemd:
+		return Plan{Action: ActionStart, Summary: "start systemd user unit", RunCmd: []string{"systemctl", "--user", "start", ServiceName + ".service"}, Hint: "systemctl --user start " + ServiceName + ".service"}
+	default:
+		return Plan{Action: ActionStart, Summary: "foreground daemon (no supervisor)", Hint: "the foreground daemon is `sift daemon`; run it in a terminal, tmux, or screen"}
+	}
+}
+
+func (s Spec) planStop() Plan {
+	switch s.Backend {
+	case BackendLaunchd:
+		// bootout prevents KeepAlive from immediately respawning the daemon;
+		// start loads the retained plist again.
+		return Plan{Action: ActionStop, Summary: "stop launchd user agent", RunCmd: []string{"launchctl", "bootout", "gui/" + osUserUID() + "/" + s.Label}, Hint: "launchctl bootout gui/$(id -u)/" + s.Label}
+	case BackendSystemd:
+		return Plan{Action: ActionStop, Summary: "stop systemd user unit", RunCmd: []string{"systemctl", "--user", "stop", ServiceName + ".service"}, Hint: "systemctl --user stop " + ServiceName + ".service"}
+	default:
+		return Plan{Action: ActionStop, Summary: "foreground daemon (no supervisor)", Hint: "stop the foreground `sift daemon` process (Ctrl-C in its terminal)"}
 	}
 }
 
@@ -297,15 +329,25 @@ func (s Spec) planRestart() Plan {
 	case BackendSystemd:
 		return Plan{
 			Action: ActionRestart, Summary: "restart systemd user unit",
-			RunCmd: []string{"systemctl", "--user", "restart", ServiceName+".service"},
+			RunCmd: []string{"systemctl", "--user", "restart", ServiceName + ".service"},
 			Hint:   "systemctl --user restart " + ServiceName + ".service",
 		}
 	default:
 		return Plan{
 			Action: ActionRestart, Summary: "foreground daemon (no supervisor)",
-			Hint:   "stop the foreground `sift daemon` and run it again to pick up the new release",
+			Hint: "stop the foreground `sift daemon` and run it again to pick up the new release",
 		}
 	}
+}
+
+// planReload deliberately reuses restart until the daemon implements SIGHUP
+// configuration reload. Keeping it as a distinct action makes that limitation
+// visible to callers instead of implying a hot reload occurred.
+func (s Spec) planReload() Plan {
+	plan := s.planRestart()
+	plan.Action = ActionReload
+	plan.Summary = "reload service (currently restarts)"
+	return plan
 }
 
 func (s Spec) planStatus() Plan {
@@ -319,7 +361,7 @@ func (s Spec) planStatus() Plan {
 	case BackendSystemd:
 		return Plan{
 			Action: ActionStatus, Summary: "systemd unit status",
-			RunCmd: []string{"systemctl", "--user", "status", ServiceName+".service"},
+			RunCmd: []string{"systemctl", "--user", "status", ServiceName + ".service"},
 			Hint:   "systemctl --user status " + ServiceName + ".service",
 		}
 	default:
@@ -538,9 +580,8 @@ func Write(plan Plan) error {
 // Exec runs a plan's RunCmd when the platform tool is present. It returns
 // ErrNoBackend (with the foreground hint available via Plan.Hint) when the
 // tool is absent, so the caller reports the foreground path instead of
-// failing. systemd daemon-reload during install is followed by an enable --now
-// step so the unit actually starts; that second step is folded in here rather
-// than modeled as a second plan to keep the CLI a single command.
+// failing. A systemd install reloads unit definitions before executing its
+// explicit enable --now plan command, so the just-written unit is visible.
 func Exec(plan Plan) ([]byte, error) {
 	if len(plan.RunCmd) == 0 {
 		return nil, ErrNoBackend
@@ -549,18 +590,16 @@ func Exec(plan Plan) ([]byte, error) {
 	if _, err := exec.LookPath(name); err != nil {
 		return nil, ErrNoBackend
 	}
+	if plan.Action == ActionInstall && name == "systemctl" {
+		reloadOut, reloadErr := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput()
+		if reloadErr != nil {
+			return reloadOut, fmt.Errorf("hosting: systemctl --user daemon-reload: %w\n%s", reloadErr, reloadOut)
+		}
+	}
 	args := plan.RunCmd[1:]
 	out, err := exec.Command(name, args...).CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("hosting: %s: %w\n%s", strings.Join(plan.RunCmd, " "), err, out)
-	}
-	// install's daemon-reload does not start the unit; enable --now does.
-	if plan.Action == ActionInstall && name == "systemctl" {
-		enableOut, enableErr := exec.Command("systemctl", "--user", "enable", "--now", ServiceName+".service").CombinedOutput()
-		if enableErr != nil {
-			return append(out, enableOut...), fmt.Errorf("hosting: systemctl --user enable --now: %w\n%s", enableErr, enableOut)
-		}
-		out = append(out, enableOut...)
 	}
 	return out, nil
 }

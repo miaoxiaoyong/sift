@@ -299,7 +299,7 @@ func TestPlanInstallWritesUnitAndLoads(t *testing.T) {
 		wantCmd []string
 	}{
 		{"launchd", "darwin", []string{"launchctl", "load"}},
-		{"systemd", "linux", []string{"systemctl", "--user", "daemon-reload"}},
+		{"systemd", "linux", []string{"systemctl", "--user", "enable", "--now", ServiceName + ".service"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, _ := installFakeRelease(t)
@@ -372,6 +372,58 @@ func TestPlanRestartCommands(t *testing.T) {
 		}
 		if plan.WriteFile != "" {
 			t.Errorf("%s restart should not write a file, WriteFile=%q", tc.goos, plan.WriteFile)
+		}
+	}
+}
+
+func TestPlanLifecycleCommands(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		goos   string
+		action Action
+		want   []string
+	}{
+		{"launchd start", "darwin", ActionStart, []string{"launchctl", "load"}},
+		{"launchd stop", "darwin", ActionStop, []string{"launchctl", "bootout"}},
+		{"launchd reload", "darwin", ActionReload, []string{"launchctl", "kickstart", "-k"}},
+		{"systemd start", "linux", ActionStart, []string{"systemctl", "--user", "start", ServiceName + ".service"}},
+		{"systemd stop", "linux", ActionStop, []string{"systemctl", "--user", "stop", ServiceName + ".service"}},
+		{"systemd reload", "linux", ActionReload, []string{"systemctl", "--user", "restart", ServiceName + ".service"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, _ := installFakeRelease(t)
+			pinDirs(t)
+			spec, err := NewSpecFor(home, tc.goos)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := spec.Plan(tc.action)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.RunCmd) < len(tc.want) || strings.Join(plan.RunCmd[:len(tc.want)], "\x00") != strings.Join(tc.want, "\x00") {
+				t.Errorf("RunCmd = %v, want prefix %v", plan.RunCmd, tc.want)
+			}
+			if tc.action == ActionReload && !strings.Contains(plan.Summary, "currently restarts") {
+				t.Errorf("reload summary = %q, want restart disclosure", plan.Summary)
+			}
+		})
+	}
+}
+
+func TestPlanLifecycleForegroundHints(t *testing.T) {
+	home, _ := installFakeRelease(t)
+	spec, err := NewSpecFor(home, "freebsd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []Action{ActionStart, ActionStop, ActionReload} {
+		plan, err := spec.Plan(action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.RunCmd != nil || !strings.Contains(plan.Hint, "foreground") {
+			t.Errorf("%s foreground plan = %+v, want foreground-only hint", action, plan)
 		}
 	}
 }

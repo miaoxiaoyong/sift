@@ -92,14 +92,17 @@ summary: 用户级托管单元（launchd/systemd/foreground）的生成、安装
 ## 5. CLI（`sift service`）
 
 ```
-sift service <install|uninstall|status|restart>
+sift service <install|uninstall|start|stop|restart|reload|status>
 ```
 
 | 动作 | 行为 |
 |------|------|
-| `install` | 生成单元文件（temp+rename 原子写）→ 探测平台工具存在则加载（launchd `launchctl load`；systemd `daemon-reload` + `enable --now`）；工具缺失则打印 foreground 提示并 exit 0（可移植）。**要求已 `sift install` 一个 release**：单元必须指向真实二进制。 |
+| `install` | 生成单元文件（temp+rename 原子写）→ 探测平台工具存在则加载并启动（launchd `launchctl load`；systemd `daemon-reload` + `enable --now`）；工具缺失则打印 foreground 提示并 exit 0（可移植）。**要求已 `sift install` 一个 release**：单元必须指向真实二进制。 |
 | `uninstall` | 停 / 卸载单元（launchd `bootout`/`unload`；systemd `disable --now`）→ 删除单元文件（幂等）。 |
-| `status` | launchd `launchctl list <Label>` / systemd `systemctl --user status`；foreground 报告 operator socket 存在性。 |
+| `start` | launchd 加载保留的 plist；systemd `systemctl --user start sift.service`；foreground 提示在终端运行 `sift daemon`。 |
+| `stop` | launchd `bootout`（防 `KeepAlive` 立即拉起）；systemd `systemctl --user stop sift.service`；foreground 提示停止该前台进程。 |
+| `reload` | V1 等价于 `restart`，明确输出 SIGHUP 热重载尚未实现。 |
+| `status` | 默认人话输出 `✓ 运行中` / `✗ 未运行` / `✗ 未安装`，包含 backend、可用时的 PID 和 operator socket；底层查询为 launchd `launchctl list <Label>` / systemd `systemctl --user status`，foreground 实探 socket。 |
 | `restart` | 见 §4 升级后重启。 |
 
 `sift service install` 把 ExecStart 指向 `bin/current/sift`，故**升级路径 = `sift install` + `sift service restart`**，二者解耦（install 不碰单元，restart 不碰版本目录）。

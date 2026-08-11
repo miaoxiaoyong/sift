@@ -226,6 +226,28 @@ func TestServiceRejectsUnknownAction(t *testing.T) {
 	}
 }
 
+func TestRenderServiceStatusHumanizesBackendPIDAndSocket(t *testing.T) {
+	spec := hosting.Spec{Backend: hosting.BackendLaunchd, HomePath: "/tmp/sift"}
+	var out bytes.Buffer
+	renderServiceStatus(&out, spec, "123\t0\tcom.miaoxiaoyong.sift\n", true)
+	if got := out.String(); !strings.Contains(got, "✓ 运行中") || !strings.Contains(got, "launchd") || !strings.Contains(got, "PID 123") || !strings.Contains(got, "/tmp/sift/siftd.sock") {
+		t.Errorf("launchd status = %q, want humanized backend, pid, and socket", got)
+	}
+
+	spec.Backend = hosting.BackendSystemd
+	out.Reset()
+	renderServiceStatus(&out, spec, "   Active: active (running) since now\n Main PID: 456 (sift)\n", true)
+	if got := out.String(); !strings.Contains(got, "✓ 运行中") || !strings.Contains(got, "systemd") || !strings.Contains(got, "PID 456") {
+		t.Errorf("systemd status = %q, want humanized backend and pid", got)
+	}
+
+	out.Reset()
+	renderServiceStatus(&out, spec, "", false)
+	if got := out.String(); !strings.Contains(got, "✗ 未安装") {
+		t.Errorf("missing unit status = %q, want 未安装", got)
+	}
+}
+
 // TestServiceInstallRequiresRelease asserts the hosting units refuse to point
 // at nothing: with no release installed under bin/current, install reports a
 // clear error and exits non-zero instead of writing a unit to a missing binary.

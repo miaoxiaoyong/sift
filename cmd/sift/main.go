@@ -469,7 +469,7 @@ func commandHelp(command string, stdout, stderr io.Writer) int {
 		"report":          {"向运行提交报告", "sift report <kind> --key KEY --payload JSON", "sift report review --key run-123 --payload '{}'"},
 		"hooks-bootstrap": {"为项目安装 Git hooks", "sift hooks-bootstrap <project-id>", "sift hooks-bootstrap project-1"},
 		"install":         {"安装 Sift 发布包", "sift install <archive.tar.gz>", "sift install sift.tar.gz"},
-		"service":         {"管理系统服务", "sift service <install|uninstall|status|restart>", "sift service status"},
+		"service":         {"管理后台服务", "sift service <install|uninstall|start|stop|restart|reload|status>", "sift service status"},
 	}
 	entry, ok := entries[command]
 	if !ok {
@@ -513,7 +513,7 @@ func nullableStringCLI(s string) any {
 // reports the foreground fallback rather than failing (DESIGN §11).
 func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
-		report(stderr, fmt.Errorf("usage: sift service <install|uninstall|status|restart>"))
+		report(stderr, fmt.Errorf("usage: sift service <install|uninstall|start|stop|restart|reload|status>"))
 		return 2
 	}
 	action, err := hosting.ActionFromString(args[0])
@@ -542,18 +542,36 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "removed %s unit: %s\n", spec.Backend, plan.WriteFile)
 		}
 	}
+	if action == hosting.ActionStatus && spec.Backend != hosting.BackendForeground {
+		if _, err := os.Stat(spec.UnitPath); os.IsNotExist(err) {
+			renderServiceStatus(stdout, spec, "", false)
+			return 0
+		}
+	}
 	out, execErr := hosting.Exec(plan)
-	if len(out) > 0 {
+	if len(out) > 0 && action != hosting.ActionStatus {
 		stdout.Write(out)
 	}
 	switch {
 	case execErr == nil:
-		fmt.Fprintf(stdout, "%s: %s\n", spec.Backend, plan.Summary)
+		if action == hosting.ActionStatus {
+			renderServiceStatus(stdout, spec, string(out), true)
+		} else {
+			fmt.Fprintf(stdout, "%s: %s\n", spec.Backend, plan.Summary)
+			if action == hosting.ActionReload {
+				fmt.Fprintln(stdout, "reload 当前等价于 restart（热重载 SIGHUP 未实现，留后续）")
+			}
+		}
 		return 0
 	case errors.Is(execErr, hosting.ErrNoBackend):
 		// No supervisor: the foreground hint is the supported path, not an
 		// error. Print it and exit 0 so `sift service install` is portable.
 		printForegroundReport(stdout, plan)
+		return 0
+	case action == hosting.ActionStatus:
+		// Both launchctl list and systemctl status use non-zero exits for a
+		// stopped unit. That is a service state, not a CLI failure.
+		renderServiceStatus(stdout, spec, string(out), false)
 		return 0
 	default:
 		report(stderr, execErr)
@@ -561,17 +579,72 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 	}
 }
 
-// printForegroundReport writes the no-supervisor report for a plan: the
-// summary, the hosting §5 status verdict when the plan carries one (so
-// `sift service status` reports present|absent for the operator socket,
-// verifiable with `[ -S "$SIFT_HOME/siftd.sock" ]`, instead of only a hint),
-// and the human hint.
-func printForegroundReport(stdout io.Writer, plan hosting.Plan) {
-	fmt.Fprintf(stdout, "%s\n", plan.Summary)
-	if plan.Status != "" {
-		fmt.Fprintf(stdout, "  operator socket %s: %s\n", plan.SocketPath, plan.Status)
+// renderServiceStatus keeps platform command output out of the default CLI
+// surface while retaining the facts an operator needs: supervisor backend,
+// running state, PID when available, and the control socket path.
+func renderServiceStatus(stdout io.Writer, spec hosting.Spec, output string, queried bool) {
+	state, pid := "未运行", ""
+	if !queried {
+		state = "未安装"
+	} else if serviceRunning(spec.Backend, output) {
+		state = "运行中"
+		pid = servicePID(spec.Backend, output)
 	}
-	fmt.Fprintf(stdout, "  %s\n", plan.Hint)
+	level := "error"
+	if state == "运行中" {
+		level = "ok"
+	}
+	fmt.Fprintf(stdout, "%s %s（%s", render.Status(level), state, spec.Backend)
+	if pid != "" {
+		fmt.Fprintf(stdout, "，PID %s", pid)
+	}
+	fmt.Fprintf(stdout, "，socket %s）\n", filepath.Join(spec.HomePath, "siftd.sock"))
+}
+
+func serviceRunning(backend hosting.Backend, output string) bool {
+	switch backend {
+	case hosting.BackendLaunchd:
+		fields := strings.Fields(output)
+		return len(fields) >= 3 && fields[0] != "-"
+	case hosting.BackendSystemd:
+		return strings.Contains(output, "Active: active (running)")
+	default:
+		return false
+	}
+}
+
+func servicePID(backend hosting.Backend, output string) string {
+	fields := strings.Fields(output)
+	switch backend {
+	case hosting.BackendLaunchd:
+		if len(fields) >= 3 && fields[0] != "-" {
+			return fields[0]
+		}
+	case hosting.BackendSystemd:
+		for i, field := range fields {
+			if field == "PID:" && i+1 < len(fields) {
+				return fields[i+1]
+			}
+		}
+	}
+	return ""
+}
+
+// printForegroundReport writes the no-supervisor report and uses the socket
+// verdict for its status action.
+func printForegroundReport(stdout io.Writer, plan hosting.Plan) {
+	if plan.Action == hosting.ActionStatus {
+		level, state := "error", "未运行"
+		if plan.Status == "present" {
+			level, state = "ok", "运行中"
+		}
+		fmt.Fprintf(stdout, "%s %s（foreground，socket %s: %s）\n", render.Status(level), state, plan.SocketPath, plan.Status)
+		return
+	}
+	fmt.Fprintf(stdout, "%s\n  %s\n", plan.Summary, plan.Hint)
+	if plan.Action == hosting.ActionReload {
+		fmt.Fprintln(stdout, "reload 当前等价于 restart（热重载 SIGHUP 未实现，留后续）")
+	}
 }
 
 var reportKinds = map[string]bool{"progress": true, "goal": true, "blocker": true, "completed": true}
