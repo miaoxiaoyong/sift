@@ -120,12 +120,75 @@ func TestHumanOverviewAndHelp(t *testing.T) {
 	if code := run([]string{"sift", "help"}, &helpOut, io.Discard); code != 0 {
 		t.Fatalf("help exit code = %d", code)
 	}
-	if !strings.Contains(helpOut.String(), "命令参考") || !strings.Contains(helpOut.String(), "init") {
-		t.Fatalf("help = %q", helpOut.String())
+	help := helpOut.String()
+	if !strings.Contains(help, "命令参考") || !strings.Contains(help, "init") {
+		t.Fatalf("help = %q", help)
+	}
+	// The top-level help must list every implemented command. This pins the
+	// core acceptance for #925 (help lists all implemented commands); the set
+	// is the same dispatch table run()/request() accept, so a future renderer
+	// edit or command addition cannot silently drop a line. The five newly
+	// added commands (install/service/worktree/attach/hooks-bootstrap) are
+	// called out explicitly to guard against the regression this slice fixed.
+	for _, cmd := range []string{
+		// 基础命令
+		"init", "project", "agent", "daemon", "doctor", "install", "service",
+		// 查询命令
+		"ps", "logs", "timeline", "metrics", "worktree", "attach",
+		// 运行控制
+		"kill", "retry", "report", "hooks-bootstrap",
+	} {
+		if !strings.Contains(help, cmd) {
+			t.Fatalf("help top-level listing lacks command %q:\n%s", cmd, help)
+		}
 	}
 	var initHelp bytes.Buffer
 	if code := run([]string{"sift", "help", "init"}, &initHelp, io.Discard); code != 0 {
 		t.Fatalf("help init exit code = %d, want 0", code)
+	}
+}
+
+// TestUnknownCommandExitCode pins the request() error-path exit code. #925
+// changed unknown-command and usage errors from exit 1 to exit 2 (usage-class
+// errors share the conventional 2; a missing config or daemon is still 1).
+// This is an intentional behavior change, so the contract is pinned here to
+// catch a silent revert. Note: this exit code is a CLI contract for humans;
+// scripts/CI rely only on the documented `sift doctor` 0/1/2 surface and the
+// success-path exit 0, never on unknown-command/usage returning a specific
+// non-zero value.
+func TestUnknownCommandExitCode(t *testing.T) {
+	freshHome(t)
+
+	// Unknown command: request() returns an "unknown command" error, run()
+	// humanizes it and points at `sift help`, exiting 2.
+	var stderr bytes.Buffer
+	if code := run([]string{"sift", "bogus"}, io.Discard, &stderr); code != 2 {
+		t.Fatalf("unknown command exit = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "sift help") || !strings.Contains(stderr.String(), "bogus") {
+		t.Fatalf("unknown command stderr = %q, want a hint pointing at sift help", stderr.String())
+	}
+
+	// A second unknown command confirms the path is not command-specific.
+	stderr.Reset()
+	if code := run([]string{"sift", "frobnicate"}, io.Discard, &stderr); code != 2 {
+		t.Fatalf("unknown command (frobnicate) exit = %d, want 2", code)
+	}
+
+	// Usage error (wrong arity) takes the same request() error path and must
+	// exit 2, distinct from the daemon-unavailable exit 1.
+	stderr.Reset()
+	if code := run([]string{"sift", "logs"}, io.Discard, &stderr); code != 2 {
+		t.Fatalf("logs usage error exit = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "sift logs") {
+		t.Fatalf("logs usage error stderr = %q, want the usage line", stderr.String())
+	}
+
+	// `sift help <unknown>` is also usage-class and exits 2 (commandHelp).
+	stderr.Reset()
+	if code := run([]string{"sift", "help", "bogus"}, io.Discard, &stderr); code != 2 {
+		t.Fatalf("help bogus exit = %d, want 2", code)
 	}
 }
 

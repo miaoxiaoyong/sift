@@ -215,10 +215,13 @@ Next steps
      gh auth login       # GitHub
      glab auth login     # GitLab
 
-3) Optional minimal config: ~/.sift/config.yaml (owner-only when present)
-     chmod 600 ~/.sift/config.yaml
-   Minimal example (operators/agents/projects): docs/specs/config.md §3.1-3.3
+3) Initialize config (wizard writes and validates ~/.sift/config.yaml):
+     sift init
+   Non-interactive: sift init --agent claude --project . --forge github
+   Minimal hand-written example (operators/agents/projects): docs/specs/config.md §3.1-3.3
    Walkthrough:                                docs/guides/installation.md
+   If present, config.yaml must be owner-only:
+     chmod 600 ~/.sift/config.yaml
 
 4) Verify and start:
      sift doctor --offline   # read-only check; exit 0 = healthy

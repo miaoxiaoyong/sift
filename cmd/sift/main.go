@@ -957,7 +957,3 @@ func decodeReportDelays(raw []byte) ([]int, error) {
 	}
 	return policy.BackoffDelays()
 }
-
-// renormalize round-trips an RPC result through JSON so every renderer reads
-// the same wire shapes (numbers as float64) whether the caller passes a typed
-// struct, a decoded map, or a nil/partial value.
