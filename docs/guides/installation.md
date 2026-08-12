@@ -102,7 +102,7 @@ sift --version
 sift init
 ```
 
-向导会交互式询问 Agent、项目、Forge 和 operator；非交互环境也可通过选项传入（`sift init --agent claude --project . --forge github`）。
+向导会交互式选择 Agent 与 operator，并绑定当前目录项目；Forge 类型从项目 git remote 自动探测，无需手选。非交互环境也可通过选项传入（`sift init --agent claude --project . --forge github`，`--forge` 仅作覆盖）。绑定其他项目请 `cd <项目> && sift project add`。
 
 `~/.sift/config.yaml` 可缺省，但要接入项目必须配置 Agent、项目、可信 operator 和 forge。如需手工维护或自动化，字段、默认值及最小示例以 [`../specs/config.md`](../specs/config.md) 为准；项目仓库中的 `.sift/policy.yaml` 以 [`../specs/policy.md`](../specs/policy.md) 为准。配置文件存在时应限制为属主读写：
 

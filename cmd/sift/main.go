@@ -556,8 +556,8 @@ func commandHelp(command string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	entries := map[string][3]string{
-		"init":            {"交互式初始化本地配置", "sift init [--offline] [--agent NAME] [--agent-args ARG,ARG] [--project PATH] [--operator LOGIN] [--forge github|gitlab]", "sift init --agent claude --project . --forge github"},
-		"project":         {"添加一个项目", "sift project add [--project PATH] [--forge github|gitlab] [--offline]", "sift project add --project . --forge github"},
+		"init":            {"交互式初始化本地配置", "sift init [--offline] [--agent NAME] [--agent-args ARG,ARG] [--project PATH] [--operator LOGIN] [--forge github|gitlab]", "sift init --agent claude --project ."},
+		"project":         {"添加一个项目（默认当前 git 仓库，forge 自动探测）", "sift project add [--project PATH] [--forge github|gitlab] [--offline]", "cd <项目> && sift project add"},
 		"agent":           {"添加一个 Agent", "sift agent add [--agent NAME] [--agent-args ARG,ARG] [--offline]", "sift agent add --agent claude"},
 		"doctor":          {"检查本地环境并报告问题", "sift doctor [--offline] [--json]", "sift doctor --offline"},
 		"ps":              {"查看运行中的任务", "sift ps [--json]", "sift ps"},

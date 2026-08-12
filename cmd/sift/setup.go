@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,7 +42,7 @@ type setupOptions struct {
 func runSetupCommand(args []string, stdin io.Reader, home config.Home, stdout, stderr io.Writer, scope setupScope) int {
 	if len(args) == 0 || args[0] != "add" {
 		usage := map[setupScope]string{
-			setupProject: "sift project add [--project PATH] [--forge github|gitlab] [--offline]",
+			setupProject: "sift project add [--project PATH] [--forge github|gitlab] [--offline]（PATH 默认当前 git 仓库）",
 			setupAgent:   "sift agent add [--agent NAME] [--agent-args ARG,ARG] [--offline]",
 		}[scope]
 		report(stderr, fmt.Errorf("usage: %s", usage))
@@ -52,6 +53,12 @@ func runSetupCommand(args []string, stdin io.Reader, home config.Home, stdout, s
 
 // runSetup is deliberately local-only: it probes local executables and writes
 // config.yaml, but never contacts the daemon.
+//
+// forge.kind is per-project, never global (issue #929): init no longer asks a
+// global "Forge 类型"; both init and project add derive the kind from the git
+// remote host (github.com→github, host containing gitlab→gitlab, host
+// containing github→github), asking once only for a project whose host maps to
+// nothing. Operators prefill from gh and glab logins independently.
 func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr io.Writer, scope setupScope) int {
 	var opt setupOptions
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
@@ -59,9 +66,9 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 	fs.BoolVar(&opt.offline, "offline", false, "non-interactive mode: skip all prompts and forge login probes")
 	fs.StringVar(&opt.agents, "agent", "", "agent executable, or id=executable")
 	fs.StringVar(&opt.agentArgs, "agent-args", "", "comma-separated agent arguments (overrides defaults)")
-	fs.StringVar(&opt.project, "project", "", "repository path")
-	fs.StringVar(&opt.operator, "operator", "", "forge operator login")
-	fs.StringVar(&opt.forge, "forge", "", "github or gitlab")
+	fs.StringVar(&opt.project, "project", "", "repository path (default: current git worktree)")
+	fs.StringVar(&opt.operator, "operator", "", "forge operator login (github:user,gitlab:user)")
+	fs.StringVar(&opt.forge, "forge", "", "github or gitlab (overrides auto-detection)")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		if err == nil {
 			err = errors.New("unexpected positional argument")
@@ -100,39 +107,88 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 	}
 	interactive := !opt.offline && opt.agents == "" && opt.project == "" && opt.operator == "" && opt.forge == ""
 	in := bufio.NewReader(stdin)
-	forgeKind := opt.forge
-	login := ""
+
+	// Probe gh and glab logins independently so each operators allowlist
+	// prefills from its own CLI (issue #929); offline skips the probes.
+	var logins forgeLogins
+	if !opt.offline {
+		logins = probeForgeLogins()
+		reportForgeLogins(stdout, logins)
+	}
+
+	// Project binding. forge.kind is per-project and derived from the git
+	// remote host; only an undetectable host triggers one prompt for that
+	// project (issue #929).
+	projectKind, projectHost, projectKey := "", "", ""
 	if scope != setupAgent {
-		if forgeKind == "" {
+		projectPath := opt.project
+		if projectPath == "" {
+			projectPath = detectedRepo()
+		}
+		if projectPath == "" && interactive {
+			projectPath = prompt(in, stdout, "项目仓库路径", "")
+		}
+		if projectPath == "" {
+			if scope == setupProject {
+				report(stderr, errors.New("未检测到 git 仓库；请 cd 到项目目录运行 `sift project add`，或使用 --project PATH"))
+				return 1
+			}
 			if interactive {
-				forgeKind = strings.ToLower(prompt(in, stdout, "Forge 类型（github/gitlab）", "github"))
-				if forgeKind != "github" && forgeKind != "gitlab" {
+				fmt.Fprintln(stdout, "ℹ 未检测到 git 仓库，跳过项目绑定")
+			}
+		} else {
+			abs, err := filepath.Abs(projectPath)
+			if err != nil {
+				report(stderr, err)
+				return 1
+			}
+			projectHost, projectKey = originProbe(abs)
+			projectKind = opt.forge
+			if projectKind == "" {
+				projectKind = detectForgeKind(projectHost)
+			}
+			if projectKind == "" && interactive {
+				projectKind = promptForgeKind(in, stdout, projectHost)
+				if projectKind != "github" && projectKind != "gitlab" {
 					report(stderr, errors.New("Forge 类型必须是 github 或 gitlab"))
 					return 2
 				}
-			} else {
-				forgeKind = "github"
 			}
-		}
-		if !opt.offline {
-			login = probeForgeLogin(forgeKind)
-			if login == "" {
-				fmt.Fprintf(stdout, "%s 未检测到 %s 登录；请先运行 %s auth login。\n", render.Status("warning"), forgeKind, forgeCLI(forgeKind))
-			} else {
-				fmt.Fprintf(stdout, "%s 已检测到 %s 登录：%s\n", render.Status("ok"), forgeKind, login)
+			if projectKind == "" {
+				projectKind = "github"
 			}
+			if projectKey == "" && interactive {
+				projectKey = prompt(in, stdout, "Forge 项目（owner/repo）", "")
+			}
+			if projectKey == "" {
+				report(stderr, errors.New("无法从 origin 解析 Forge 项目；请在仓库中设置 origin 后重试"))
+				return 1
+			}
+			host := ""
+			if detectForgeKind(projectHost) == projectKind {
+				host = projectHost
+			}
+			addProject(doc, abs, projectKind, projectKey, host)
 		}
 	}
+
+	// Agent selection: numbered list with every detected agent preselected;
+	// a numeric subset (1,3), all, or Enter keeps the selection (issue #929).
 	if scope != setupProject {
 		agents := strings.TrimSpace(opt.agents)
 		if agents == "" && interactive {
 			found := detectAgents()
 			if len(found) == 0 {
 				fmt.Fprintln(stdout, "⚠ 未在 PATH 中发现 claude/codex/cursor/pi；可输入可执行文件名，或直接回车跳过。")
+				agents = prompt(in, stdout, "选择 Agent（逗号分隔，直接回车跳过）", "")
 			} else {
-				fmt.Fprintf(stdout, "✓ 检测到 Agent：%s\n", strings.Join(found, ", "))
+				fmt.Fprintf(stdout, "%s 检测到 Agent：\n", render.Status("ok"))
+				for i, name := range found {
+					fmt.Fprintf(stdout, "  %d. %s\n", i+1, name)
+				}
+				picked := prompt(in, stdout, "选择 Agent（序号逗号分隔，如 1,3；直接回车或 all=全选；0/none=跳过）", "")
+				agents = selectAgents(picked, found)
 			}
-			agents = prompt(in, stdout, "选择 Agent（逗号分隔，直接回车跳过）", strings.Join(found, ","))
 		}
 		for _, spec := range strings.Split(agents, ",") {
 			if spec = strings.TrimSpace(spec); spec != "" {
@@ -148,38 +204,36 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 			}
 		}
 	}
-	if scope != setupAgent {
-		project := opt.project
-		if project == "" && interactive {
-			project = prompt(in, stdout, "项目仓库路径", detectedRepo())
-		}
-		if project != "" {
-			abs, err := filepath.Abs(project)
+
+	// Operators prefill from the CLI login of the project's forge kind; a
+	// project-less init asks both sides (issue #929).
+	if scope == setupAll {
+		if operator := opt.operator; operator != "" {
+			specs, err := parseOperatorSpec(operator, projectKind)
 			if err != nil {
 				report(stderr, err)
-				return 1
+				return 2
 			}
-			key := forgeProject(abs)
-			if key == "" && interactive {
-				key = prompt(in, stdout, "Forge 项目（owner/repo）", "")
+			for kind, names := range specs {
+				for _, name := range names {
+					addOperator(doc, kind, name)
+				}
 			}
-			if key == "" {
-				report(stderr, errors.New("无法从 origin 解析 Forge 项目；请在仓库中设置 origin 后重试"))
-				return 1
+		} else if interactive {
+			kinds := []string{"github", "gitlab"}
+			if projectKind != "" {
+				kinds = []string{projectKind}
 			}
-			addProject(doc, abs, forgeKind, key)
-		}
-		if scope == setupAll {
-			operator := opt.operator
-			if operator == "" && interactive {
-				operator = prompt(in, stdout, "允许操作的用户名（逗号分隔，直接回车跳过）", login)
-			}
-			if operator == "" {
-				operator = login
-			}
-			for _, name := range strings.Split(operator, ",") {
-				if name = strings.TrimSpace(name); name != "" {
-					addOperator(doc, forgeKind, name)
+			for _, kind := range kinds {
+				login, label := logins.github, "GitHub"
+				if kind == "gitlab" {
+					login, label = logins.gitlab, "GitLab"
+				}
+				answer := prompt(in, stdout, label+" 操作员用户名（逗号分隔，直接回车跳过）", login)
+				for _, name := range strings.Split(answer, ",") {
+					if name = strings.TrimSpace(name); name != "" {
+						addOperator(doc, kind, name)
+					}
 				}
 			}
 		}
@@ -328,26 +382,156 @@ func detectedRepo() string {
 	}
 	return strings.TrimSpace(string(out))
 }
-func forgeProject(repo string) string {
+
+// remoteHostProject splits a git remote URL into (host, owner/repo key). It
+// covers scp-like (git@host:owner/repo), https, ssh and git schemes; a URL it
+// cannot parse yields ("", "").
+func remoteHostProject(url string) (host, key string) {
+	u := strings.TrimSpace(url)
+	u = strings.TrimSuffix(strings.TrimSuffix(u, "/"), ".git")
+	if _, rest, ok := strings.Cut(u, "://"); ok {
+		path := rest
+		if i := strings.Index(path, "/"); i >= 0 {
+			host, path = path[:i], path[i+1:]
+		} else {
+			return "", ""
+		}
+		if i := strings.Index(host, "@"); i >= 0 {
+			host = host[i+1:]
+		}
+		return host, strings.TrimSuffix(path, "/")
+	}
+	hostPart, path, ok := strings.Cut(u, ":")
+	if !ok {
+		return "", ""
+	}
+	if i := strings.LastIndex(hostPart, "@"); i >= 0 {
+		hostPart = hostPart[i+1:]
+	}
+	return hostPart, strings.TrimPrefix(path, "/")
+}
+
+// detectForgeKind maps a remote host to a forge kind (issue #929):
+// github.com→github, host containing gitlab→gitlab, host containing
+// github→github (enterprise); otherwise "" (ask once for that project).
+func detectForgeKind(host string) string {
+	switch {
+	case host == "github.com":
+		return "github"
+	case strings.Contains(host, "gitlab"):
+		return "gitlab"
+	case strings.Contains(host, "github"):
+		return "github"
+	}
+	return ""
+}
+
+// originProbe reads the origin remote of repo and returns (host, project key).
+func originProbe(repo string) (host, project string) {
 	out, err := exec.Command("git", "-C", repo, "remote", "get-url", "origin").Output()
 	if err != nil {
+		return "", ""
+	}
+	return remoteHostProject(string(out))
+}
+
+// promptForgeKind asks once for a project whose remote host maps to no known
+// forge, showing the detected host as context (issue #929).
+func promptForgeKind(in *bufio.Reader, out io.Writer, host string) string {
+	label := "Forge 类型（github/gitlab）"
+	if host != "" {
+		label = fmt.Sprintf("Forge 类型（检测到 host: %s）", host)
+	}
+	return strings.ToLower(prompt(in, out, label, "github"))
+}
+
+// selectAgents resolves an interactive agent pick against the detected list:
+// empty or "all" keeps every detected agent, "0"/"none" keeps none, and a
+// comma-separated numeric pick (1,3) maps to the numbered entries. Any other
+// input passes through as legacy comma-separated executable specs.
+func selectAgents(picked string, found []string) string {
+	picked = strings.ToLower(strings.TrimSpace(picked))
+	if picked == "" || picked == "all" {
+		return strings.Join(found, ",")
+	}
+	if picked == "0" || picked == "none" {
 		return ""
 	}
-	s := strings.TrimSuffix(strings.TrimSpace(string(out)), ".git")
-	if i := strings.Index(s, "://"); i >= 0 {
-		s = s[i+3:]
+	tokens := strings.Split(picked, ",")
+	numeric := true
+	for _, tok := range tokens {
+		if _, err := strconv.Atoi(strings.TrimSpace(tok)); err != nil {
+			numeric = false
+			break
+		}
 	}
-	if i := strings.Index(s, ":"); i >= 0 {
-		s = s[i+1:]
+	if !numeric {
+		return picked
 	}
-	parts := strings.Split(s, "/")
-	if len(parts) == 2 {
-		return s
-	} // git@host:owner/repo
-	if len(parts) < 3 {
-		return ""
+	var selected []string
+	for _, tok := range tokens {
+		n, _ := strconv.Atoi(strings.TrimSpace(tok))
+		if n >= 1 && n <= len(found) {
+			selected = append(selected, found[n-1])
+		}
 	}
-	return strings.Join(parts[1:], "/")
+	return strings.Join(selected, ",")
+}
+
+// forgeLogins holds the independent gh/glab login prefills (issue #929).
+type forgeLogins struct {
+	github string
+	gitlab string
+}
+
+// probeForgeLogins probes gh and glab independently: github operators prefill
+// from gh auth, gitlab operators from glab auth.
+func probeForgeLogins() forgeLogins {
+	return forgeLogins{
+		github: probeForgeLogin("github"),
+		gitlab: probeForgeLogin("gitlab"),
+	}
+}
+
+func reportForgeLogins(stdout io.Writer, logins forgeLogins) {
+	entries := []struct{ kind, cli, label, login string }{
+		{"github", "gh", "GitHub", logins.github},
+		{"gitlab", "glab", "GitLab", logins.gitlab},
+	}
+	for _, e := range entries {
+		if e.login == "" {
+			fmt.Fprintf(stdout, "%s 未检测到 %s 登录；请先运行 %s auth login。\n", render.Status("warning"), e.label, e.cli)
+		} else {
+			fmt.Fprintf(stdout, "%s 已检测到 %s 登录：%s\n", render.Status("ok"), e.label, e.login)
+		}
+	}
+}
+
+// parseOperatorSpec splits an --operator value into per-forge names. Plain
+// names attach to defaultKind; github:user / gitlab:user select the forge.
+func parseOperatorSpec(spec, defaultKind string) (map[string][]string, error) {
+	if defaultKind == "" {
+		defaultKind = "github"
+	}
+	out := map[string][]string{}
+	for _, token := range strings.Split(spec, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		kind, name := defaultKind, token
+		if before, after, ok := strings.Cut(token, ":"); ok {
+			kind, name = before, after
+		}
+		if kind != "github" && kind != "gitlab" {
+			return nil, fmt.Errorf("--operator 值无效：%q（支持 github:user,gitlab:user 或纯用户名）", token)
+		}
+		if name = strings.TrimSpace(name); name == "" {
+			continue
+		}
+		out[kind] = append(out[kind], name)
+	}
+	return out, nil
 }
 
 func addAgent(doc map[string]any, spec string, args *[]string) {
@@ -386,7 +570,7 @@ func defaultAgentArgs(executable string) []string {
 	}
 }
 
-func addProject(doc map[string]any, repo, kind, project string) {
+func addProject(doc map[string]any, repo, kind, project, host string) {
 	items := list(doc, "projects")
 	for _, item := range items {
 		if m, ok := item.(map[string]any); ok && m["repo"] == repo {
@@ -411,7 +595,20 @@ func addProject(doc map[string]any, repo, kind, project string) {
 		}
 		id += suffix
 	}
-	doc["projects"] = append(items, map[string]any{"id": id, "repo": repo, "forge": map[string]any{"kind": kind, "project": project}, "enabled": true})
+	ref := map[string]any{"kind": kind, "project": project}
+	if host != "" && host != forgeDefaultHost(kind) {
+		ref["host"] = host
+	}
+	doc["projects"] = append(items, map[string]any{"id": id, "repo": repo, "forge": ref, "enabled": true})
+}
+
+// forgeDefaultHost mirrors config.md §3.3: the public host used when a
+// project omits forge.host.
+func forgeDefaultHost(kind string) string {
+	if kind == "gitlab" {
+		return "gitlab.com"
+	}
+	return "github.com"
 }
 func addOperator(doc map[string]any, kind, name string) {
 	op, _ := doc["operators"].(map[string]any)

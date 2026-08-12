@@ -61,7 +61,7 @@ glab auth login     # GitLab
 sift init
 ```
 
-向导会询问 Agent、项目、Forge 和 operator。非交互环境也可通过选项传入：
+向导会交互式选择 Agent 与 operator，并绑定当前目录项目；Forge 类型从项目 git remote 自动探测，无需手选。非交互环境也可通过选项传入：
 
 ```bash
 sift init --agent claude --project . --forge github
