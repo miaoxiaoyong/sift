@@ -164,11 +164,12 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 				report(stderr, errors.New("无法从 origin 解析 Forge 项目；请在仓库中设置 origin 后重试"))
 				return 1
 			}
-			host := ""
-			if detectForgeKind(projectHost) == projectKind {
-				host = projectHost
-			}
-			addProject(doc, abs, projectKind, projectKey, host)
+			// Persist the probed origin host even when the kind came from the
+			// one-time prompt or a --forge override: an undetectable host (e.g.
+			// git.corp.example answered gitlab) must not silently fall back to
+			// the platform default in forge.host. addProject omits the host
+			// only when it equals the platform default (issue #929 review F1).
+			addProject(doc, abs, projectKind, projectKey, projectHost)
 		}
 	}
 
@@ -234,6 +235,25 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 					if name = strings.TrimSpace(name); name != "" {
 						addOperator(doc, kind, name)
 					}
+				}
+			}
+		} else if !opt.offline {
+			// Non-interactive flags path without --operator: fall back to the
+			// probed login of the relevant side, mirroring the pre-#929
+			// `if operator == "" { operator = login }` default so the
+			// documented `sift init --agent X --project .` still writes a
+			// trusted operator (issue #929 review F2).
+			kinds := []string{"github", "gitlab"}
+			if projectKind != "" {
+				kinds = []string{projectKind}
+			}
+			for _, kind := range kinds {
+				login := logins.github
+				if kind == "gitlab" {
+					login = logins.gitlab
+				}
+				if login != "" {
+					addOperator(doc, kind, login)
 				}
 			}
 		}
