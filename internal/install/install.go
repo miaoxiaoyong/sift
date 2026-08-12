@@ -165,7 +165,7 @@ func extractAndVerify(staging, archivePath string) (*Manifest, error) {
 		if hdr.Typeflag == tar.TypeDir {
 			continue
 		}
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+		if hdr.Typeflag != tar.TypeReg {
 			return nil, fmt.Errorf("install: archive entry %q is not a regular file", hdr.Name)
 		}
 		if !filepath.IsLocal(hdr.Name) || filepath.IsAbs(hdr.Name) {

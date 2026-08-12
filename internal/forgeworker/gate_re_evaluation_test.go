@@ -139,7 +139,10 @@ func TestGateReEvaluationWorkerProducerErrorIsRetryable(t *testing.T) {
 	opKey := seedGateReEvalOp(t, db)
 	w := grWorker(db, func(ctx context.Context, p storage.GateReEvaluationPayload) ([]byte, error) {
 		return nil, errors.New("forge unavailable")
-	}, func(ctx context.Context, c storage.ClaimedOperation, r []byte, nowMS int64) error { t.Fatal("complete should not run"); return nil })
+	}, func(ctx context.Context, c storage.ClaimedOperation, r []byte, nowMS int64) error {
+		t.Fatal("complete should not run")
+		return nil
+	})
 	if err := w.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}

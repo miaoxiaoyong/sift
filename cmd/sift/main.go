@@ -257,15 +257,6 @@ func doctorMismatchResult(response controlplane.Response) map[string]any {
 	}
 }
 
-// majorVersion extracts the release major for the client-side envelope check;
-// the daemon applies the same rule in its handshake.
-func majorVersion(release string) string {
-	if i := strings.IndexByte(release, '.'); i >= 0 {
-		return release[:i]
-	}
-	return release
-}
-
 // emitDoctor prints the offline doctor result and maps its exit_code to the
 // process exit status (config.md §7).
 func emitDoctor(stdout, stderr io.Writer, result map[string]any, jsonOutput bool) int {

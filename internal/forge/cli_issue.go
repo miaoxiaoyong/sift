@@ -22,9 +22,9 @@ type rawIssue struct {
 	Author struct {
 		Username string `json:"username"`
 	} `json:"author"`
-	Labels []json.RawMessage `json:"labels"`
-	UpdatedAt time.Time        `json:"updated_at"`
-	Pull      *json.RawMessage `json:"pull_request"`
+	Labels    []json.RawMessage `json:"labels"`
+	UpdatedAt time.Time         `json:"updated_at"`
+	Pull      *json.RawMessage  `json:"pull_request"`
 }
 
 func (a *Adapter) issue(x rawIssue) (Issue, error) {
@@ -59,7 +59,9 @@ func (a *Adapter) issue(x rawIssue) (Issue, error) {
 		if json.Unmarshal(raw, &name) == nil {
 			labels = append(labels, name)
 		} else {
-			var obj struct{ Name string `json:"name"` }
+			var obj struct {
+				Name string `json:"name"`
+			}
 			if json.Unmarshal(raw, &obj) == nil {
 				labels = append(labels, obj.Name)
 			}

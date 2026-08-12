@@ -469,7 +469,7 @@ func TestSupervisorInterruptTickEscalatesThenRedelivers(t *testing.T) {
 		t.Fatal(err)
 	}
 	const expiry = int64(48 * 60 * 60 * 1000)
-	initialBatchAt := int64(testNow + 60 * 60 * 1000) // one hour after emit, well before expiry.
+	initialBatchAt := int64(testNow + 60*60*1000) // one hour after emit, well before expiry.
 	cmd := t6Command(testNow)
 	cmd.ExpiresAfterMS, cmd.OnExpire, cmd.OnMaxEscalations, cmd.MaxEscalations = expiry, ExpireEscalate, ExpireHold, 1
 	cmd.BatchAtMS = &initialBatchAt

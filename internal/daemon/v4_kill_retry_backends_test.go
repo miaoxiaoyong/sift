@@ -40,7 +40,7 @@ func TestV4KillRetryBackends(t *testing.T) {
 			signaler := &recoverySignals{}
 			liveObs := runtimepkg.ProcessObservation{Exists: true, ProcessIdentity: runtimepkg.ProcessIdentity{PID: attempt.WrapperPID, StartedAtMS: attempt.WrapperStartedAtMS, Executable: attempt.WrapperExecutable, PGID: attempt.WrapperPGID, ControlNonceHash: attempt.ControlNonceHash}}
 			coordinator := &TerminationCoordinator{
-				DB:        db,
+				DB: db,
 				Terminator: runtimepkg.Terminator{
 					Inspector: recoveryInspector{observation: liveObs},
 					Signaler:  signaler,
@@ -64,7 +64,7 @@ func TestV4KillRetryBackends(t *testing.T) {
 			}
 			signaler := &recoverySignals{}
 			coordinator := &TerminationCoordinator{
-				DB:        db,
+				DB: db,
 				Terminator: runtimepkg.Terminator{
 					Inspector: recoveryInspector{observation: runtimepkg.ProcessObservation{Exists: false}},
 					Signaler:  signaler,

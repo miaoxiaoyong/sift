@@ -311,45 +311,45 @@ func mustSpecChannelPayload(t *testing.T) []byte {
 		"target_id":         specTargetID,
 	}
 	memberA := map[string]any{
-		"command_lines":    []string{},
-		"delivery_id":      specBatchID + ":i-a",
-		"headline":         "Agent 需要你澄清",
-		"interrupt_id":     "i-a",
+		"command_lines":     []string{},
+		"delivery_id":       specBatchID + ":i-a",
+		"headline":          "Agent 需要你澄清",
+		"interrupt_id":      "i-a",
 		"interrupt_version": 2,
-		"links":            []any{},
-		"nonce":            "n-a",
-		"options":          []any{},
-		"reason":           "agent_blocked",
-		"severity":         "high",
+		"links":             []any{},
+		"nonce":             "n-a",
+		"options":           []any{},
+		"reason":            "agent_blocked",
+		"severity":          "high",
 	}
 	memberB := map[string]any{
-		"command_lines":    []string{},
-		"delivery_id":      specBatchID + ":i-b",
-		"headline":         "变更等待代码审阅",
-		"interrupt_id":     "i-b",
+		"command_lines":     []string{},
+		"delivery_id":       specBatchID + ":i-b",
+		"headline":          "变更等待代码审阅",
+		"interrupt_id":      "i-b",
 		"interrupt_version": 2,
-		"links":            []any{},
-		"nonce":            "n-b",
-		"options":          []any{},
-		"reason":           "code_review",
-		"severity":         "high",
+		"links":             []any{},
+		"nonce":             "n-b",
+		"options":           []any{},
+		"reason":            "code_review",
+		"severity":          "high",
 	}
 	rendered := strings.Join([]string{
 		"i-a: Agent 需要你澄清", "i-b: 变更等待代码审阅",
 	}, "；")
 	body := map[string]any{
-		"batch_id":          specBatchID,
-		"batch_kind":        "daily_summary",
-		"channel":           json.RawMessage(specChannelJSON),
-		"delivery_id":       specDeliveryID,
-		"delivery_kind":     "attention_batch",
-		"due_at_ms":         specDueAtMS,
+		"batch_id":           specBatchID,
+		"batch_kind":         "daily_summary",
+		"channel":            json.RawMessage(specChannelJSON),
+		"delivery_id":        specDeliveryID,
+		"delivery_kind":      "attention_batch",
+		"due_at_ms":          specDueAtMS,
 		"forge_alert_target": target,
-		"members":           []any{memberA, memberB},
-		"project_id":        "project-a",
-		"rendered_text":     rendered,
-		"scope":             "day",
-		"scope_id":          specZone + ":" + fmt.Sprint(specDueAtMS),
+		"members":            []any{memberA, memberB},
+		"project_id":         "project-a",
+		"rendered_text":      rendered,
+		"scope":              "day",
+		"scope_id":           specZone + ":" + fmt.Sprint(specDueAtMS),
 	}
 	out, err := json.Marshal(body)
 	if err != nil {
@@ -634,18 +634,18 @@ func mustSpecHostedChannelPayload(t *testing.T, host, batchID, deliveryID string
 	}
 	rendered := "i-c: third 项目等待合并"
 	body := map[string]any{
-		"batch_id":          batchID,
-		"batch_kind":        "daily_summary",
-		"channel":           json.RawMessage(specChannelJSON),
-		"delivery_id":       deliveryID,
-		"delivery_kind":     "attention_batch",
-		"due_at_ms":         specDueAtMS,
+		"batch_id":           batchID,
+		"batch_kind":         "daily_summary",
+		"channel":            json.RawMessage(specChannelJSON),
+		"delivery_id":        deliveryID,
+		"delivery_kind":      "attention_batch",
+		"due_at_ms":          specDueAtMS,
 		"forge_alert_target": target,
-		"members":           []any{memberC},
-		"project_id":        "project-a",
-		"rendered_text":     rendered,
-		"scope":             "day",
-		"scope_id":          specZone + ":" + fmt.Sprint(specDueAtMS),
+		"members":            []any{memberC},
+		"project_id":         "project-a",
+		"rendered_text":      rendered,
+		"scope":              "day",
+		"scope_id":           specZone + ":" + fmt.Sprint(specDueAtMS),
 	}
 	out, err := json.Marshal(body)
 	if err != nil {
@@ -653,4 +653,3 @@ func mustSpecHostedChannelPayload(t *testing.T, host, batchID, deliveryID string
 	}
 	return out
 }
-
