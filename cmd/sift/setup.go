@@ -30,16 +30,21 @@ const (
 )
 
 type setupOptions struct {
-	offline  bool
-	agents   string
-	project  string
-	operator string
-	forge    string
+	offline   bool
+	agents    string
+	project   string
+	operator  string
+	forge     string
+	agentArgs string
 }
 
 func runSetupCommand(args []string, stdin io.Reader, home config.Home, stdout, stderr io.Writer, scope setupScope) int {
 	if len(args) == 0 || args[0] != "add" {
-		report(stderr, fmt.Errorf("usage: sift %s add [--agent NAME] [--project PATH] [--operator LOGIN] [--forge github|gitlab] [--offline]", map[setupScope]string{setupProject: "project", setupAgent: "agent"}[scope]))
+		usage := map[setupScope]string{
+			setupProject: "sift project add [--project PATH] [--forge github|gitlab] [--offline]",
+			setupAgent:   "sift agent add [--agent NAME] [--agent-args ARG,ARG] [--offline]",
+		}[scope]
+		report(stderr, fmt.Errorf("usage: %s", usage))
 		return 2
 	}
 	return runSetup(args[1:], stdin, home, stdout, stderr, scope)
@@ -51,8 +56,9 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 	var opt setupOptions
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.BoolVar(&opt.offline, "offline", false, "skip forge login probes")
+	fs.BoolVar(&opt.offline, "offline", false, "non-interactive mode: skip all prompts and forge login probes")
 	fs.StringVar(&opt.agents, "agent", "", "agent executable, or id=executable")
+	fs.StringVar(&opt.agentArgs, "agent-args", "", "comma-separated agent arguments (overrides defaults)")
 	fs.StringVar(&opt.project, "project", "", "repository path")
 	fs.StringVar(&opt.operator, "operator", "", "forge operator login")
 	fs.StringVar(&opt.forge, "forge", "", "github or gitlab")
@@ -75,6 +81,22 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 	if err != nil {
 		report(stderr, err)
 		return 1
+	}
+	agentArgsSet := false
+	fs.Visit(func(f *flag.Flag) {
+		agentArgsSet = f.Name == "agent-args" || agentArgsSet
+	})
+	if scope != setupAll && opt.operator != "" {
+		report(stderr, errors.New("--operator is only supported by sift init"))
+		return 2
+	}
+	if scope == setupProject && (opt.agents != "" || agentArgsSet) {
+		report(stderr, errors.New("--agent and --agent-args are only supported by sift init or sift agent add"))
+		return 2
+	}
+	if scope == setupAgent && (opt.project != "" || opt.forge != "") {
+		report(stderr, errors.New("--project and --forge are only supported by sift init or sift project add"))
+		return 2
 	}
 	interactive := !opt.offline && opt.agents == "" && opt.project == "" && opt.operator == "" && opt.forge == ""
 	in := bufio.NewReader(stdin)
@@ -114,7 +136,15 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 		}
 		for _, spec := range strings.Split(agents, ",") {
 			if spec = strings.TrimSpace(spec); spec != "" {
-				addAgent(doc, spec)
+				if agentArgsSet {
+					agentArgs := []string{}
+					if opt.agentArgs != "" {
+						agentArgs = strings.Split(opt.agentArgs, ",")
+					}
+					addAgent(doc, spec, &agentArgs)
+				} else {
+					addAgent(doc, spec, nil)
+				}
 			}
 		}
 	}
@@ -139,16 +169,18 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 			}
 			addProject(doc, abs, forgeKind, key)
 		}
-		operator := opt.operator
-		if operator == "" && interactive {
-			operator = prompt(in, stdout, "允许操作的用户名（逗号分隔，直接回车跳过）", login)
-		}
-		if operator == "" {
-			operator = login
-		}
-		for _, name := range strings.Split(operator, ",") {
-			if name = strings.TrimSpace(name); name != "" {
-				addOperator(doc, forgeKind, name)
+		if scope == setupAll {
+			operator := opt.operator
+			if operator == "" && interactive {
+				operator = prompt(in, stdout, "允许操作的用户名（逗号分隔，直接回车跳过）", login)
+			}
+			if operator == "" {
+				operator = login
+			}
+			for _, name := range strings.Split(operator, ",") {
+				if name = strings.TrimSpace(name); name != "" {
+					addOperator(doc, forgeKind, name)
+				}
 			}
 		}
 	}
@@ -269,10 +301,15 @@ func probeForgeLogin(kind string) string {
 	if err != nil {
 		return ""
 	}
-	// gh and glab both print an "account <login>" line. Keep parsing tolerant:
-	// this is only a prefill, never an authorization decision.
-	re := regexp.MustCompile(`(?i)account\s+([^\s]+)`)
-	if m := re.FindStringSubmatch(string(out)); len(m) == 2 {
+	return forgeLoginFromStatus(string(out))
+}
+
+// forgeLoginFromStatus extracts gh's "account <login>" and glab's
+// "as <user>" status formats. It is only a prefill, never an authorization
+// decision.
+func forgeLoginFromStatus(status string) string {
+	re := regexp.MustCompile(`(?i)\b(?:account|as)\s+([^\s]+)`)
+	if m := re.FindStringSubmatch(status); len(m) == 2 {
 		return strings.Trim(m[1], "'\"")
 	}
 	return ""
@@ -313,7 +350,7 @@ func forgeProject(repo string) string {
 	return strings.Join(parts[1:], "/")
 }
 
-func addAgent(doc map[string]any, spec string) {
+func addAgent(doc map[string]any, spec string, args *[]string) {
 	id, executable := filepath.Base(spec), spec
 	if before, after, ok := strings.Cut(spec, "="); ok {
 		id, executable = before, after
@@ -325,8 +362,30 @@ func addAgent(doc map[string]any, spec string) {
 			return
 		}
 	}
-	doc["agents"] = append(items, map[string]any{"id": id, "executable": executable, "args": []any{}, "task_transport": "stdin", "backend": "process"})
+	if args == nil {
+		defaults := defaultAgentArgs(executable)
+		args = &defaults
+	}
+	argv := make([]any, len(*args))
+	for i, arg := range *args {
+		argv[i] = arg
+	}
+	doc["agents"] = append(items, map[string]any{"id": id, "executable": executable, "args": argv, "task_transport": "stdin", "backend": "process"})
 }
+
+func defaultAgentArgs(executable string) []string {
+	switch filepath.Base(executable) {
+	case "claude":
+		return []string{"-p"}
+	case "codex":
+		return []string{"exec", "-"}
+	case "cursor", "pi":
+		return []string{"-p"}
+	default:
+		return []string{}
+	}
+}
+
 func addProject(doc map[string]any, repo, kind, project string) {
 	items := list(doc, "projects")
 	for _, item := range items {
