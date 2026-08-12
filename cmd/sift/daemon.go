@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,7 +25,11 @@ func runDaemonCommand(home config.Home, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := runDaemon(ctx, home); err != nil {
-		fmt.Fprintln(stderr, "sift daemon:", err)
+		if strings.HasPrefix(err.Error(), "config:") {
+			fmt.Fprintf(stderr, "✗ 配置无效：%v；请运行 `sift init` 重新生成配置。\n", err)
+		} else {
+			fmt.Fprintln(stderr, "sift daemon:", err)
+		}
 		return 1
 	}
 	return 0

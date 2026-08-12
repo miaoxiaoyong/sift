@@ -53,40 +53,25 @@ gh auth login       # GitHub
 glab auth login     # GitLab
 ```
 
-### 4. 最小配置
+### 4. 初始化配置
 
-`~/.sift/config.yaml` 可缺省，但要接入项目必须有可信 operator、Agent 与项目（字段见 [docs/specs/config.md](docs/specs/config.md) §3.1–3.3）。配置存在时，`~/.sift` 与 `config.yaml` 必须为属主读写（§2.1，否则 daemon 拒启）：
+使用向导生成并校验 `~/.sift/config.yaml`，避免手写配置出错：
+
+```bash
+sift init
+```
+
+向导会询问 Agent、项目、Forge 和 operator。非交互环境也可通过选项传入：
+
+```bash
+sift init --agent claude --project . --forge github
+```
+
+如需自动化或高级配置，也可以手工维护配置文件；字段契约见 [docs/specs/config.md](docs/specs/config.md) §3.1–3.3。配置存在时，`~/.sift` 与 `config.yaml` 必须为属主读写（§2.1）：
 
 ```bash
 chmod 700 ~/.sift
 chmod 600 ~/.sift/config.yaml
-```
-
-```yaml
-version: 1
-
-operators:
-  github: ["<your-github-login>"]
-  gitlab: ["<your-gitlab-login>"]
-
-agents:
-  - id: claude-code
-    executable: claude
-    args: ["-p"]
-    task_transport: stdin
-    backend: process
-    max_concurrent: 1
-    version_args: ["--version"]
-
-projects:
-  - id: my-project
-    repo: /absolute/path/to/repo
-    forge:
-      kind: github        # 或 gitlab
-      project: owner/repo
-      host: github.com    # 私有实例填对应 host
-    enabled: true
-    agents: [claude-code]
 ```
 
 ### 5. 检查

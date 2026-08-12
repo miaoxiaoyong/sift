@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/miaoxiaoyong/sift/internal/cli/render"
 	"github.com/miaoxiaoyong/sift/internal/controlplane"
 )
 
@@ -19,7 +20,7 @@ import (
 // table header, and the Chinese status/phase labels (ux-2).
 func TestHumanPSEmptyAndRows(t *testing.T) {
 	var out bytes.Buffer
-	renderPS(&out, map[string]any{
+	render.PS(&out, map[string]any{
 		"runs":                []any{},
 		"attention_remaining": map[string]any{"low": 0, "normal": 0, "high": 0},
 	})
@@ -28,7 +29,7 @@ func TestHumanPSEmptyAndRows(t *testing.T) {
 	}
 
 	out.Reset()
-	renderPS(&out, map[string]any{
+	render.PS(&out, map[string]any{
 		"runs": []any{map[string]any{
 			"run_id": "run-1", "project_id": "proj-1", "status": "running", "version": 3,
 			"attempt":              map[string]any{"attempt_no": 1, "agent_id": "claude", "phase": "running", "isolation_state": "none", "heartbeat_at_ms": 0},
@@ -52,7 +53,7 @@ func TestHumanPSEmptyAndRows(t *testing.T) {
 // the date section, and the Chinese type label.
 func TestHumanTimelinePinsEventLabels(t *testing.T) {
 	var out bytes.Buffer
-	renderTimeline(&out, map[string]any{
+	render.Timeline(&out, map[string]any{
 		"events": []any{
 			map[string]any{"Seq": 2, "RunID": "run-1", "ProjectID": "proj-1", "Type": "intake.trigger_observed", "Source": "forge", "Actor": "", "AttemptNo": nil, "OccurredAtMS": 1_700_000_000_000},
 			map[string]any{"Seq": 1, "RunID": "run-1", "ProjectID": "proj-1", "Type": "report.progress", "Source": "agent", "Actor": "claude", "AttemptNo": float64(1), "OccurredAtMS": 1_700_000_000_500},
@@ -77,7 +78,7 @@ func TestHumanTimelinePinsEventLabels(t *testing.T) {
 // attempt header, and adds an honest truncation hint at eof=false.
 func TestHumanLogsPinsAttemptAndTruncation(t *testing.T) {
 	var out bytes.Buffer
-	renderLogs(&out, "run-1", map[string]any{
+	render.Logs(&out, "run-1", map[string]any{
 		"attempt_no":  2,
 		"offset":      0,
 		"next_offset": 13,
@@ -96,7 +97,7 @@ func TestHumanLogsPinsAttemptAndTruncation(t *testing.T) {
 // sections and the honest coverage notes.
 func TestHumanMetricsPinsSectionsAndUnits(t *testing.T) {
 	var out bytes.Buffer
-	renderMetrics(&out, map[string]any{
+	render.Metrics(&out, map[string]any{
 		"metrics": map[string]any{
 			"scope": "global",
 			"weighted_attention_per_merged_change": map[string]any{
@@ -144,7 +145,7 @@ func TestHumanMetricsPinsSectionsAndUnits(t *testing.T) {
 // humanized not_found path used by renderError.
 func TestHumanWorktreePinsPathAndFailure(t *testing.T) {
 	var out bytes.Buffer
-	renderWorktree(&out, "run-1", map[string]any{
+	render.Worktree(&out, "run-1", map[string]any{
 		"run_id": "run-1", "attempt_no": 1, "path": "/wt/run-1", "exists": true,
 		"isolation_state": "none", "read_only_recommended": false,
 	})
@@ -153,7 +154,7 @@ func TestHumanWorktreePinsPathAndFailure(t *testing.T) {
 	}
 
 	out.Reset()
-	renderError(&out, controlplane.Response{OK: false, Error: &controlplane.Error{Code: "not_found", Message: "run not found", Details: map[string]any{}}}, failureContext("worktree", []string{"run-9"}))
+	render.Error(&out, controlplane.Response{OK: false, Error: &controlplane.Error{Code: "not_found", Message: "run not found", Details: map[string]any{}}}, render.FailureContext("worktree", []string{"run-9"}))
 	if !strings.Contains(out.String(), "✗ 未找到") || !strings.Contains(out.String(), "run-9") || !strings.Contains(out.String(), "工作树") {
 		t.Fatalf("worktree not_found = %q", out.String())
 	}
@@ -163,19 +164,19 @@ func TestHumanWorktreePinsPathAndFailure(t *testing.T) {
 // the stale failure with an actionable next step.
 func TestHumanKillRetryPinsAcceptedAndStale(t *testing.T) {
 	var out bytes.Buffer
-	renderKillRetry(&out, "kill", "run-1", map[string]any{"accepted": true, "state": "terminating"})
+	render.KillRetry(&out, "kill", "run-1", map[string]any{"accepted": true, "state": "terminating"})
 	got := out.String()
 	if !strings.Contains(got, "✓ 已请求停止运行 run-1") || !strings.Contains(got, "terminating") || !strings.Contains(got, "sift ps") {
 		t.Fatalf("kill accepted = %q", got)
 	}
 	out.Reset()
-	renderKillRetry(&out, "retry", "run-1", map[string]any{"disposition": "accepted", "probe_id": "probe-7", "message": "waiting for executor absence evidence"})
+	render.KillRetry(&out, "retry", "run-1", map[string]any{"disposition": "accepted", "probe_id": "probe-7", "message": "waiting for executor absence evidence"})
 	if !strings.Contains(out.String(), "✓ 已请求重试运行 run-1") || !strings.Contains(out.String(), "probe-7") {
 		t.Fatalf("retry accepted = %q", out.String())
 	}
 
 	out.Reset()
-	renderError(&out, controlplane.Response{OK: false, Error: &controlplane.Error{Code: "stale", Message: "run or attempt changed", Details: map[string]any{}}}, failureContext("kill", []string{"run-1"}))
+	render.Error(&out, controlplane.Response{OK: false, Error: &controlplane.Error{Code: "stale", Message: "run or attempt changed", Details: map[string]any{}}}, render.FailureContext("kill", []string{"run-1"}))
 	if !strings.Contains(out.String(), "✗ 运行或尝试已变化（stale）") || !strings.Contains(out.String(), "sift ps") {
 		t.Fatalf("kill stale = %q", out.String())
 	}
@@ -184,7 +185,7 @@ func TestHumanKillRetryPinsAcceptedAndStale(t *testing.T) {
 // TestHumanReportPinsAccepted pins the humanized submission result.
 func TestHumanReportPinsAccepted(t *testing.T) {
 	var out bytes.Buffer
-	renderReport(&out, "progress", map[string]any{"disposition": "accepted", "receipt_id": "receipt-1", "event_id": "event-2"})
+	render.Report(&out, "progress", map[string]any{"disposition": "accepted", "receipt_id": "receipt-1", "event_id": "event-2"})
 	got := out.String()
 	for _, want := range []string{"✓ 报告已提交", "进度", "receipt-1", "event-2"} {
 		if !strings.Contains(got, want) {
@@ -342,7 +343,7 @@ func TestHumanLogsNotFoundFailure(t *testing.T) {
 // consumption buckets and no latency samples never invent numbers.
 func TestHumanMetricsEmptyQuotaAndLatency(t *testing.T) {
 	var out bytes.Buffer
-	renderMetrics(&out, map[string]any{
+	render.Metrics(&out, map[string]any{
 		"metrics": map[string]any{
 			"scope":                                "global",
 			"attention_quota_consumption":          []any{},
