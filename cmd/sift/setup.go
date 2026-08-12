@@ -18,6 +18,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/miaoxiaoyong/sift/internal/agents"
 	"github.com/miaoxiaoyong/sift/internal/cli/render"
 	"github.com/miaoxiaoyong/sift/internal/config"
 )
@@ -175,23 +176,39 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 
 	// Agent selection: numbered list with every detected agent preselected;
 	// a numeric subset (1,3), all, or Enter keeps the selection (issue #929).
+	// Each row shows the probed version and the built-in characteristic
+	// profile (issue #930); non-interactive runs still report probed versions.
 	if scope != setupProject {
-		agents := strings.TrimSpace(opt.agents)
-		if agents == "" && interactive {
+		agentSpecs := strings.TrimSpace(opt.agents)
+		if agentSpecs == "" && interactive {
 			found := detectAgents()
 			if len(found) == 0 {
-				fmt.Fprintln(stdout, "⚠ 未在 PATH 中发现 claude/codex/cursor/pi；可输入可执行文件名，或直接回车跳过。")
-				agents = prompt(in, stdout, "选择 Agent（逗号分隔，直接回车跳过）", "")
+				fmt.Fprintln(stdout, "⚠ 未在 PATH 中发现已收录的 coding agent（claude/codex/cursor/pi/gemini/aider/qwen/cody 等）；可输入可执行文件名，或直接回车跳过。")
+				agentSpecs = prompt(in, stdout, "选择 Agent（逗号分隔，直接回车跳过）", "")
 			} else {
 				fmt.Fprintf(stdout, "%s 检测到 Agent：\n", render.Status("ok"))
-				for i, name := range found {
-					fmt.Fprintf(stdout, "  %d. %s\n", i+1, name)
+				for i, d := range found {
+					fmt.Fprintf(stdout, "  %d. %s\n", i+1, formatDetectedAgent(d))
 				}
 				picked := prompt(in, stdout, "选择 Agent（序号逗号分隔，如 1,3；直接回车或 all=全选；0/none=跳过）", "")
-				agents = selectAgents(picked, found)
+				agentSpecs = selectAgents(picked, detectedAgentNames(found))
+			}
+		} else if agentSpecs != "" {
+			// 非交互路径：把探测到的 version 写进输出（不要求入 config；issue #930）。
+			for _, spec := range strings.Split(agentSpecs, ",") {
+				if spec = strings.TrimSpace(spec); spec == "" {
+					continue
+				}
+				exe := spec
+				if _, after, ok := strings.Cut(spec, "="); ok {
+					exe = after
+				}
+				if v := agents.ProbeVersion(exe); v != "" {
+					fmt.Fprintf(stdout, "%s Agent %s（%s %s）\n", render.Status("ok"), spec, exe, v)
+				}
 			}
 		}
-		for _, spec := range strings.Split(agents, ",") {
+		for _, spec := range strings.Split(agentSpecs, ",") {
 			if spec = strings.TrimSpace(spec); spec != "" {
 				if agentArgsSet {
 					agentArgs := []string{}
@@ -356,14 +373,50 @@ func prompt(in *bufio.Reader, out io.Writer, label, fallback string) string {
 	return line
 }
 
-func detectAgents() []string {
-	var found []string
-	for _, name := range []string{"claude", "codex", "cursor", "pi"} {
-		if _, err := exec.LookPath(name); err == nil {
-			found = append(found, name)
+// detectedAgent is a coding agent found on PATH together with its probed
+// version and built-in characteristic profile (issue #930).
+type detectedAgent struct {
+	name    string
+	version string
+	char    agents.Characteristic
+}
+
+// detectAgents scans PATH for known coding agents (registry order), probing
+// each with --version for display. Agents outside the registry are not
+// auto-detected; users can still add them by executable name via --agent or
+// the fallback prompt.
+func detectAgents() []detectedAgent {
+	var found []detectedAgent
+	for _, name := range agents.Known() {
+		if _, err := exec.LookPath(name); err != nil {
+			continue
 		}
+		found = append(found, detectedAgent{
+			name:    name,
+			version: agents.ProbeVersion(name),
+			char:    agents.For(name),
+		})
 	}
 	return found
+}
+
+// detectedAgentNames extracts the ordered executable names for selectAgents.
+func detectedAgentNames(found []detectedAgent) []string {
+	names := make([]string, len(found))
+	for i, d := range found {
+		names[i] = d.name
+	}
+	return names
+}
+
+// formatDetectedAgent renders one wizard row:
+// "claude (2.1.218) — 编码·推理·长上下文 · 200K · 中 · 中 · Anthropic Claude Code：…".
+func formatDetectedAgent(d detectedAgent) string {
+	name := d.name
+	if d.version != "" {
+		name = fmt.Sprintf("%s (%s)", name, d.version)
+	}
+	return fmt.Sprintf("%s — %s · %s", name, d.char.Summary(), d.char.Notes)
 }
 
 func probeForgeLogin(kind string) string {

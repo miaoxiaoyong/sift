@@ -192,6 +192,143 @@ func TestRemoteHostProject(t *testing.T) {
 	}
 }
 
+// TestDetectAgentsVersionsAndCharacteristics pins issue #930: auto-detect
+// probes versions via --version and every detected row carries the built-in
+// characteristic profile (Chinese tags).
+func TestDetectAgentsVersionsAndCharacteristics(t *testing.T) {
+	bin := t.TempDir()
+	for name, body := range map[string]string{
+		"claude": "#!/bin/sh\nprintf 'Claude Code version 2.1.0\\n'\n",
+		"codex":  "#!/bin/sh\nprintf 'codex-cli 0.145.0\\n'\n",
+		"pi":     "#!/bin/sh\nprintf '0.84.1\\n'\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+filepath.Dir(gitPath))
+
+	found := detectAgents()
+	if len(found) != 3 {
+		t.Fatalf("detectAgents = %#v, want claude/codex/pi", found)
+	}
+	if got := found[0]; got.name != "claude" || got.version != "2.1.0" {
+		t.Fatalf("found[0] = %#v, want claude 2.1.0", got)
+	}
+	if got := found[1]; got.name != "codex" || got.version != "0.145.0" {
+		t.Fatalf("found[1] = %#v, want codex 0.145.0", got)
+	}
+	row := formatDetectedAgent(found[0])
+	for _, want := range []string{"claude (2.1.0)", "编码·推理·长上下文", "200K", "中", "Anthropic"} {
+		if !strings.Contains(row, want) {
+			t.Fatalf("formatDetectedAgent(claude) = %q, missing %q", row, want)
+		}
+	}
+}
+
+// TestInteractiveInitCharacteristicsDisplay is the wizard integration test for
+// issue #930: the numbered rows show executable (version) plus the built-in
+// characteristic labels in Chinese, and the default all-selection still writes
+// every detected agent to config.
+func TestInteractiveInitCharacteristicsDisplay(t *testing.T) {
+	_ = freshHome(t)
+	home, err := config.ResolveHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(t.TempDir(), "demo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repo, "remote", "add", "origin", "git@github.com:owner/repo.git").CombinedOutput(); err != nil {
+		t.Fatalf("git remote: %v: %s", err, out)
+	}
+	t.Chdir(repo)
+	repo, err = filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	for name, body := range map[string]string{
+		"claude": "#!/bin/sh\nprintf 'Claude Code version 2.0.0\\n'\n",
+		"codex":  "#!/bin/sh\nprintf 'codex-cli 0.5.0\\n'\n",
+		"pi":     "#!/bin/sh\nprintf '0.9.9\\n'\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+filepath.Dir(gitPath))
+
+	var out bytes.Buffer
+	// Answers: agents=all ; operator github=Enter (skip).
+	if code := runWithInput([]string{"sift", "init"}, strings.NewReader("all\n\n"), &out, io.Discard); code != 0 {
+		t.Fatalf("init = %d: %s", code, out.String())
+	}
+	for _, want := range []string{
+		"1. claude (2.0.0) — 编码·推理·长上下文 · 200K · 中 · 中 · Anthropic",
+		"2. codex (0.5.0) — 编码·审查 · 200K · 中 · 快 · OpenAI",
+		"3. pi (0.9.9) — 编码·规划·审查 · 200K · 高 · 中 · pi 编码代理",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("wizard output missing %q:\n%s", want, out.String())
+		}
+	}
+	snap, err := config.Load(home, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Config.Agents) != 3 {
+		t.Fatalf("agents = %#v, want all 3 detected agents", snap.Config.Agents)
+	}
+}
+
+// TestNonInteractiveAgentAddReportsVersion pins issue #930: the non-interactive
+// path writes the probed version into the output (without putting it in config).
+func TestNonInteractiveAgentAddReportsVersion(t *testing.T) {
+	_ = freshHome(t)
+	home, err := config.ResolveHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	agent := filepath.Join(bin, "claude")
+	if err := os.WriteFile(agent, []byte("#!/bin/sh\nprintf 'Claude Code version 3.1.4\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+filepath.Dir(gitPath))
+
+	var out bytes.Buffer
+	if code := runWithInput([]string{"sift", "agent", "add", "--offline", "--agent", "claude"}, strings.NewReader(""), &out, io.Discard); code != 0 {
+		t.Fatalf("agent add = %d: %s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "Agent claude（claude 3.1.4）") {
+		t.Fatalf("output does not report the probed version: %q", out.String())
+	}
+	snap, err := config.Load(home, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Config.Agents) != 1 {
+		t.Fatalf("agents = %#v", snap.Config.Agents)
+	}
+}
+
 func TestSelectAgents(t *testing.T) {
 	found := []string{"claude", "codex", "pi"}
 	for _, tt := range []struct {
