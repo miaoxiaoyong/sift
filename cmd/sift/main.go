@@ -93,10 +93,10 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return runSetup(rest, stdin, home, stdout, stderr, setupAll)
 	}
 	if command == "project" {
-		return runSetupCommand(rest, stdin, home, stdout, stderr, setupProject)
+		return runResourceCommand("project", rest, stdin, home, stdout, stderr)
 	}
 	if command == "agent" {
-		return runSetupCommand(rest, stdin, home, stdout, stderr, setupAgent)
+		return runResourceCommand("agent", rest, stdin, home, stdout, stderr)
 	}
 	if command == "daemon" {
 		if len(rest) != 0 {

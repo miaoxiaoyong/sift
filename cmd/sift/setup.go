@@ -40,18 +40,6 @@ type setupOptions struct {
 	agentArgs string
 }
 
-func runSetupCommand(args []string, stdin io.Reader, home config.Home, stdout, stderr io.Writer, scope setupScope) int {
-	if len(args) == 0 || args[0] != "add" {
-		usage := map[setupScope]string{
-			setupProject: "sift project add [--project PATH] [--forge github|gitlab] [--offline]（PATH 默认当前 git 仓库）",
-			setupAgent:   "sift agent add [--agent NAME] [--agent-args ARG,ARG] [--offline]",
-		}[scope]
-		report(stderr, fmt.Errorf("usage: %s", usage))
-		return 2
-	}
-	return runSetup(args[1:], stdin, home, stdout, stderr, scope)
-}
-
 // runSetup is deliberately local-only: it probes local executables and writes
 // config.yaml, but never contacts the daemon.
 //
