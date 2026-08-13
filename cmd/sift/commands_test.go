@@ -58,6 +58,16 @@ func TestHelpConsistencyAcrossSurfaces(t *testing.T) {
 // TestHelpSubcommandFlagsRendersParentHelp pins the deeper interception: a
 // help flag anywhere after the verb (`sift project add --help`) renders the
 // parent command's help instead of erroring or parsing flags.
+func TestReportHelpMarksAgentInternal(t *testing.T) {
+	freshHome(t)
+	out := runCapture(t, []string{"sift", "help", "report"})
+	for _, want := range []string{"Agent 内部通道", "勿手动调用", "--payload JSON", "[--key KEY]"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("report help lacks %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestHelpSubcommandFlagsRendersParentHelp(t *testing.T) {
 	freshHome(t)
 	for _, argv := range [][]string{

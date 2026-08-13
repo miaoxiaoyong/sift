@@ -28,10 +28,10 @@ summary: Agent Layer 1 上报的 run.sock、事件、去重与配额契约
 CLI 的稳定形状为：
 
 ```text
-sift report <progress|goal|blocker|completed> --key <report-key> --payload <json>
+sift report <progress|goal|blocker|completed> [--key <report-key>] --payload <json>
 ```
 
-`--key` 必填；调用方在同一逻辑上报的所有重试中复用它，而不是每次生成新 key。`--payload` 必须恰为 §3 对应 kind 的 closed JSON object；CLI 不接受 stdin、文件名、任意额外 flag 或未知子命令作为绕过 payload schema 的入口。CLI 在本地先拒绝缺失/不安全的 `SIFT_RUN_DIR`、`control.json`、token 或绑定字段，不尝试任何其他凭据或 socket。
+`--key` 可选；省略时 CLI 使用 `crypto/rand` 自动生成随机 key。调用方在同一逻辑上报的所有重试中复用同一个 key，而不是每次生成新 key。`--payload` 必须恰为 §3 对应 kind 的 closed JSON object；CLI 不接受 stdin、文件名、任意额外 flag 或未知子命令作为绕过 payload schema 的入口。CLI 在本地先拒绝缺失/不安全的 `SIFT_RUN_DIR`、`control.json`、token 或绑定字段，不尝试任何其他凭据或 socket。
 
 CLI 将 control 文件中的 binding 和调用方字段组成 [`control-plane.md` §3.2、§5.2](control-plane.md) 的唯一 Request v1：
 
@@ -47,7 +47,7 @@ CLI 将 control 文件中的 binding 和调用方字段组成 [`control-plane.md
     "run_id": "<control.json>",
     "attempt_no": 1,
     "generation": 1,
-    "report_key": "<--key>",
+    "report_key": "<generated-or-explicit-key>",
     "kind": "progress",
     "payload": {"message": "已完成检索"}
   }
@@ -101,7 +101,7 @@ payload_digest = SHA-256(canonical JSON of
 {"retry_policy":{"initial_delay_ms":100,"multiplier_micros":2000000,"max_delay_ms":1000,"total_timeout_ms":10000}}
 ```
 
-四个值均为正整数；`multiplier_micros` 是配置中非 exponent、至多六位小数的 `runtime.retry_multiplier × 1,000,000` 精确整数，范围 `1000000..10000000`；三个 delay 是配置中精确的整数毫秒。CLI 只接受这一个 schema；缺字段、额外字段、范围错误、整数溢出或 `initial_delay_ms <= max_delay_ms <= total_timeout_ms` 不成立时均本地 fail closed，不猜默认值、不读 `config.yaml`。首次收到 `not_ready` 时记录单调时钟起点；第 `n` 次等待（从 0 开始）为 `min(max_delay_ms, floor(initial_delay_ms × multiplier_micros^n / 1000000^n))`，且不得使下一次等待后的累计时间超过 `total_timeout_ms`。达到该上限即失败。边界 vector：示例 policy 的等待依次为 `100,200,400,800,1000×8` ms（累计 `9500ms`），下一次 `1000ms` 必须因超过 `10000ms` 拒绝；`multiplier_micros=1000000` 长序列保持 `100ms`；`initial_delay_ms=1001,max_delay_ms=1000`、缺 `multiplier_micros`、或第二次响应把 `max_delay_ms` 改为 `999` 均为本地失败。每次重试复用相同 report key 和 payload。任何其他错误（包括限流、配额冲突及 payload/schema 错误）都不进入该退避循环。
+四个值均为正整数；`multiplier_micros` 是配置中非 exponent、至多六位小数的 `runtime.retry_multiplier × 1,000,000` 精确整数，范围 `1000000..10000000`；三个 delay 是配置中精确的整数毫秒。CLI 只接受这一个 schema；缺字段、额外字段、范围错误、整数溢出或 `initial_delay_ms <= max_delay_ms <= total_timeout_ms` 不成立时均本地 fail closed，不猜默认值、不读 `config.yaml`。首次收到 `not_ready` 时记录单调时钟起点；第 `n` 次等待（从 0 开始）为 `min(max_delay_ms, floor(initial_delay_ms × multiplier_micros^n / 1000000^n))`，且不得使下一次等待后的累计时间超过 `total_timeout_ms`。达到该上限即失败。边界 vector：示例 policy 的等待依次为 `100,200,400,800,1000×8` ms（累计 `9500ms`），下一次 `1000ms` 必须因超过 `10000ms` 拒绝；`multiplier_micros=1000000` 长序列保持 `100ms`；`initial_delay_ms=1001,max_delay_ms=1000`、缺 `multiplier_micros`、或第二次响应把 `max_delay_ms` 改为 `999` 均为本地失败。每次重试复用相同 report key 和 payload（未显式提供时，该 key 在调用开始时生成一次）。任何其他错误（包括限流、配额冲突及 payload/schema 错误）都不进入该退避循环。
 
 ## 5. 接受、事件与去重
 

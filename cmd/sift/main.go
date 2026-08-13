@@ -3,6 +3,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -869,7 +871,7 @@ var reportKinds = map[string]bool{"progress": true, "goal": true, "blocker": tru
 // no offline fallback (report.md §1, §2, §4; control-plane.md §8).
 func runReport(args []string, home config.Home, stdout, stderr io.Writer) int {
 	if len(args) < 1 || !reportKinds[args[0]] {
-		report(stderr, fmt.Errorf("usage: sift report <progress|goal|blocker|completed> --key KEY --payload JSON"))
+		report(stderr, fmt.Errorf("usage: sift report <progress|goal|blocker|completed> [--key KEY] --payload JSON"))
 		return 2
 	}
 	kind := args[0]
@@ -882,9 +884,17 @@ func runReport(args []string, home config.Home, stdout, stderr io.Writer) int {
 		return 2
 	}
 	jsonOutput := os.Getenv("SIFT_JSON") == "1" || *jsonFlag
-	if *key == "" || *payload == "" {
-		report(stderr, fmt.Errorf("usage: sift report <progress|goal|blocker|completed> --key KEY --payload JSON"))
+	if *payload == "" {
+		report(stderr, fmt.Errorf("usage: sift report <progress|goal|blocker|completed> [--key KEY] --payload JSON"))
 		return 2
+	}
+	if *key == "" {
+		var keyBytes [16]byte
+		if _, err := rand.Read(keyBytes[:]); err != nil {
+			report(stderr, fmt.Errorf("generate report key: %w", err))
+			return 1
+		}
+		*key = hex.EncodeToString(keyBytes[:])
 	}
 	var p map[string]any
 	if err := json.Unmarshal([]byte(*payload), &p); err != nil || p == nil {

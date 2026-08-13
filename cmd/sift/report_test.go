@@ -101,6 +101,21 @@ func TestRunReportAccepted(t *testing.T) {
 
 // TestRunReportHumanized pins the default humanized submission result: a
 // Chinese confirmation with the receipt, and no raw envelope on stdout.
+func TestRunReportGeneratesKey(t *testing.T) {
+	seedReportDaemon(t, "running", reportConfigFast)
+	var out bytes.Buffer
+	if code := run([]string{"sift", "report", "progress", "--json", "--payload", `{"message":"hi"}`}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit code = %d; output:\n%s", code, out.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["ok"] != true {
+		t.Fatalf("response ok = %v", resp["ok"])
+	}
+}
+
 func TestRunReportHumanized(t *testing.T) {
 	seedReportDaemon(t, "running", reportConfigFast)
 	var out bytes.Buffer
@@ -151,7 +166,6 @@ func TestRunReportRejectsBadArgs(t *testing.T) {
 	for _, args := range [][]string{
 		{"sift", "report"},
 		{"sift", "report", "bogus", "--key", "0123456789abcdef0123456789abcdef", "--payload", `{"message":"x"}`},
-		{"sift", "report", "progress", "--payload", `{"message":"x"}`},
 		{"sift", "report", "progress", "--key", "0123456789abcdef0123456789abcdef"},
 		{"sift", "report", "progress", "--key", "0123456789abcdef0123456789abcdef", "--payload", `"notobject"`},
 	} {
