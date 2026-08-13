@@ -274,6 +274,66 @@ func TestAgentRemove(t *testing.T) {
 	}
 }
 
+// TestAgentRemoveReferencedByProject pins the #937 round-1 P1 fix: an agent
+// explicitly referenced by a project's agents field must not be removable —
+// the command exits non-zero, names the referencing project, and leaves
+// config.yaml untouched (removing it would write an unloadable config).
+func TestAgentRemoveReferencedByProject(t *testing.T) {
+	_ = freshHome(t)
+	home, err := config.ResolveHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(t.TempDir(), "demo")
+	_ = addTestAgent(t)
+	addTestProject(t, repo, "git@github.com:owner/demo.git")
+
+	// The CLI never writes an explicit project agents field; hand-edit the
+	// config to reproduce the review repro (project bound to the agent).
+	doc, existed, err := setupDocument(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !existed {
+		t.Fatal("config missing after project add")
+	}
+	projects := list(doc, "projects")
+	pm, ok := projects[0].(map[string]any)
+	if !ok {
+		t.Fatalf("projects[0] = %T", projects[0])
+	}
+	pm["agents"] = []any{"claude"}
+	if err := writeSetupDocument(home, doc, existed); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.ReadFile(config.ConfigPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if code := run([]string{"sift", "agent", "remove", "claude"}, io.Discard, &stderr); code == 0 {
+		t.Fatalf("agent remove of a referenced agent exited 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "demo") {
+		t.Fatalf("agent remove error lacks referencing project id:\n%s", stderr.String())
+	}
+	after, err := os.ReadFile(config.ConfigPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("referenced agent remove rewrote config:\nbefore %q\nafter %q", before, after)
+	}
+	snap, err := config.Load(home, time.Now())
+	if err != nil {
+		t.Fatalf("config unloadable after rejected remove: %v", err)
+	}
+	if len(snap.Config.Agents) != 1 || snap.Config.Agents[0].ID != "claude" {
+		t.Fatalf("agents after rejected remove = %#v", snap.Config.Agents)
+	}
+}
+
 // TestAgentListEmpty pins the friendly empty surface for `sift agent list`.
 func TestAgentListEmpty(t *testing.T) {
 	freshHome(t)

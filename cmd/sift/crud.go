@@ -246,6 +246,11 @@ func runResourceRemove(resource string, args []string, home config.Home, stdout,
 // temp-file + rename + .bak + 0600 path (backup only when the file existed).
 // The bool is false when no entry carries the id — the caller turns that into
 // the not-found error.
+//
+// Removing an agent that a project still references explicitly would write a
+// config that fails the next Load (normalize_agents.go rejects unknown agent
+// references), so agent removes check that first and fail closed without
+// touching the file (review #937 round 1 P1).
 func removeSetupItem(home config.Home, resource, id string) (bool, error) {
 	doc, existed, err := setupDocument(home)
 	if err != nil {
@@ -266,11 +271,42 @@ func removeSetupItem(home config.Home, resource, id string) (bool, error) {
 	if !removed {
 		return false, nil
 	}
+	if resource == "agent" {
+		if refs := projectsReferencingAgent(doc, id); len(refs) > 0 {
+			return false, fmt.Errorf("无法删除 Agent %q：仍被项目引用（%s）。请先 `sift project remove` 移除引用项目，或修改这些项目的 agents 字段后再试", id, strings.Join(refs, ", "))
+		}
+	}
 	doc[key] = filtered
 	if err := writeSetupDocument(home, doc, existed); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// projectsReferencingAgent lists the project ids whose explicit agents field
+// contains id. Only explicit lists count: an absent/empty project agents field
+// resolves to every defined agent at load time (config.md §3.3, normalize_agents.go),
+// so dropping an agent from such a project stays loadable and needs no block.
+func projectsReferencingAgent(doc map[string]any, id string) []string {
+	var refs []string
+	for _, item := range list(doc, "projects") {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		names, ok := m["agents"].([]any)
+		if !ok {
+			continue
+		}
+		pid, _ := m["id"].(string)
+		for _, e := range names {
+			if name, ok := e.(string); ok && name == id {
+				refs = append(refs, pid)
+				break
+			}
+		}
+	}
+	return refs
 }
 
 func resourceLabel(resource string) string {
