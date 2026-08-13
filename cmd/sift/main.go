@@ -856,9 +856,14 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case errors.Is(execErr, hosting.ErrNoBackend):
-		// No supervisor: the foreground hint is the supported path, not an
-		// error. Print it and exit 0 so `sift service install` is portable.
+		// Install/start can intentionally fall back to a foreground daemon, but
+		// restart/reload must not claim that a daemon was restarted when no
+		// supervisor executed the request.
 		printForegroundReport(stdout, plan)
+		if action == hosting.ActionRestart || action == hosting.ActionReload {
+			fmt.Fprintln(stdout, "未检测到受管服务（前台 foreground）；请手动重启 sift daemon 或运行 sift service install 注册自启")
+			return 1
+		}
 		return 0
 	case action == hosting.ActionStatus:
 		// Both launchctl list and systemctl status use non-zero exits for a
