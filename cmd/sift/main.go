@@ -109,6 +109,9 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	if command == "report" {
 		return runReport(args[2:], home, stdout, stderr)
 	}
+	if command == "update" {
+		return runUpdate(args[2:], home, stdout, stderr)
+	}
 	requestArgs := args[2:]
 	if command == "doctor" {
 		requestArgs = nil
@@ -552,7 +555,7 @@ func overview(stdout, stderr io.Writer) int {
 
 func commandHelp(command string, stdout, stderr io.Writer) int {
 	if command == "" {
-		fmt.Fprintln(stdout, "Sift 命令参考\n\n基础命令：\n  init                 交互式初始化配置\n  project add          添加项目\n  agent add            添加 Agent\n  daemon               启动本地守护进程\n  doctor               检查本地环境\n  install              安装 Sift 发布包\n  service              管理后台服务\n\n查询命令：\n  ps                   查看运行\n  logs <run-id>        查看运行日志\n  timeline             查看事件时间线\n  metrics              查看运行指标\n  worktree <run-id>    查看运行工作树\n  attach <run-id>      只读连接运行会话\n\n运行控制：\n  kill <run-id>        停止运行\n  retry <run-id>       重试运行\n  report <kind>        提交报告\n  hooks-bootstrap      为项目安装 Git hooks\n\n用法：sift <命令> [选项]\n示例：sift init；sift doctor --offline；sift ps")
+		fmt.Fprintln(stdout, "Sift 命令参考\n\n基础命令：\n  init                 交互式初始化配置\n  project add          添加项目\n  agent add            添加 Agent\n  daemon               启动本地守护进程\n  doctor               检查本地环境\n  install              安装 Sift 发布包\n  update               升级到最新版本\n  service              管理后台服务\n\n查询命令：\n  ps                   查看运行\n  logs <run-id>        查看运行日志\n  timeline             查看事件时间线\n  metrics              查看运行指标\n  worktree <run-id>    查看运行工作树\n  attach <run-id>      只读连接运行会话\n\n运行控制：\n  kill <run-id>        停止运行\n  retry <run-id>       重试运行\n  report <kind>        提交报告\n  hooks-bootstrap      为项目安装 Git hooks\n\n用法：sift <命令> [选项]\n示例：sift init；sift doctor --offline；sift ps")
 		return 0
 	}
 	entries := map[string][3]string{
@@ -572,6 +575,7 @@ func commandHelp(command string, stdout, stderr io.Writer) int {
 		"report":          {"向运行提交报告", "sift report <kind> --key KEY --payload JSON [--json]", "sift report review --key run-123 --payload '{}'"},
 		"hooks-bootstrap": {"为项目安装 Git hooks", "sift hooks-bootstrap <project-id>", "sift hooks-bootstrap project-1"},
 		"install":         {"安装 Sift 发布包", "sift install <archive.tar.gz>", "sift install sift.tar.gz"},
+		"update":          {"升级到最新版本", "sift update [--check] [--version X] [--force] [--json]", "sift update --check"},
 		"service":         {"管理后台服务", "sift service <install|uninstall|start|stop|restart|reload|status>", "sift service status"},
 	}
 	entry, ok := entries[command]

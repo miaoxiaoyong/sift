@@ -132,7 +132,7 @@ func TestHumanOverviewAndHelp(t *testing.T) {
 	// called out explicitly to guard against the regression this slice fixed.
 	for _, cmd := range []string{
 		// 基础命令
-		"init", "project", "agent", "daemon", "doctor", "install", "service",
+		"init", "project", "agent", "daemon", "doctor", "install", "update", "service",
 		// 查询命令
 		"ps", "logs", "timeline", "metrics", "worktree", "attach",
 		// 运行控制
