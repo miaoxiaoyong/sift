@@ -1129,6 +1129,53 @@ func TestRequestMetricsMaps(t *testing.T) {
 	}
 }
 
+func TestKillRetryResolveOperatorValues(t *testing.T) {
+	home := freshHome(t)
+	var requests []controlplane.Request
+	serveFakeOperatorMulti(t, home, func(req controlplane.Request) map[string]any {
+		requests = append(requests, req)
+		if req.Method == "ops.ps" {
+			return fakeDoctorSuccess(req.RequestID, map[string]any{"runs": []any{map[string]any{"run_id": "run-1", "version": 7}}})
+		}
+		if req.Method == "ops.kill" && (req.Params["expected_version"] != float64(7) || req.Params["request_key"] == "") {
+			t.Errorf("resolved kill params = %#v", req.Params)
+		}
+		return fakeDoctorSuccess(req.RequestID, map[string]any{"accepted": true, "state": "terminating"})
+	})
+	var out bytes.Buffer
+	if code := run([]string{"sift", "kill", "run-1"}, &out, io.Discard); code != 0 {
+		t.Fatalf("resolved kill exit = %d; output=%q", code, out.String())
+	}
+	if len(requests) != 2 || requests[0].Method != "ops.ps" || requests[1].Method != "ops.kill" {
+		t.Fatalf("requests = %#v, want ps then kill", requests)
+	}
+
+	requests = nil
+	out.Reset()
+	if code := run([]string{"sift", "retry", "run-1", "--expected-version", "9", "--request-key", "fixed"}, &out, io.Discard); code != 0 {
+		t.Fatalf("explicit retry exit = %d; output=%q", code, out.String())
+	}
+	if len(requests) != 1 || requests[0].Method != "ops.retry" || requests[0].Params["expected_version"] != float64(9) || requests[0].Params["request_key"] != "fixed" {
+		t.Fatalf("explicit retry request = %#v", requests)
+	}
+}
+
+func TestKillRetryMissingRunIsActionable(t *testing.T) {
+	home := freshHome(t)
+	var requests []controlplane.Request
+	serveFakeOperatorMulti(t, home, func(req controlplane.Request) map[string]any {
+		requests = append(requests, req)
+		return fakeDoctorSuccess(req.RequestID, map[string]any{"runs": []any{}})
+	})
+	var out bytes.Buffer
+	if code := run([]string{"sift", "kill", "missing"}, &out, io.Discard); code == 0 || !strings.Contains(out.String(), "运行 sift ps 查看") {
+		t.Fatalf("missing run exit=%d output=%q", code, out.String())
+	}
+	if len(requests) != 1 || requests[0].Method != "ops.ps" {
+		t.Fatalf("missing run requests = %#v, want only ops.ps", requests)
+	}
+}
+
 // TestRequestTimelineMaps verifies the timeline command builds the closed
 // ops.timeline param set with keyset/type filters.
 func TestRequestTimelineMaps(t *testing.T) {

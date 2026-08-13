@@ -3,6 +3,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -159,6 +161,9 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	jsonOutput := os.Getenv("SIFT_JSON") == "1"
 	requestArgs, jsonFlag := splitJSONFlag(requestArgs)
 	jsonOutput = jsonOutput || jsonFlag
+	if command == "kill" || command == "retry" {
+		return runKillRetry(command, requestArgs, home, stdout, stderr, jsonOutput)
+	}
 	method, params, err := request(command, requestArgs)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "unknown command") {
@@ -411,6 +416,125 @@ func doctorMessage(message, level string) string {
 	return message
 }
 
+// parseKillRetryArgs accepts the run id before or after the optional flags. The
+// internal protocol values are intentionally optional at the CLI boundary;
+// runKillRetry resolves the missing values from ops.ps.
+func parseKillRetryArgs(command string, args []string) (int, string, string, error) {
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	version := fs.Int("expected-version", 0, "expected Run version")
+	key := fs.String("request-key", "", "idempotency key")
+	ordered := make([]string, 0, len(args))
+	positional := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--expected-version" || a == "--request-key" {
+			if i+1 >= len(args) {
+				return 0, "", "", fmt.Errorf("missing value for %s", a)
+			}
+			ordered = append(ordered, a, args[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "--expected-version=") || strings.HasPrefix(a, "--request-key=") {
+			ordered = append(ordered, a)
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			ordered = append(ordered, a)
+			continue
+		}
+		if positional != "" {
+			return 0, "", "", fmt.Errorf("usage: sift %s <run-id> [--expected-version N] [--request-key KEY]", command)
+		}
+		positional = a
+	}
+	if err := fs.Parse(ordered); err != nil {
+		return 0, "", "", err
+	}
+	if fs.NArg() != 0 || positional == "" {
+		return 0, "", "", fmt.Errorf("usage: sift %s <run-id> [--expected-version N] [--request-key KEY]", command)
+	}
+	return *version, *key, positional, nil
+}
+
+func newRequestKey() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate request key: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func runKillRetry(command string, args []string, home config.Home, stdout, stderr io.Writer, jsonOutput bool) int {
+	version, key, runID, err := parseKillRetryArgs(command, args)
+	if err != nil {
+		report(stderr, err)
+		return 2
+	}
+	if version < 1 || key == "" {
+		response, err := controlplane.OperatorRequest(home, "ops.ps", map[string]any{
+			"run_id": runID, "project_id": nil, "status": nil, "limit": 1, "after_run_id": nil,
+		})
+		if err != nil {
+			reportDaemonUnavailable(home, stderr, err)
+			return 1
+		}
+		if !response.OK {
+			if jsonOutput {
+				_ = printJSON(stdout, response)
+			} else {
+				render.Error(stdout, response, render.FailureContext(command, []string{runID}))
+			}
+			return 1
+		}
+		var result struct {
+			Runs []struct {
+				RunID   string `json:"run_id"`
+				Version int64  `json:"version"`
+			} `json:"runs"`
+		}
+		body, err := json.Marshal(response.Result)
+		if err != nil || json.Unmarshal(body, &result) != nil || len(result.Runs) == 0 || result.Runs[0].RunID != runID || result.Runs[0].Version < 1 {
+			fmt.Fprintf(stdout, "✗ 未找到运行 %s（运行 sift ps 查看）\n", runID)
+			return 1
+		}
+		if version < 1 {
+			version = int(result.Runs[0].Version)
+		}
+	}
+	if key == "" {
+		key, err = newRequestKey()
+		if err != nil {
+			report(stderr, err)
+			return 1
+		}
+	}
+	response, err := controlplane.OperatorRequest(home, "ops."+command, map[string]any{
+		"run_id": runID, "expected_version": version, "request_key": key,
+	})
+	if err != nil {
+		reportDaemonUnavailable(home, stderr, err)
+		return 1
+	}
+	if jsonOutput {
+		if err := printJSON(stdout, response); err != nil {
+			report(stderr, err)
+			return 1
+		}
+		if !response.OK {
+			return 1
+		}
+		return 0
+	}
+	if !response.OK {
+		render.Error(stdout, response, render.FailureContext(command, []string{runID}))
+		return 1
+	}
+	render.KillRetry(stdout, command, runID, response.Result)
+	return 0
+}
+
 func request(command string, args []string) (string, map[string]any, error) {
 	switch command {
 	case "ps":
@@ -441,16 +565,11 @@ func request(command string, args []string) (string, map[string]any, error) {
 		}
 		return "ops.hooks-bootstrap", map[string]any{"project_id": args[0]}, nil
 	case "kill", "retry":
-		fs := flag.NewFlagSet(command, flag.ContinueOnError)
-		version := fs.Int("expected-version", 0, "expected Run version")
-		key := fs.String("request-key", "", "idempotency key")
-		if err := fs.Parse(args); err != nil {
+		version, key, runID, err := parseKillRetryArgs(command, args)
+		if err != nil {
 			return "", nil, err
 		}
-		if fs.NArg() != 1 || *version < 1 || *key == "" {
-			return "", nil, fmt.Errorf("usage: sift %s --expected-version N --request-key KEY <run-id>", command)
-		}
-		return "ops." + command, map[string]any{"run_id": fs.Arg(0), "expected_version": *version, "request_key": *key}, nil
+		return "ops." + command, map[string]any{"run_id": runID, "expected_version": version, "request_key": key}, nil
 	case "metrics":
 		fs := flag.NewFlagSet("metrics", flag.ContinueOnError)
 		project := fs.String("project", "", "scope metrics to a project id")

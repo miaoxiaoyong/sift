@@ -50,7 +50,7 @@ func Error(w io.Writer, response controlplane.Response, context string) {
 	case "not_found":
 		fmt.Fprintf(w, "✗ 未找到：%s\n", context)
 	case "stale":
-		fmt.Fprintln(w, "✗ 运行或尝试已变化（stale）：请先运行 sift ps 查看最新状态，再重试。")
+		fmt.Fprintln(w, "✗ 运行或尝试已变化（stale）：运行已变更，请先运行 sift ps 查看最新状态，再重试。")
 	case "unauthorized":
 		fmt.Fprintln(w, "✗ 凭据被拒绝（unauthorized）：请检查守护进程是否正常运行（sift doctor）。")
 	case "unavailable":
