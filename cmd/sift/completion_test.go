@@ -317,6 +317,46 @@ func fishCompletionProbe(t *testing.T, cmdline string) []string {
 	return cands
 }
 
+// TestCompletionGlobalVerboseQuiet pins issue #939: the universal
+// -v/--verbose and -q/--quiet flags are discoverable both at the top level
+// (global flags) and on every command (they are accepted everywhere).
+func TestCompletionGlobalVerboseQuiet(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		shell := shell
+		t.Run(shell, func(t *testing.T) {
+			script := runCapture(t, []string{"sift", "completion", shell})
+			switch shell {
+			case "bash":
+				words := bashCompgenWordsFrom(script, 0)
+				for _, w := range []string{"-v", "--verbose", "-q", "--quiet"} {
+					if !slices.Contains(words, w) {
+						t.Errorf("bash top-level words %v lack %q", words, w)
+					}
+				}
+				off := strings.Index(script, "ps)")
+				words = bashCompgenWordsFrom(script, off)
+				for _, w := range []string{"-v", "--verbose", "-q", "--quiet"} {
+					if !slices.Contains(words, w) {
+						t.Errorf("bash ps words %v lack %q", words, w)
+					}
+				}
+			case "zsh":
+				for _, entry := range []string{"'--verbose:详细输出'", "'-v:详细输出'", "'--quiet:静默输出'", "'-q:静默输出'"} {
+					if !strings.Contains(script, entry) {
+						t.Errorf("zsh lacks global flag entry %q", entry)
+					}
+				}
+			case "fish":
+				for _, line := range []string{"-l verbose -s v", "-l quiet -s q"} {
+					if !strings.Contains(script, line) {
+						t.Errorf("fish lacks global flag line %q", line)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestCompletionScriptsParse runs bash -n / zsh -n over the generated scripts
 // when the shell is available, so an eval'ed script is guaranteed parseable
 // (issue #935: `sift completion zsh` 输出可 eval 的脚本).

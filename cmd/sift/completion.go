@@ -11,15 +11,21 @@ import (
 )
 
 // globalFlags are the universal CLI flags offered by the top-level surface:
-// --help/-h work before any command verb (`sift --help`), and --version is a
-// top-level only release-version surface. Per command, --help/-h are offered
-// alongside each command's own flags. These are part of every discovery
-// surface (issue #935: command list + global/per-command flags).
-var globalFlags = []string{"--help", "-h", "--version"}
+// --help/-h work before any command verb (`sift --help`), --version is a
+// top-level only release-version surface, and the -v/--verbose/-q/--quiet
+// pair (issue #939) are accepted anywhere and stripped before dispatch. These
+// are part of every discovery surface (issue #935: command list + global/
+// per-command flags).
+var globalFlags = []string{"--help", "-h", "--version", "--verbose", "-v", "--quiet", "-q"}
 
 // perCommandHelpFlags are the universal help flags offered on every command
 // (issue #935: `sift <cmd> --help` is intercepted pre-dispatch).
 var perCommandHelpFlags = []string{"--help", "-h"}
+
+// perCommandGlobalFlags are the universal -v/--verbose and -q/--quiet flags,
+// offered on every command because every command accepts them (issue #939:
+// they are consumed before dispatch, never reaching a command's flag parser).
+var perCommandGlobalFlags = []string{"--verbose", "-v", "--quiet", "-q"}
 
 // topLevelCompletionWords returns the candidate words for the first position
 // after `sift`: every command plus the `help` verb and the universal
@@ -38,10 +44,11 @@ func topLevelCompletionWords() []string {
 // (issue #935). Subcommands are listed before flags so an action verb
 // (project add / report progress) completes first.
 func (m commandMeta) completionWords() []string {
-	out := make([]string, 0, len(m.subcommands)+len(m.flags)+len(perCommandHelpFlags))
+	out := make([]string, 0, len(m.subcommands)+len(m.flags)+len(perCommandHelpFlags)+len(perCommandGlobalFlags))
 	out = append(out, m.subcommands...)
 	out = append(out, m.flagWords()...)
 	out = append(out, perCommandHelpFlags...)
+	out = append(out, perCommandGlobalFlags...)
 	return out
 }
 
@@ -138,6 +145,10 @@ func writeZshCompletion(w io.Writer) {
 	fmt.Fprintln(w, "        '--help:查看帮助'")
 	fmt.Fprintln(w, "        '-h:查看帮助'")
 	fmt.Fprintln(w, "        '--version:查看版本'")
+	fmt.Fprintln(w, "        '--verbose:详细输出'")
+	fmt.Fprintln(w, "        '-v:详细输出'")
+	fmt.Fprintln(w, "        '--quiet:静默输出'")
+	fmt.Fprintln(w, "        '-q:静默输出'")
 	fmt.Fprintln(w, "    )")
 	fmt.Fprintln(w, "    if (( CURRENT == 2 )); then")
 	fmt.Fprintln(w, "        _describe 'command' commands")
@@ -205,8 +216,10 @@ func writeZshArguments(w io.Writer, m commandMeta) {
 			specs = append(specs, fmt.Sprintf("'--%s=[%s]'", flag, f.desc))
 		}
 	}
-	// Universal help flags are offered on every command (issue #935).
+	// Universal help + global flags are appended to every command's _arguments
+	// spec (issue #935 help; issue #939 -v/-q).
 	specs = append(specs, "'--help[查看帮助]'", "'-h[查看帮助]'")
+	specs = append(specs, "'--verbose[详细输出]'", "'-v[详细输出]'", "'--quiet[静默输出]'", "'-q[静默输出]'")
 	fmt.Fprintln(w, "            _arguments \\")
 	for i, s := range specs {
 		sep := " \\"
@@ -231,6 +244,8 @@ func writeFishCompletion(w io.Writer) {
 	fmt.Fprintln(w, "complete -c sift -n '__fish_use_subcommand' -a 'help' -d '查看帮助'")
 	fmt.Fprintln(w, "complete -c sift -n '__fish_use_subcommand' -l help -s h -d '查看帮助'")
 	fmt.Fprintln(w, "complete -c sift -n '__fish_use_subcommand' -l version -d '查看版本'")
+	fmt.Fprintln(w, "complete -c sift -n '__fish_use_subcommand' -l verbose -s v -d '详细输出'")
+	fmt.Fprintln(w, "complete -c sift -n '__fish_use_subcommand' -l quiet -s q -d '静默输出'")
 	for _, m := range commands {
 		fmt.Fprintf(w, "complete -c sift -n '__fish_use_subcommand' -a '%s' -d '%s'\n", m.name, m.summary)
 		for _, s := range m.subcommands {
@@ -247,7 +262,10 @@ func writeFishCompletion(w io.Writer) {
 			}
 			fmt.Fprintf(w, "complete -c sift -n '%s' -l %s%s -d '%s'\n", seen, strings.TrimPrefix(f.flag, "--"), argSpec, f.desc)
 		}
-		// Universal help flags are offered on every command (issue #935).
+		// Universal help + global flags are offered on every command (issue
+		// #935 help; issue #939 -v/-q).
 		fmt.Fprintf(w, "complete -c sift -n '%s' -l help -s h -d '查看帮助'\n", seen)
+		fmt.Fprintf(w, "complete -c sift -n '%s' -l verbose -s v -d '详细输出'\n", seen)
+		fmt.Fprintf(w, "complete -c sift -n '%s' -l quiet -s q -d '静默输出'\n", seen)
 	}
 }

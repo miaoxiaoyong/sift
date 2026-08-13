@@ -41,44 +41,63 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 // runWithInput keeps setup commands testable without requiring a terminal.
 func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) < 2 {
+	// Issue #939: the universal -v/--verbose and -q/--quiet flags are accepted
+	// anywhere in the command line and stripped before any dispatch, so no
+	// command's own flag parser ever rejects them. Commands without
+	// verbose/quiet semantics simply ignore the consumed flags; update and
+	// version implement them (see runUpdate/runVersion).
+	rest, verbose, quiet := splitGlobalFlags(args[1:])
+	if len(rest) == 0 {
+		// `sift`, `sift -v`, `sift -q`: the overview is the default command;
+		// -q silences its non-error output.
+		if quiet {
+			return 0
+		}
 		return overview(stdout, stderr)
 	}
-	if args[1] == "help" || args[1] == "--help" || args[1] == "-h" {
-		if len(args) > 3 {
+	if rest[0] == "help" || rest[0] == "--help" || rest[0] == "-h" {
+		if len(rest) > 2 {
 			report(stderr, fmt.Errorf("usage: sift help [command]"))
 			return 2
 		}
-		if len(args) == 3 {
-			return commandHelp(args[2], stdout, stderr)
+		if len(rest) == 2 {
+			return commandHelp(rest[1], stdout, stderr)
 		}
 		return commandHelp("", stdout, stderr)
 	}
 	// `sift --version` is the operator-facing release version surface; the
 	// wrapper exposes the same value via `sift-agent-wrapper --version` and the
 	// daemon via the RPC envelope and `sift doctor` (WBS M8 §8.1).
-	if args[1] == "--version" || args[1] == "-version" {
-		if len(args) != 2 {
+	if rest[0] == "--version" || rest[0] == "-version" {
+		if len(rest) != 1 {
 			report(stderr, fmt.Errorf("usage: sift --version"))
 			return 2
+		}
+		if quiet {
+			return 0
 		}
 		fmt.Fprintln(stdout, version.Release)
 		return 0
 	}
-	command := args[1]
-	rest := args[2:]
+	command := rest[0]
+	cmdArgs := rest[1:]
 	// Issue #935: --help/-h/-help are intercepted here, before any dispatch, so
 	// no command ever falls into its own flag parsing or a daemon RPC. `sift
 	// help <cmd>`, `sift <cmd> --help` and `sift <cmd> -h` all render the same
 	// Chinese help from the single metadata table (commands.go). The scan covers
 	// the whole remaining argv so subcommand help (`sift project add --help`)
 	// resolves too; no command accepts "-h"/"--help"/"-help" as a value.
-	if hasHelpFlag(rest) {
+	if hasHelpFlag(cmdArgs) {
 		return commandHelp(command, stdout, stderr)
 	}
-	// completion is pure generation: it must work without a home at all.
+	// version needs no home and never dials the daemon: it prints the release
+	// and queries the GitHub latest-release API for the update status (issue
+	// #939); completion is pure generation and must work without a home too.
+	if command == "version" {
+		return runVersion(cmdArgs, stdout, stderr)
+	}
 	if command == "completion" {
-		return runCompletion(rest, stdout, stderr)
+		return runCompletion(cmdArgs, stdout, stderr)
 	}
 	home, err := config.ResolveHome()
 	if err != nil {
@@ -87,32 +106,32 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	}
 	// status is a local, offline overview: it never dials the daemon for RPC.
 	if command == "status" {
-		return runStatus(rest, home, stdout, stderr)
+		return runStatus(cmdArgs, home, stdout, stderr)
 	}
 	if command == "init" {
-		return runSetup(rest, stdin, home, stdout, stderr, setupAll)
+		return runSetup(cmdArgs, stdin, home, stdout, stderr, setupAll)
 	}
 	if command == "project" {
-		return runResourceCommand("project", rest, stdin, home, stdout, stderr)
+		return runResourceCommand("project", cmdArgs, stdin, home, stdout, stderr)
 	}
 	if command == "agent" {
-		return runResourceCommand("agent", rest, stdin, home, stdout, stderr)
+		return runResourceCommand("agent", cmdArgs, stdin, home, stdout, stderr)
 	}
 	if command == "daemon" {
-		if len(rest) != 0 {
+		if len(cmdArgs) != 0 {
 			report(stderr, fmt.Errorf("usage: sift daemon"))
 			return 2
 		}
 		return runDaemonCommand(home, stderr)
 	}
 	if command == "install" {
-		return runInstall(rest, home, stdout, stderr)
+		return runInstall(cmdArgs, home, stdout, stderr)
 	}
 	if command == "service" {
-		return runService(rest, home, stdout, stderr)
+		return runService(cmdArgs, home, stdout, stderr)
 	}
 	if command == "doctor" {
-		jsonOutput, offline, ok := doctorFlags(args[2:])
+		jsonOutput, offline, ok := doctorFlags(cmdArgs)
 		if !ok {
 			report(stderr, fmt.Errorf("usage: sift doctor [--offline] [--json]"))
 			return 2
@@ -125,12 +144,12 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		_ = jsonOutput
 	}
 	if command == "report" {
-		return runReport(args[2:], home, stdout, stderr)
+		return runReport(cmdArgs, home, stdout, stderr)
 	}
 	if command == "update" {
-		return runUpdate(args[2:], home, stdout, stderr)
+		return runUpdate(cmdArgs, home, verbose, quiet, stdout, stderr)
 	}
-	requestArgs := rest
+	requestArgs := cmdArgs
 	if command == "doctor" {
 		requestArgs = nil
 	} // --json/--offline are CLI-only flags
@@ -158,7 +177,7 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		return runAttach(response, home, stdout, stderr, jsonOutput)
 	}
 	if command == "doctor" {
-		jsonOutput, _, _ := doctorFlags(args[2:])
+		jsonOutput, _, _ := doctorFlags(cmdArgs)
 		return runDoctor(response, stdout, stderr, jsonOutput)
 	}
 	if jsonOutput {

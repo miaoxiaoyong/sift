@@ -92,6 +92,29 @@ func TestTopLevelHelpListsEveryCommand(t *testing.T) {
 	}
 }
 
+// TestTopLevelHelpCommonFlows pins issue #939: the top-level help ends with
+// the 常用流程 examples section — the beginner three-step flow (init → daemon
+// → ps) plus the maintenance verbs (project list, update) — placed after the
+// command list.
+func TestTopLevelHelpCommonFlows(t *testing.T) {
+	freshHome(t)
+	help := runCapture(t, []string{"sift", "help"})
+	for _, want := range []string{"常用流程：", "入门：", "维护：", "sift init", "sift daemon", "sift ps", "sift project list", "sift update"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("top-level help lacks %q:\n%s", want, help)
+		}
+	}
+	// The section sits after the command list (the last listed command) and
+	// closes the help text.
+	if i := strings.Index(help, "常用流程："); i < 0 || i < strings.Index(help, "completion") {
+		t.Fatalf("常用流程 must come after the command list:\n%s", help)
+	}
+	lines := strings.Split(strings.TrimSpace(help), "\n")
+	if last := strings.TrimSpace(lines[len(lines)-1]); !strings.HasPrefix(last, "sift update") {
+		t.Fatalf("top-level help must end with the 常用流程 section:\n%s", help)
+	}
+}
+
 // TestHelpCommandUnknownKeepsUsageExit pins the unchanged usage-class exit for
 // an unknown `sift help <cmd>`.
 func TestHelpCommandUnknownKeepsUsageExit(t *testing.T) {

@@ -57,7 +57,12 @@ var updateChecksumEntry = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 // the latest GitHub release. It downloads the per-platform archive plus
 // checksums.txt, verifies the sha256 fail-closed, and delegates the install
 // to internal/install.Install.
-func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
+//
+// Issue #939: verbose/quiet are the consumed global -v/-q flags. -v prints
+// per-step download/verify progress (never into --json machine output); -q
+// silences the human success/progress prose but keeps errors on stderr and
+// the --json envelope intact.
+func runUpdate(args []string, home config.Home, verbose, quiet bool, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	check := fs.Bool("check", false, "only report current vs latest, do not install")
@@ -69,6 +74,9 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 		return 2
 	}
 	jsonOutput := os.Getenv("SIFT_JSON") == "1" || *jsonFlag
+	// -v progress lines are human-mode only: they must never corrupt the --json
+	// machine envelope (issue #939).
+	verbose = verbose && !jsonOutput
 
 	current := version.Release
 	if !version.IsValidSemver(current) {
@@ -106,7 +114,7 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 		if jsonOutput {
 			return emitUpdateJSON(stdout, stderr, current, latest, false)
 		}
-		fmt.Fprint(stdout, updateCompareMessage(current, latest, cmp))
+		humanf(stdout, quiet, "%s", updateCompareMessage(current, latest, cmp))
 		return 0
 	}
 
@@ -114,7 +122,7 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 		if jsonOutput {
 			return emitUpdateJSON(stdout, stderr, current, latest, false)
 		}
-		fmt.Fprint(stdout, updateCompareMessage(current, latest, cmp))
+		humanf(stdout, quiet, "%s", updateCompareMessage(current, latest, cmp))
 		return 0
 	}
 
@@ -125,9 +133,9 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 	}
 	if !jsonOutput {
 		if pinnedExplicit {
-			fmt.Fprintf(stdout, "当前 %s → 目标 %s，正在安装…\n", current, latest)
+			humanf(stdout, quiet, "当前 %s → 目标 %s，正在安装…\n", current, latest)
 		} else {
-			fmt.Fprintf(stdout, "当前 %s → 最新 %s，正在升级…\n", current, latest)
+			humanf(stdout, quiet, "当前 %s → 最新 %s，正在升级…\n", current, latest)
 		}
 	}
 
@@ -141,15 +149,19 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 
 	releaseBase := releaseDownloadBaseURL + "/v" + latest
 	archivePath := filepath.Join(tmp, archive)
+	verbosef(stdout, verbose, quiet, "下载 %s …\n", archive)
 	if err := downloadFile(releaseBase+"/"+archive, archivePath); err != nil {
 		report(stderr, fmt.Errorf("下载 %s 失败：%w", archive, err))
 		return 1
 	}
+	verbosef(stdout, verbose, quiet, "✓ 已下载 %s（%d 字节）\n", archive, downloadSize(archivePath))
 	checksumsPath := filepath.Join(tmp, "checksums.txt")
+	verbosef(stdout, verbose, quiet, "下载 checksums.txt …\n")
 	if err := downloadFile(releaseBase+"/checksums.txt", checksumsPath); err != nil {
 		report(stderr, fmt.Errorf("下载 checksums.txt 失败：%w", err))
 		return 1
 	}
+	verbosef(stdout, verbose, quiet, "✓ 已下载 checksums.txt\n")
 	expected, err := checksumFor(checksumsPath, archive)
 	if err != nil {
 		report(stderr, err)
@@ -160,10 +172,12 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 		report(stderr, fmt.Errorf("计算归档校验和失败：%w", err))
 		return 1
 	}
+	verbosef(stdout, verbose, quiet, "校验 sha256：%s …\n", actual[:16])
 	if actual != expected {
 		report(stderr, fmt.Errorf("sha256 校验失败：%s 校验和不匹配（预期 %s，实际 %s）；已放弃安装", archive, expected, actual))
 		return 1
 	}
+	verbosef(stdout, verbose, quiet, "✓ sha256 校验通过\n")
 
 	if *force {
 		// Install refuses to overwrite a live version directory; --force is
@@ -182,13 +196,23 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 	if jsonOutput {
 		return emitUpdateJSON(stdout, stderr, current, installed, true)
 	}
-	fmt.Fprintf(stdout, "已升级到 %s\n", installed)
+	humanf(stdout, quiet, "已升级到 %s\n", installed)
 	// Daemon-aware: a running siftd keeps the old binary until restarted
 	// (release.md §3: `current` switch never touches the running process).
 	if isSocket(filepath.Join(home.Path, "siftd.sock")) {
-		fmt.Fprintln(stdout, "守护进程正在运行：运行 `sift service restart` 使新版本生效")
+		humanf(stdout, quiet, "守护进程正在运行：运行 `sift service restart` 使新版本生效\n")
 	}
 	return 0
+}
+
+// downloadSize returns the on-disk size of a completed download for the -v
+// progress line; an unreadable file reports 0.
+func downloadSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 // updateCompareMessage formats the current-vs-target human message for both

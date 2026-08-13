@@ -133,6 +133,17 @@ var commands = []commandMeta{
 		examples: []string{"sift update --check", "sift update"},
 	},
 	{
+		name:    "version",
+		group:   groupOther,
+		brief:   "version",
+		summary: "查看当前版本与最新版本（联网查询更新）",
+		usage:   "sift version [--json]",
+		flags: []flagMeta{
+			{"--json", "", "输出机器可读的 JSON"},
+		},
+		examples: []string{"sift version", "sift version --json"},
+	},
+	{
 		name:            "service",
 		group:           groupBasics,
 		brief:           "service",
@@ -355,7 +366,17 @@ func renderTopHelp(w io.Writer) {
 		}
 	}
 	fmt.Fprintln(w, "\n用法：sift <命令> [选项]")
-	fmt.Fprintln(w, "示例：sift init；sift doctor --offline；sift ps")
+	// Issue #939: the top-level help ends with a 常用流程 examples section so
+	// a beginner sees the whole first-run flow (init → daemon → ps) plus the
+	// day-to-day maintenance verbs without guessing.
+	fmt.Fprintln(w, "\n常用流程：")
+	fmt.Fprintln(w, "  入门：")
+	fmt.Fprintln(w, "    sift init             # 交互式配置（Agent、项目、forge）")
+	fmt.Fprintln(w, "    sift daemon           # 启动守护进程")
+	fmt.Fprintln(w, "    sift ps               # 观察运行中的任务")
+	fmt.Fprintln(w, "  维护：")
+	fmt.Fprintln(w, "    sift project list     # 查看已注册项目")
+	fmt.Fprintln(w, "    sift update           # 升级到最新版本")
 }
 
 // renderCommandHelp prints the Chinese one-liner, usage, flags and examples
