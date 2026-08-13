@@ -65,33 +65,51 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stdout, version.Release)
 		return 0
 	}
+	command := args[1]
+	rest := args[2:]
+	// Issue #935: --help/-h/-help are intercepted here, before any dispatch, so
+	// no command ever falls into its own flag parsing or a daemon RPC. `sift
+	// help <cmd>`, `sift <cmd> --help` and `sift <cmd> -h` all render the same
+	// Chinese help from the single metadata table (commands.go). The scan covers
+	// the whole remaining argv so subcommand help (`sift project add --help`)
+	// resolves too; no command accepts "-h"/"--help"/"-help" as a value.
+	if hasHelpFlag(rest) {
+		return commandHelp(command, stdout, stderr)
+	}
+	// completion is pure generation: it must work without a home at all.
+	if command == "completion" {
+		return runCompletion(rest, stdout, stderr)
+	}
 	home, err := config.ResolveHome()
 	if err != nil {
 		report(stderr, err)
 		return 1
 	}
-	command := args[1]
+	// status is a local, offline overview: it never dials the daemon for RPC.
+	if command == "status" {
+		return runStatus(rest, home, stdout, stderr)
+	}
 	if command == "init" {
-		return runSetup(args[2:], stdin, home, stdout, stderr, setupAll)
+		return runSetup(rest, stdin, home, stdout, stderr, setupAll)
 	}
 	if command == "project" {
-		return runSetupCommand(args[2:], stdin, home, stdout, stderr, setupProject)
+		return runSetupCommand(rest, stdin, home, stdout, stderr, setupProject)
 	}
 	if command == "agent" {
-		return runSetupCommand(args[2:], stdin, home, stdout, stderr, setupAgent)
+		return runSetupCommand(rest, stdin, home, stdout, stderr, setupAgent)
 	}
 	if command == "daemon" {
-		if len(args) != 2 {
+		if len(rest) != 0 {
 			report(stderr, fmt.Errorf("usage: sift daemon"))
 			return 2
 		}
 		return runDaemonCommand(home, stderr)
 	}
 	if command == "install" {
-		return runInstall(args[2:], home, stdout, stderr)
+		return runInstall(rest, home, stdout, stderr)
 	}
 	if command == "service" {
-		return runService(args[2:], home, stdout, stderr)
+		return runService(rest, home, stdout, stderr)
 	}
 	if command == "doctor" {
 		jsonOutput, offline, ok := doctorFlags(args[2:])
@@ -112,7 +130,7 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	if command == "update" {
 		return runUpdate(args[2:], home, stdout, stderr)
 	}
-	requestArgs := args[2:]
+	requestArgs := rest
 	if command == "doctor" {
 		requestArgs = nil
 	} // --json/--offline are CLI-only flags
@@ -180,6 +198,19 @@ func runWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 		}
 	}
 	return 0
+}
+
+// hasHelpFlag reports whether the command's remaining arguments request
+// help. It is the pre-dispatch gate for issue #935: any occurrence of
+// --help/-h/-help anywhere in a command line renders the metadata-table help
+// and never reaches flag parsing or the daemon.
+func hasHelpFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--help" || a == "-h" || a == "-help" {
+			return true
+		}
+	}
+	return false
 }
 
 // splitJSONFlag removes the CLI-only --json flag from args so command flag
@@ -550,40 +581,6 @@ func overview(stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "下一步：运行 sift daemon 启动服务，或 sift ps 查看运行")
 	}
 	fmt.Fprintln(stdout, "\n运行 sift help 查看全部命令。")
-	return 0
-}
-
-func commandHelp(command string, stdout, stderr io.Writer) int {
-	if command == "" {
-		fmt.Fprintln(stdout, "Sift 命令参考\n\n基础命令：\n  init                 交互式初始化配置\n  project add          添加项目\n  agent add            添加 Agent\n  daemon               启动本地守护进程\n  doctor               检查本地环境\n  install              安装 Sift 发布包\n  update               升级到最新版本\n  service              管理后台服务\n\n查询命令：\n  ps                   查看运行\n  logs <run-id>        查看运行日志\n  timeline             查看事件时间线\n  metrics              查看运行指标\n  worktree <run-id>    查看运行工作树\n  attach <run-id>      只读连接运行会话\n\n运行控制：\n  kill <run-id>        停止运行\n  retry <run-id>       重试运行\n  report <kind>        提交报告\n  hooks-bootstrap      为项目安装 Git hooks\n\n用法：sift <命令> [选项]\n示例：sift init；sift doctor --offline；sift ps")
-		return 0
-	}
-	entries := map[string][3]string{
-		"init":            {"交互式初始化本地配置", "sift init [--offline] [--agent NAME] [--agent-args ARG,ARG] [--project PATH] [--operator LOGIN] [--forge github|gitlab]", "sift init --agent claude --project ."},
-		"project":         {"添加一个项目（默认当前 git 仓库，forge 自动探测）", "sift project add [--project PATH] [--forge github|gitlab] [--offline]", "cd <项目> && sift project add"},
-		"agent":           {"添加一个 Agent", "sift agent add [--agent NAME] [--agent-args ARG,ARG] [--offline]", "sift agent add --agent claude"},
-		"doctor":          {"检查本地环境并报告问题", "sift doctor [--offline] [--json]", "sift doctor --offline"},
-		"ps":              {"查看运行中的任务", "sift ps [--json]", "sift ps"},
-		"daemon":          {"启动本地守护进程", "sift daemon", "sift daemon"},
-		"logs":            {"查看指定运行的日志", "sift logs <run-id> [--json]", "sift logs run-123"},
-		"timeline":        {"查看事件时间线", "sift timeline [--json]", "sift timeline --limit 20"},
-		"metrics":         {"查看运行指标", "sift metrics [--project ID] [--json]", "sift metrics --project demo"},
-		"worktree":        {"查看运行对应的工作树", "sift worktree <run-id> [--json]", "sift worktree run-123"},
-		"attach":          {"只读连接到运行会话", "sift attach <run-id> [--json]", "sift attach run-123"},
-		"kill":            {"停止指定运行", "sift kill <run-id> --expected-version N --request-key KEY [--json]", "sift kill run-123 --expected-version 2 --request-key stop-1"},
-		"retry":           {"重试指定运行", "sift retry <run-id> --expected-version N --request-key KEY [--json]", "sift retry run-123 --expected-version 2 --request-key retry-1"},
-		"report":          {"向运行提交报告", "sift report <kind> --key KEY --payload JSON [--json]", "sift report review --key run-123 --payload '{}'"},
-		"hooks-bootstrap": {"为项目安装 Git hooks", "sift hooks-bootstrap <project-id>", "sift hooks-bootstrap project-1"},
-		"install":         {"安装 Sift 发布包", "sift install <archive.tar.gz>", "sift install sift.tar.gz"},
-		"update":          {"升级到最新版本", "sift update [--check] [--version X] [--force] [--json]", "sift update --check"},
-		"service":         {"管理后台服务", "sift service <install|uninstall|start|stop|restart|reload|status>", "sift service status"},
-	}
-	entry, ok := entries[command]
-	if !ok {
-		report(stderr, fmt.Errorf("未知命令 %q；运行 sift help 查看可用命令", command))
-		return 2
-	}
-	fmt.Fprintf(stdout, "sift %s\n\n%s\n\n用法：%s\n示例：%s\n", command, entry[0], entry[1], entry[2])
 	return 0
 }
 

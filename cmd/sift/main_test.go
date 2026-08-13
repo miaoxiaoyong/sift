@@ -134,9 +134,11 @@ func TestHumanOverviewAndHelp(t *testing.T) {
 		// 基础命令
 		"init", "project", "agent", "daemon", "doctor", "install", "update", "service",
 		// 查询命令
-		"ps", "logs", "timeline", "metrics", "worktree", "attach",
+		"ps", "logs", "timeline", "metrics", "worktree", "attach", "status",
 		// 运行控制
 		"kill", "retry", "report", "hooks-bootstrap",
+		// 其他命令（issue #935）
+		"completion",
 	} {
 		if !strings.Contains(help, cmd) {
 			t.Fatalf("help top-level listing lacks command %q:\n%s", cmd, help)
