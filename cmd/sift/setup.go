@@ -211,8 +211,10 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 		}
 	}
 
-	// Operators prefill from the CLI login of the project's forge kind; a
-	// project-less init asks both sides (issue #929).
+	// A detected forge login is already the operator identity. Init records it
+	// directly instead of asking the user to confirm a value the CLI supplied.
+	// Probe both sides even for a single-forge project: a user logged into gh and
+	// glab expects both allowlists to be ready (issue #945).
 	if scope == setupAll {
 		if operator := opt.operator; operator != "" {
 			specs, err := parseOperatorSpec(operator, projectKind)
@@ -225,40 +227,26 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 					addOperator(doc, kind, name)
 				}
 			}
-		} else if interactive {
-			kinds := []string{"github", "gitlab"}
-			if projectKind != "" {
-				kinds = []string{projectKind}
-			}
-			for _, kind := range kinds {
-				login, label := logins.github, "GitHub"
-				if kind == "gitlab" {
-					login, label = logins.gitlab, "GitLab"
+		} else if !opt.offline {
+			for _, entry := range []struct{ kind, label, login string }{
+				{"github", "GitHub", logins.github},
+				{"gitlab", "GitLab", logins.gitlab},
+			} {
+				if entry.login != "" {
+					addOperator(doc, entry.kind, entry.login)
+					fmt.Fprintf(stdout, "✓ operator: %s\n", entry.login)
+					continue
 				}
-				answer := prompt(in, stdout, label+" 操作员用户名（逗号分隔，直接回车跳过）", login)
+				// A failed probe remains the only interactive question. For a
+				// known project forge, do not ask about an unrelated failed CLI.
+				if !interactive || (projectKind != "" && projectKind != entry.kind) {
+					continue
+				}
+				answer := prompt(in, stdout, entry.label+" 操作员用户名（逗号分隔，直接回车跳过）", "")
 				for _, name := range strings.Split(answer, ",") {
 					if name = strings.TrimSpace(name); name != "" {
-						addOperator(doc, kind, name)
+						addOperator(doc, entry.kind, name)
 					}
-				}
-			}
-		} else if !opt.offline {
-			// Non-interactive flags path without --operator: fall back to the
-			// probed login of the relevant side, mirroring the pre-#929
-			// `if operator == "" { operator = login }` default so the
-			// documented `sift init --agent X --project .` still writes a
-			// trusted operator (issue #929 review F2).
-			kinds := []string{"github", "gitlab"}
-			if projectKind != "" {
-				kinds = []string{projectKind}
-			}
-			for _, kind := range kinds {
-				login := logins.github
-				if kind == "gitlab" {
-					login = logins.gitlab
-				}
-				if login != "" {
-					addOperator(doc, kind, login)
 				}
 			}
 		}
@@ -268,11 +256,7 @@ func runSetup(args []string, stdin io.Reader, home config.Home, stdout, stderr i
 		return 1
 	}
 	fmt.Fprintf(stdout, "%s 已写入 %s\n", render.Status("ok"), config.ConfigPath(home))
-	if isSocket(filepath.Join(home.Path, "siftd.sock")) {
-		fmt.Fprintln(stdout, "⚠ daemon 运行中，运行 sift service reload 使新配置生效")
-	} else {
-		fmt.Fprintln(stdout, "✓ 下一步：运行 sift daemon 或 sift service install 启动")
-	}
+	announceConfigApplied(home, stdout, stderr)
 	return 0
 }
 
@@ -304,6 +288,9 @@ func writeSetupDocument(home config.Home, doc map[string]any, backup bool) error
 	data, err := yaml.Marshal(doc)
 	if err != nil {
 		return err
+	}
+	if _, err := config.ParseYAML(data); err != nil {
+		return fmt.Errorf("配置无效，未写入: %w", err)
 	}
 	path := config.ConfigPath(home)
 	if backup {

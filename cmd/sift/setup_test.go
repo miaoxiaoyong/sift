@@ -75,6 +75,34 @@ func TestInitFlagsWriteMergeAndBackup(t *testing.T) {
 	}
 }
 
+func TestWriteSetupDocumentRejectsInvalidEditWithoutReplacingConfig(t *testing.T) {
+	_ = freshHome(t)
+	home, err := config.ResolveHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := []byte("version: 1\noperators:\n  github: [alice]\n")
+	if err := os.WriteFile(config.ConfigPath(home), valid, config.ConfigFileMode); err != nil {
+		t.Fatal(err)
+	}
+	invalid := map[string]any{
+		"version": 1,
+		"projects": []any{map[string]any{
+			"id": "demo", "repo": "/tmp/demo", "forge": map[string]any{"kind": "github", "project": "owner/repo"}, "agents": []any{"missing"},
+		}},
+	}
+	if err := writeSetupDocument(home, invalid, true); err == nil {
+		t.Fatal("invalid edit was written")
+	}
+	got, err := os.ReadFile(config.ConfigPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, valid) {
+		t.Fatalf("config changed after invalid edit: %q", got)
+	}
+}
+
 func TestForgeLoginFromStatus(t *testing.T) {
 	for _, tt := range []struct {
 		name, status, want string
@@ -478,10 +506,13 @@ func TestInitFlagsOperatorLoginFallback(t *testing.T) {
 	if err := os.WriteFile(agent, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Fake gh reports a login so the non-interactive flags path (no
-	// --offline, no --operator) falls back to it as the trusted operator.
+	// Both detected identities are used directly, even though the project is
+	// GitHub-bound. Init must not ask the user to confirm either login.
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf 'github.com\\n  ✓ Logged in to github.com account probe-user (keyring)\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "glab"), []byte("#!/bin/sh\nprintf 'Logged in to gitlab.com as gitlab-user\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	gitPath, err := exec.LookPath("git")
@@ -499,6 +530,12 @@ func TestInitFlagsOperatorLoginFallback(t *testing.T) {
 	}
 	if got := snap.Config.Operators.GitHub; len(got) != 1 || got[0] != "probe-user" {
 		t.Fatalf("operators.github = %#v, want [probe-user]", got)
+	}
+	if got := snap.Config.Operators.GitLab; len(got) != 1 || got[0] != "gitlab-user" {
+		t.Fatalf("operators.gitlab = %#v, want [gitlab-user]", got)
+	}
+	if strings.Contains(out.String(), "操作员用户名") || !strings.Contains(out.String(), "✓ operator: probe-user") || !strings.Contains(out.String(), "✓ operator: gitlab-user") {
+		t.Fatalf("detected operators were not used directly: %q", out.String())
 	}
 	if len(snap.Config.Projects) != 1 || snap.Config.Projects[0].Forge.Host != "github.com" {
 		t.Fatalf("projects = %#v (default github.com host stays omitted)", snap.Config.Projects)
@@ -693,7 +730,7 @@ func TestSetupAddAndDaemonAwareHint(t *testing.T) {
 	if code := runWithInput([]string{"sift", "agent", "add", "--offline", "--agent", agent}, strings.NewReader(""), &out, io.Discard); code != 0 {
 		t.Fatalf("agent add = %d: %s", code, out.String())
 	}
-	if !strings.Contains(out.String(), "sift service reload") {
+	if strings.Contains(out.String(), "sift service reload") || !strings.Contains(out.String(), "前台运行") {
 		t.Fatalf("daemon-aware output = %q", out.String())
 	}
 }

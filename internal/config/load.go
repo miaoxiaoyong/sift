@@ -43,6 +43,21 @@ func ConfigPath(home Home) string {
 	return filepath.Join(home.Path, "config.yaml")
 }
 
+// ParseYAML validates and normalizes configuration bytes without writing them.
+// Local editors use it before rename so an invalid edit cannot replace the
+// daemon's last known-good file.
+func ParseYAML(data []byte) (*Snapshot, error) {
+	jsonBytes, err := YAMLToJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	raw := &RawConfig{}
+	if err := schema.Decode(jsonBytes, raw, schema.Closed); err != nil {
+		return nil, fmt.Errorf("config: decode: %w", err)
+	}
+	return finalize(raw, SourceInfo{Present: true})
+}
+
 // Load is the single entry point by which global config enters the system
 // (config.md §1.2, §4). It reads config.yaml once, converts YAML to JSON under
 // the strict bridge, decodes via [schema.Closed], normalizes to the effective

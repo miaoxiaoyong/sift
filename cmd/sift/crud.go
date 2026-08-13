@@ -4,14 +4,13 @@
 // (--json); remove deletes by id through the same atomic write path as setup
 // (temp file + rename + .bak + 0600, with config validation first so a remove
 // never launders an invalid config) and is daemon-aware (socket present →
-// `sift service reload` hint).
+// automatic service restart when the daemon is managed).
 package main
 
 import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -216,7 +215,7 @@ func enabledLabel(v bool) string {
 // remove <id>` (issue #937). The write path is the setup one (validation +
 // atomic temp-file rename + .bak + 0600); a missing id is a clear error with
 // a non-zero exit and re-running the same remove is that same not-found path
-// (idempotent, never a crash). A present daemon socket adds the reload hint.
+// (idempotent, never a crash). A managed running daemon restarts automatically.
 func runResourceRemove(resource string, args []string, home config.Home, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		report(stderr, fmt.Errorf("usage: sift %s remove <id>", resource))
@@ -233,9 +232,7 @@ func runResourceRemove(resource string, args []string, home config.Home, stdout,
 		return 1
 	}
 	fmt.Fprintf(stdout, "%s 已移除%s %s\n", render.Status("ok"), resourceLabel(resource), id)
-	if isSocket(filepath.Join(home.Path, "siftd.sock")) {
-		fmt.Fprintln(stdout, "⚠ daemon 运行中，运行 sift service reload 使新配置生效")
-	}
+	announceConfigApplied(home, stdout, stderr)
 	return 0
 }
 
