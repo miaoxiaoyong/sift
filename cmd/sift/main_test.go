@@ -1158,6 +1158,20 @@ func TestKillRetryResolveOperatorValues(t *testing.T) {
 	if len(requests) != 1 || requests[0].Method != "ops.retry" || requests[0].Params["expected_version"] != float64(9) || requests[0].Params["request_key"] != "fixed" {
 		t.Fatalf("explicit retry request = %#v", requests)
 	}
+
+	// retry with no flags must mirror kill: resolve the version from ops.ps
+	// and auto-generate a request key for the ops.retry call.
+	requests = nil
+	out.Reset()
+	if code := run([]string{"sift", "retry", "run-1"}, &out, io.Discard); code != 0 {
+		t.Fatalf("resolved retry exit = %d; output=%q", code, out.String())
+	}
+	if len(requests) != 2 || requests[0].Method != "ops.ps" || requests[1].Method != "ops.retry" {
+		t.Fatalf("resolved retry requests = %#v, want ps then retry", requests)
+	}
+	if requests[1].Params["expected_version"] != float64(7) || requests[1].Params["request_key"] == "" {
+		t.Fatalf("resolved retry params = %#v", requests[1].Params)
+	}
 }
 
 func TestKillRetryMissingRunIsActionable(t *testing.T) {
@@ -1173,6 +1187,56 @@ func TestKillRetryMissingRunIsActionable(t *testing.T) {
 	}
 	if len(requests) != 1 || requests[0].Method != "ops.ps" {
 		t.Fatalf("missing run requests = %#v, want only ops.ps", requests)
+	}
+}
+
+// TestKillRetryStaleIsHumanizedAndAutoKeyVaries drives the full auto-resolved
+// CLI chain: ops.ps resolves the version, the target request returns stale,
+// and the CLI must exit 1 with the actionable Chinese message (never the raw
+// daemon error). Two consecutive no-flag kills must also mint distinct valid
+// 16-byte hex request keys, proving the key is fresh per call rather than a
+// fixed placeholder.
+func TestKillRetryStaleIsHumanizedAndAutoKeyVaries(t *testing.T) {
+	home := freshHome(t)
+	var keys []string
+	serveFakeOperatorMulti(t, home, func(req controlplane.Request) map[string]any {
+		switch req.Method {
+		case "ops.ps":
+			return fakeDoctorSuccess(req.RequestID, map[string]any{"runs": []any{map[string]any{"run_id": "run-1", "version": 7}}})
+		case "ops.kill":
+			key, _ := req.Params["request_key"].(string)
+			keys = append(keys, key)
+			return fakeDoctorError(req.RequestID, controlplane.ProtocolMajor, controlplane.ProtocolMinor, controlplane.Version, "stale", "run or attempt changed")
+		}
+		t.Fatalf("unexpected request method %s", req.Method)
+		return nil
+	})
+	for i := 0; i < 2; i++ {
+		var out bytes.Buffer
+		if code := run([]string{"sift", "kill", "run-1"}, &out, io.Discard); code != 1 {
+			t.Fatalf("stale kill exit = %d, want 1; output=%q", code, out.String())
+		}
+		got := out.String()
+		if !strings.Contains(got, "运行已变更") || !strings.Contains(got, "重试") {
+			t.Fatalf("stale kill output lacks actionable hint: %q", got)
+		}
+		if strings.Contains(got, "run or attempt changed") {
+			t.Fatalf("stale kill output leaks raw daemon error: %q", got)
+		}
+	}
+	if len(keys) != 2 {
+		t.Fatalf("auto keys = %#v, want exactly 2", keys)
+	}
+	for _, key := range keys {
+		if len(key) != 32 || hex.DecodedLen(len(key)) != 16 {
+			t.Fatalf("auto request_key %q is not a 16-byte hex value", key)
+		}
+		if _, err := hex.DecodeString(key); err != nil {
+			t.Fatalf("auto request_key %q is not hex: %v", key, err)
+		}
+	}
+	if keys[0] == keys[1] {
+		t.Fatalf("auto request_key is constant across calls: %q", keys[0])
 	}
 }
 
