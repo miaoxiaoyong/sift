@@ -50,10 +50,13 @@ const (
 
 var updateChecksumEntry = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
-// runUpdate implements `sift update`. It compares the running release
-// (version.Release) against the latest GitHub release (or a --version-pinned
-// one), downloads the per-platform archive plus checksums.txt, verifies the
-// sha256 fail-closed, and delegates the install to internal/install.Install.
+// runUpdate implements `sift update`. It installs the --version-pinned
+// release unconditionally when given (install.sh pin contract: any
+// explicitly specified version is downloaded and installed, including older
+// ones); otherwise it compares the running release (version.Release) against
+// the latest GitHub release. It downloads the per-platform archive plus
+// checksums.txt, verifies the sha256 fail-closed, and delegates the install
+// to internal/install.Install.
 func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -93,35 +96,25 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	newer := version.Compare(current, latest) < 0
+	cmp := version.Compare(current, latest)
+	// Pin semantics (install.sh contract): `--version X` installs X
+	// unconditionally, so an explicitly pinned version is never blocked by
+	// the newer gate and may be older than the running release. The newer
+	// gate applies only when tracking the latest release (no --version).
+	pinnedExplicit := *pinned != ""
 	if *check {
-		if newer {
-			if jsonOutput {
-				return emitUpdateJSON(stdout, stderr, current, latest, false)
-			}
-			fmt.Fprintf(stdout, "当前 %s，最新 %s（有可用更新，运行 sift update 升级）\n", current, latest)
-			return 0
-		}
 		if jsonOutput {
 			return emitUpdateJSON(stdout, stderr, current, latest, false)
 		}
-		if version.Compare(current, latest) == 0 {
-			fmt.Fprintf(stdout, "已是最新 %s\n", current)
-			return 0
-		}
-		fmt.Fprintf(stdout, "当前 %s 已是最新（最新 %s；如需强制安装请用 --force）\n", current, latest)
+		fmt.Fprint(stdout, updateCompareMessage(current, latest, cmp))
 		return 0
 	}
 
-	if !newer && !*force {
+	if !pinnedExplicit && cmp >= 0 && !*force {
 		if jsonOutput {
 			return emitUpdateJSON(stdout, stderr, current, latest, false)
 		}
-		if version.Compare(current, latest) == 0 {
-			fmt.Fprintf(stdout, "已是最新 %s\n", current)
-			return 0
-		}
-		fmt.Fprintf(stdout, "当前 %s 已是最新（最新 %s；如需强制安装请用 --force）\n", current, latest)
+		fmt.Fprint(stdout, updateCompareMessage(current, latest, cmp))
 		return 0
 	}
 
@@ -131,7 +124,11 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if !jsonOutput {
-		fmt.Fprintf(stdout, "当前 %s → 最新 %s，正在升级…\n", current, latest)
+		if pinnedExplicit {
+			fmt.Fprintf(stdout, "当前 %s → 目标 %s，正在安装…\n", current, latest)
+		} else {
+			fmt.Fprintf(stdout, "当前 %s → 最新 %s，正在升级…\n", current, latest)
+		}
 	}
 
 	archive := fmt.Sprintf("sift_%s_%s_%s.tar.gz", latest, goos, goarch)
@@ -192,6 +189,21 @@ func runUpdate(args []string, home config.Home, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "守护进程正在运行：运行 `sift service restart` 使新版本生效")
 	}
 	return 0
+}
+
+// updateCompareMessage formats the current-vs-target human message for both
+// --check and the no-op install path. The latest<current case must never
+// claim "已是最新" (the local build is newer than the release latest); the
+// pinned-downgrade path is `sift update --version <版本>`.
+func updateCompareMessage(current, latest string, cmp int) string {
+	switch {
+	case cmp < 0:
+		return fmt.Sprintf("当前 %s，最新 %s（有可用更新，运行 sift update 升级）\n", current, latest)
+	case cmp == 0:
+		return fmt.Sprintf("已是最新 %s\n", current)
+	default:
+		return fmt.Sprintf("当前 %s 比 release 最新 %s 更新（本地更新）；如需安装指定版本请用 --version <版本>\n", current, latest)
+	}
 }
 
 // emitUpdateJSON prints the machine-readable {current, latest, updated}

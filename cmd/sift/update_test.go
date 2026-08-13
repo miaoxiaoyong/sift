@@ -241,6 +241,92 @@ func TestUpdatePinnedVersion(t *testing.T) {
 	}
 }
 
+func TestUpdatePinnedOlderInstalls(t *testing.T) {
+	home := freshHome(t)
+	// Pin semantics (install.sh contract): `--version X` installs X even when
+	// X is older than the running release — no newer gate, no "已是最新"
+	// shortcut, and the latest-release API is never consulted (the server's
+	// 9.9.9 tag must be irrelevant).
+	release := "0.0.9"
+	archive := testUpdateArchive(t, release)
+	name := updateArchiveName(release)
+	releaseServer(t, "9.9.9", map[string][]byte{name: archive}, checksumLine(name, archive))
+
+	var out bytes.Buffer
+	if code := run([]string{"sift", "update", "--version", release}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit = %d, output=%q", code, out.String())
+	}
+	for _, want := range []string{"当前 " + version.Release + " → 目标 " + release, "已升级到 " + release} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	target, err := os.Readlink(filepath.Join(home, "bin", "current"))
+	if err != nil || target != release {
+		t.Fatalf("current -> %q (%v), want %q", target, err, release)
+	}
+}
+
+func TestUpdatePinnedEqualInstalls(t *testing.T) {
+	home := freshHome(t)
+	// Pinning the running version installs it too: the pin contract bypasses
+	// the latest-vs-current newer gate (no "已是最新" shortcut).
+	release := version.Release
+	archive := testUpdateArchive(t, release)
+	name := updateArchiveName(release)
+	releaseServer(t, "9.9.9", map[string][]byte{name: archive}, checksumLine(name, archive))
+
+	var out bytes.Buffer
+	if code := run([]string{"sift", "update", "--version", release}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit = %d, output=%q", code, out.String())
+	}
+	if want := "已升级到 " + release; !strings.Contains(out.String(), want) {
+		t.Fatalf("output = %q, want %q (pinned equal installs)", out.String(), want)
+	}
+	target, err := os.Readlink(filepath.Join(home, "bin", "current"))
+	if err != nil || target != release {
+		t.Fatalf("current -> %q (%v), want %q", target, err, release)
+	}
+}
+
+func TestUpdateCheckOlderLatestNotUpToDate(t *testing.T) {
+	freshHome(t)
+	// latest < current: --check must not claim "已是最新" (the local build is
+	// newer than the release latest).
+	releaseServer(t, "0.0.1", nil, "")
+	var out bytes.Buffer
+	if code := run([]string{"sift", "update", "--check"}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit = %d, output=%q", code, out.String())
+	}
+	for _, want := range []string{"当前 " + version.Release, "比 release 最新 0.0.1 更新（本地更新）"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "已是最新") {
+		t.Fatalf("--check must not claim 已是最新 when latest < current: %q", out.String())
+	}
+}
+
+func TestUpdateOlderLatestNoOpNotUpToDate(t *testing.T) {
+	freshHome(t)
+	// Tracking the latest release while the local build is newer is a no-op,
+	// but the message must not claim "已是最新".
+	releaseServer(t, "0.0.1", nil, "")
+	var out bytes.Buffer
+	if code := run([]string{"sift", "update"}, &out, io.Discard); code != 0 {
+		t.Fatalf("exit = %d, output=%q", code, out.String())
+	}
+	for _, want := range []string{"当前 " + version.Release, "比 release 最新 0.0.1 更新（本地更新）"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "已是最新") {
+		t.Fatalf("update must not claim 已是最新 when latest < current: %q", out.String())
+	}
+}
+
 func TestUpdateJSONCheck(t *testing.T) {
 	freshHome(t)
 	releaseServer(t, "9.9.9", nil, "")
