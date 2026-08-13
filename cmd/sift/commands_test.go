@@ -102,6 +102,34 @@ func TestHelpCommandUnknownKeepsUsageExit(t *testing.T) {
 	}
 }
 
+// TestControlHelpExamplesParse pins F935-1: every kill/retry help example must
+// parse with the real flag parser, so copy-pasting a documented example never
+// exits 2 before reaching the daemon. stdlib flag stops at the first
+// positional, so the example must place flags before <run-id>.
+func TestControlHelpExamplesParse(t *testing.T) {
+	for _, name := range []string{"kill", "retry"} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			meta, ok := commandsByName[name]
+			if !ok {
+				t.Fatalf("missing command %q in metadata table", name)
+			}
+			for _, ex := range meta.examples {
+				parts := strings.Fields(ex)
+				// Each example starts with "sift <command>"; drop those two words
+				// and feed the rest to request(), which drives the real flag
+				// parser for kill/retry.
+				if len(parts) < 2 || parts[0] != "sift" || parts[1] != name {
+					t.Fatalf("%s example %q must start with \"sift %s\"", name, ex, name)
+				}
+				if _, _, err := request(name, parts[2:]); err != nil {
+					t.Errorf("%s example %q does not parse: %v", name, ex, err)
+				}
+			}
+		})
+	}
+}
+
 // TestMetadataTableIsClosed guards the table itself: every command has a
 // summary, usage and at least one example, and every subcommand listed has a
 // description (completion renders it).

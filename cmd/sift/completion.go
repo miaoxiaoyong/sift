@@ -10,6 +10,41 @@ import (
 	"strings"
 )
 
+// globalFlags are the universal CLI flags offered by the top-level surface:
+// --help/-h work before any command verb (`sift --help`), and --version is a
+// top-level only release-version surface. Per command, --help/-h are offered
+// alongside each command's own flags. These are part of every discovery
+// surface (issue #935: command list + global/per-command flags).
+var globalFlags = []string{"--help", "-h", "--version"}
+
+// perCommandHelpFlags are the universal help flags offered on every command
+// (issue #935: `sift <cmd> --help` is intercepted pre-dispatch).
+var perCommandHelpFlags = []string{"--help", "-h"}
+
+// topLevelCompletionWords returns the candidate words for the first position
+// after `sift`: every command plus the `help` verb and the universal
+// --help/-h/--version flags (issue #935: the top-level discovery surface must
+// list the commands and the global flags, not just the commands).
+func topLevelCompletionWords() []string {
+	out := make([]string, 0, len(commands)+len(globalFlags)+1)
+	out = append(out, commandNames()...)
+	out = append(out, "help")
+	out = append(out, globalFlags...)
+	return out
+}
+
+// completionWords returns the candidate words for one command's arguments:
+// its action verbs, its documented flags, and the universal --help/-h
+// (issue #935). Subcommands are listed before flags so an action verb
+// (project add / report progress) completes first.
+func (m commandMeta) completionWords() []string {
+	out := make([]string, 0, len(m.subcommands)+len(m.flags)+len(perCommandHelpFlags))
+	out = append(out, m.subcommands...)
+	out = append(out, m.flagWords()...)
+	out = append(out, perCommandHelpFlags...)
+	return out
+}
+
 // runCompletion implements `sift completion <shell>`. With no argument it
 // prints the install instructions (`eval "$(sift completion zsh)"` or writing
 // the script into the shell's rc/completions directory).
@@ -60,12 +95,12 @@ func writeBashCompletion(w io.Writer) {
 	fmt.Fprintln(w, "    local cur")
 	fmt.Fprintln(w, "    cur=\"${COMP_WORDS[COMP_CWORD]}\"")
 	fmt.Fprintln(w, "    if [ \"${COMP_CWORD}\" -eq 1 ]; then")
-	fmt.Fprintf(w, "        COMPREPLY=( $(compgen -W \"%s\" -- \"${cur}\") )\n", strings.Join(commandNames(), " "))
+	fmt.Fprintf(w, "        COMPREPLY=( $(compgen -W \"%s\" -- \"${cur}\") )\n", strings.Join(topLevelCompletionWords(), " "))
 	fmt.Fprintln(w, "        return 0")
 	fmt.Fprintln(w, "    fi")
 	fmt.Fprintln(w, "    case \"${COMP_WORDS[1]}\" in")
 	for _, m := range commands {
-		words := append(append([]string{}, m.subcommands...), m.flagWords()...)
+		words := m.completionWords()
 		if len(words) == 0 {
 			continue
 		}
@@ -93,9 +128,20 @@ func writeZshCompletion(w io.Writer) {
 	for _, m := range commands {
 		fmt.Fprintf(w, "        '%s:%s'\n", m.name, m.summary)
 	}
+	// `help` is a top-level verb dispatched like a command but not in the
+	// metadata table; the universal --help/-h/--version flags are offered
+	// alongside it at the top level (issue #935).
+	fmt.Fprintln(w, "        'help:查看帮助'")
+	fmt.Fprintln(w, "    )")
+	fmt.Fprintln(w, "    local -a globalopts")
+	fmt.Fprintln(w, "    globalopts=(")
+	fmt.Fprintln(w, "        '--help:查看帮助'")
+	fmt.Fprintln(w, "        '-h:查看帮助'")
+	fmt.Fprintln(w, "        '--version:查看版本'")
 	fmt.Fprintln(w, "    )")
 	fmt.Fprintln(w, "    if (( CURRENT == 2 )); then")
 	fmt.Fprintln(w, "        _describe 'command' commands")
+	fmt.Fprintln(w, "        _describe 'global option' globalopts")
 	fmt.Fprintln(w, "        return")
 	fmt.Fprintln(w, "    fi")
 	fmt.Fprintln(w, "    case \"${words[2]}\" in")
@@ -159,6 +205,8 @@ func writeZshArguments(w io.Writer, m commandMeta) {
 			specs = append(specs, fmt.Sprintf("'--%s=[%s]'", flag, f.desc))
 		}
 	}
+	// Universal help flags are offered on every command (issue #935).
+	specs = append(specs, "'--help[查看帮助]'", "'-h[查看帮助]'")
 	fmt.Fprintln(w, "            _arguments \\")
 	for i, s := range specs {
 		sep := " \\"
@@ -177,6 +225,12 @@ func writeFishCompletion(w io.Writer) {
 	fmt.Fprintln(w, "# Install: sift completion fish > ~/.config/fish/completions/sift.fish")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "complete -c sift -f")
+	// Top-level discovery surface (issue #935): the `help` verb and the
+	// universal --help/-h/--version flags are completable before any command,
+	// just like the commands themselves.
+	fmt.Fprintln(w, "complete -c sift -n '__fish_use_subcommand' -a 'help' -d '查看帮助'")
+	fmt.Fprintln(w, "complete -c sift -n '__fish_use_subcommand' -l help -s h -d '查看帮助'")
+	fmt.Fprintln(w, "complete -c sift -n '__fish_use_subcommand' -l version -d '查看版本'")
 	for _, m := range commands {
 		fmt.Fprintf(w, "complete -c sift -n '__fish_use_subcommand' -a '%s' -d '%s'\n", m.name, m.summary)
 		for _, s := range m.subcommands {
@@ -193,5 +247,7 @@ func writeFishCompletion(w io.Writer) {
 			}
 			fmt.Fprintf(w, "complete -c sift -n '%s' -l %s%s -d '%s'\n", seen, strings.TrimPrefix(f.flag, "--"), argSpec, f.desc)
 		}
+		// Universal help flags are offered on every command (issue #935).
+		fmt.Fprintf(w, "complete -c sift -n '%s' -l help -s h -d '查看帮助'\n", seen)
 	}
 }

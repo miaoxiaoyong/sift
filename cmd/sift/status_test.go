@@ -130,6 +130,26 @@ func TestStatusStaleSocketNotRunning(t *testing.T) {
 	}
 }
 
+// TestStatusRunningWithoutPeerPID pins F935-3: when the bounded connect proves
+// liveness but the peer PID cannot be obtained (peerpid_other.go or a
+// getsockopt failure yields PID 0), the human overview must still report
+// 运行中 and must never show the misleading "PID 0".
+func TestStatusRunningWithoutPeerPID(t *testing.T) {
+	var out bytes.Buffer
+	renderStatusHuman(&out, statusResult{
+		Daemon:  statusDaemon{Running: true, Socket: true, PID: 0},
+		Config:  statusConfig{Present: true, Valid: true, Path: "/tmp/sift/config.yaml"},
+		Version: "0.0.0-test",
+	})
+	got := out.String()
+	if !strings.Contains(got, "运行中") {
+		t.Fatalf("status output lacks 运行中:\n%s", got)
+	}
+	if strings.Contains(got, "PID 0") {
+		t.Fatalf("status output shows misleading PID 0 when peer PID is unavailable:\n%s", got)
+	}
+}
+
 // TestStatusInvalidConfig reports 无效 and keeps the error for --json.
 func TestStatusInvalidConfig(t *testing.T) {
 	home := freshHome(t)

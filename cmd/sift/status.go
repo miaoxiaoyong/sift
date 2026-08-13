@@ -116,7 +116,14 @@ func renderStatusHuman(w io.Writer, st statusResult) {
 	fmt.Fprintln(w, "Sift 状态")
 	switch {
 	case st.Daemon.Running:
-		fmt.Fprintf(w, "✓ daemon：运行中（PID %d）\n", st.Daemon.PID)
+		// PID is optional (peerpid_other.go / getsockopt failure yields 0):
+		// a live connect proves liveness, so report 运行中 without a
+		// misleading "PID 0" (issue #935 / F935-3).
+		if st.Daemon.PID > 0 {
+			fmt.Fprintf(w, "✓ daemon：运行中（PID %d）\n", st.Daemon.PID)
+		} else {
+			fmt.Fprintln(w, "✓ daemon：运行中")
+		}
 	case st.Daemon.Socket:
 		fmt.Fprintln(w, "✗ daemon：未运行（siftd.sock 存在但无响应，可能为残留文件）")
 	default:

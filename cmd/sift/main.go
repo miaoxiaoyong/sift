@@ -429,7 +429,7 @@ func request(command string, args []string) (string, map[string]any, error) {
 			return "", nil, err
 		}
 		if fs.NArg() != 1 || *version < 1 || *key == "" {
-			return "", nil, fmt.Errorf("usage: sift %s <run-id> --expected-version N --request-key KEY", command)
+			return "", nil, fmt.Errorf("usage: sift %s --expected-version N --request-key KEY <run-id>", command)
 		}
 		return "ops." + command, map[string]any{"run_id": fs.Arg(0), "expected_version": *version, "request_key": *key}, nil
 	case "metrics":
