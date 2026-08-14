@@ -167,3 +167,27 @@ func writeWrapper(t *testing.T, dir, version string, protocolMajor int) {
 		t.Fatal(err)
 	}
 }
+
+func TestDirectLauncherInjectsFrozenLaunchEnv(t *testing.T) {
+	t.Setenv("SECRET", "must-not-reach-agent")
+	var stdout bytes.Buffer
+	worktree := t.TempDir()
+	runDir := t.TempDir()
+	cmd, err := (DirectLauncher{}).Start(context.Background(), AgentLaunch{
+		Executable: "/bin/sh",
+		Args:       []string{"-c", `printf '%s|%s|%s|%s' "$SIFT_RUN_DIR" "$HOME" "$PATH" "${SECRET-unset}"`},
+		Env:        FrozenEnvList(map[string]string{"HOME": "/frozen/home", "PATH": "/frozen/bin:/usr/bin"}),
+		Worktree:   worktree,
+		RunDir:     runDir,
+		Stdout:     &stdout,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), runDir+"|/frozen/home|/frozen/bin:/usr/bin|unset"; got != want {
+		t.Fatalf("environment = %q, want %q", got, want)
+	}
+}

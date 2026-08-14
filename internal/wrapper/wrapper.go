@@ -210,7 +210,7 @@ func RunExecution(ctx context.Context, bootstrapPath string) error {
 			}
 		}
 	}
-	launch := runtime.AgentLaunch{Executable: b.Agent.Executable, ExecutableImage: executableImage, Args: args, Worktree: b.WorktreePath, RunDir: b.RunDir, Stdin: in, Stdout: pty.Slave, Stderr: pty.Slave}
+	launch := runtime.AgentLaunch{Executable: b.Agent.Executable, ExecutableImage: executableImage, Args: args, Env: runtime.FrozenEnvList(b.Agent.LaunchEnv), Worktree: b.WorktreePath, RunDir: b.RunDir, Stdin: in, Stdout: pty.Slave, Stderr: pty.Slave}
 	cmd, err := gate.StartOnce(ctx, runtime.DirectLauncher{}, launch)
 	if err != nil {
 		return err

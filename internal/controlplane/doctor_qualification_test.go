@@ -18,7 +18,7 @@ func TestDoctorQualificationProbeSanitizesEnvironmentAndHonorsContext(t *testing
 		t.Fatal(err)
 	}
 	t.Setenv("SIFT_DOCTOR_SENTINEL", "daemon-credential")
-	if check := qualificationCommandCheck(context.Background(), "agent", agent, nil); check.Level != "ok" {
+	if check := qualificationCommandCheck(context.Background(), "agent", agent, nil, nil); check.Level != "ok" {
 		t.Fatalf("doctor qualification probe = %#v", check)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -31,7 +31,27 @@ func TestDoctorQualificationProbeSanitizesEnvironmentAndHonorsContext(t *testing
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
-	if check := qualificationCommandCheck(ctx, "agent", hanging, nil); check.Level != "error" {
+	if check := qualificationCommandCheck(ctx, "agent", hanging, nil, nil); check.Level != "error" {
 		t.Fatalf("doctor hanging qualification probe = %#v, want error", check)
+	}
+}
+
+// Issue #993: agent-cli probes run under the frozen launch_env, so an agent
+// whose shim requires HOME passes doctor exactly when the frozen snapshot
+// provides it — the same environment the daemon will launch with.
+
+func TestDoctorQualificationProbeUsesFrozenLaunchEnv(t *testing.T) {
+	dir := t.TempDir()
+	agent := filepath.Join(dir, "agent")
+	body := "#!/bin/sh\n: \"${HOME:?HOME: unbound variable}\"\nprintf version\n"
+	if err := os.WriteFile(agent, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if check := qualificationCommandCheck(context.Background(), "agent", agent, nil, nil); check.Level != "error" {
+		t.Fatalf("probe without frozen env = %#v, want error (HOME unset)", check)
+	}
+	check := qualificationCommandCheck(context.Background(), "agent", agent, nil, map[string]string{"HOME": dir})
+	if check.Level != "ok" {
+		t.Fatalf("probe with frozen env = %#v, want ok", check)
 	}
 }

@@ -1080,3 +1080,39 @@ func killTmuxServer(t *testing.T, tmux, socket string) {
 	cmd.Env = runtimepkg.TmuxClientEnvironment()
 	_ = cmd.Run()
 }
+
+// Issue #993: the wrapper hands the bootstrap's frozen launch_env to the sole
+// Launcher call, so the Agent observes SIFT_RUN_DIR plus the frozen HOME/PATH
+// snapshot — never the wrapper's own environment.
+
+func TestWrapperLaunchUsesFrozenLaunchEnv(t *testing.T) {
+	wrapperPath := buildWrapper(t)
+	root, runDir, bootstrap := validBootstrap(t, "/bin/sh", []string{"-c", `printf '%s|%s|%s|%s' "$SIFT_RUN_DIR" "$HOME" "$PATH" "${SIFT_WRAPPER_SENTINEL-unset}" > "$SIFT_RUN_DIR/agent-env"`})
+	// validBootstrap omits launch_env; rewrite the bootstrap with a frozen
+	// snapshot, mirroring what the launch worker writes in production.
+	var b runtimepkg.Bootstrap
+	data, err := os.ReadFile(bootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &b); err != nil {
+		t.Fatal(err)
+	}
+	b.Agent.LaunchEnv = map[string]string{"HOME": "/frozen/home", "PATH": "/frozen/bin:/usr/bin"}
+	data, err = json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bootstrap, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SIFT_WRAPPER_SENTINEL", "wrapper-credential")
+	server := newWrapperServer(t, root, "")
+	defer server.Close()
+	if out, err := osexec.Command(wrapperPath, bootstrap).CombinedOutput(); err != nil {
+		t.Fatalf("wrapper failed: %v\n%s", err, out)
+	}
+	if got, want := readFile(t, filepath.Join(runDir, "agent-env")), runDir+"|/frozen/home|/frozen/bin:/usr/bin|unset"; got != want {
+		t.Fatalf("agent environment = %q, want %q", got, want)
+	}
+}

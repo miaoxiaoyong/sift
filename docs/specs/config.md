@@ -124,6 +124,9 @@ agents:
     backend: process
     max_concurrent: 1
     version_args: ["--version"]
+    launch_env:
+      HOME: /Users/hex
+      PATH: /Users/hex/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin
 ```
 
 | 字段 | 类型 | 默认 | 约束 |
@@ -135,8 +138,9 @@ agents:
 | `backend` | enum | `runtime.backend` | `process \| tmux`；非空时覆盖根默认 |
 | `max_concurrent` | integer | `runtime.default_agent_max_concurrent` | `1..32`；Agent 省略时继承根配置 |
 | `version_args` | `string[]` | `["--version"]` | 启动探测 argv；空数组表示只探测 executable 可执行 |
+| `launch_env` | `map[string]string` | `{}` | 可选；仅允许 `HOME`/`PATH` 两个 key，值非空、不含 NUL。`sift init` 在探测成功时冻结当时环境的 HOME/PATH 快照（含去重后的 PATH），资格探测与生产启动共用同一份冻结值（issue #993） |
 
-`task_transport=stdin` 时禁止 `{task_file}`；`file` 时必须恰有一个完整 argv token 等于 `{task_file}`，wrapper 只做单 token 替换，不做字符串插值或 shell 展开。Agent 定义不接受任意环境变量映射。Runtime 只注入协议明确允许的非机密变量（V0 为 `SIFT_RUN_DIR`）；凭据不得经配置、argv 或环境变量传递。规范化按 `agent.backend ?? runtime.backend` 为每个 Agent 产生 concrete backend；Run/attempt 从其冻结 config snapshot 写入 `attempts.backend`，retry 与 daemon 重启不得重新读取当前磁盘配置。执行、PTY、tmux session 与资格契约见 [`runtime.md`](runtime.md)。
+`task_transport=stdin` 时禁止 `{task_file}`；`file` 时必须恰有一个完整 argv token 等于 `{task_file}`，wrapper 只做单 token 替换，不做字符串插值或 shell 展开。除 `launch_env` 白名单（HOME/PATH，非凭据）外，Agent 定义不接受任意环境变量映射。Runtime 只注入协议明确允许的非机密变量（`SIFT_RUN_DIR` 与该 Agent 冻结的 `launch_env`）；凭据不得经配置、argv 或环境变量传递。规范化按 `agent.backend ?? runtime.backend` 为每个 Agent 产生 concrete backend；Run/attempt 从其冻结 config snapshot 写入 `attempts.backend`，retry 与 daemon 重启不得重新读取当前磁盘配置。执行、PTY、tmux session 与资格契约见 [`runtime.md`](runtime.md)。
 
 ### 3.3 `projects[]`
 

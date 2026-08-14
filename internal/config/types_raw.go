@@ -33,13 +33,14 @@ type RawOperators struct {
 
 // RawAgent is one agent definition (config.md §3.2).
 type RawAgent struct {
-	ID            *string        `json:"id" sift:"required"`
-	Executable    *string        `json:"executable" sift:"required"`
-	Args          []string       `json:"args,omitempty"`
-	TaskTransport *TaskTransport `json:"task_transport,omitempty"`
-	Backend       *Backend       `json:"backend,omitempty"`
-	MaxConcurrent *int           `json:"max_concurrent,omitempty"`
-	VersionArgs   []string       `json:"version_args,omitempty"`
+	ID            *string           `json:"id" sift:"required"`
+	Executable    *string           `json:"executable" sift:"required"`
+	Args          []string          `json:"args,omitempty"`
+	TaskTransport *TaskTransport    `json:"task_transport,omitempty"`
+	Backend       *Backend          `json:"backend,omitempty"`
+	MaxConcurrent *int              `json:"max_concurrent,omitempty"`
+	VersionArgs   []string          `json:"version_args,omitempty"`
+	LaunchEnv     map[string]string `json:"launch_env,omitempty"`
 }
 
 // RawForgeRef is the project forge binding (config.md §3.3).

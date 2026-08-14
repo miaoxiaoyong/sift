@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"time"
 )
 
@@ -32,8 +33,12 @@ type QualificationInput struct {
 	TaskTransport string
 	VersionArgs   []string
 	Executable    string
-	GOOS          string
-	GOARCH        string
+	// LaunchEnv is the init-frozen HOME/PATH snapshot (config.md §3.2). The
+	// version probe runs under exactly this credential-free environment so
+	// measurement matches production launch (issue #993).
+	LaunchEnv map[string]string
+	GOOS      string
+	GOARCH    string
 	// Context and ProbeTimeout bound the untrusted version command. A nil
 	// Context uses Background; a non-positive timeout uses the safe default.
 	Context      context.Context
@@ -101,7 +106,7 @@ func BuildQualification(in QualificationInput) (Qualification, error) {
 		VersionArgs   []string `json:"version_args"`
 	}{1, in.Args, in.TaskTransport, in.VersionArgs}
 	definitionJSON, _ := json.Marshal(definition)
-	stdoutBytes, stderrBytes, err := ProbeVersion(in.Context, path, in.VersionArgs, in.ProbeTimeout)
+	stdoutBytes, stderrBytes, err := ProbeVersionEnv(in.Context, path, in.VersionArgs, FrozenEnvList(in.LaunchEnv), in.ProbeTimeout)
 	if err != nil {
 		return Qualification{}, fmt.Errorf("runtime: agent version probe: %w", err)
 	}
@@ -125,6 +130,14 @@ func BuildQualification(in QualificationInput) (Qualification, error) {
 // an empty environment. It is deliberately separate from task launch: no task
 // input, run directory, or daemon credential can enter this probe.
 func ProbeVersion(parent context.Context, executable string, args []string, timeout time.Duration) ([]byte, []byte, error) {
+	return ProbeVersionEnv(parent, executable, args, nil, timeout)
+}
+
+// ProbeVersionEnv is ProbeVersion under an explicit credential-free
+// environment: the init-frozen launch_env entries (K=V form) replace the
+// otherwise empty probe environment (issue #993). Callers never pass daemon
+// credentials here.
+func ProbeVersionEnv(parent context.Context, executable string, args []string, env []string, timeout time.Duration) ([]byte, []byte, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -134,7 +147,9 @@ func ProbeVersion(parent context.Context, executable string, args []string, time
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, args...)
-	cmd.Env = []string{}
+	// nil must not inherit the daemon environment: the probe baseline is the
+	// empty environment plus the explicit frozen entries only.
+	cmd.Env = append([]string{}, env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -145,6 +160,24 @@ func ProbeVersion(parent context.Context, executable string, args []string, time
 		return stdout.Bytes(), stderr.Bytes(), err
 	}
 	return stdout.Bytes(), stderr.Bytes(), nil
+}
+
+// FrozenEnvList renders a frozen launch_env map as deterministic, key-sorted
+// K=V entries so probe, bootstrap, and launch all observe the same order.
+func FrozenEnvList(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(env))
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out
 }
 
 // MaterializeQualifiedExecutable verifies the path's current bytes through a

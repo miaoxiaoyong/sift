@@ -139,7 +139,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 			return err
 		}
 	}
-	qualification, err := runtime.BuildQualification(runtime.QualificationInput{AgentID: agent.ID, Args: agent.Args, TaskTransport: string(agent.TaskTransport), VersionArgs: agent.VersionArgs, Executable: agent.Executable, Context: ctx, ProbeTimeout: w.QualificationProbeTimeout})
+	qualification, err := runtime.BuildQualification(runtime.QualificationInput{AgentID: agent.ID, Args: agent.Args, TaskTransport: string(agent.TaskTransport), VersionArgs: agent.VersionArgs, Executable: agent.Executable, LaunchEnv: agent.LaunchEnv, Context: ctx, ProbeTimeout: w.QualificationProbeTimeout})
 	if err != nil {
 		return fmt.Errorf("launch worker: build topology qualification: %w", err)
 	}
@@ -187,7 +187,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		if err := os.MkdirAll(runDir, 0700); err != nil {
 			return err
 		}
-		bootstrap := runtime.Bootstrap{SchemaVersion: 2, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor, DaemonVersion: controlplane.Version, WrapperVersion: controlplane.Version, RunID: dispatch.RunID, AttemptNo: dispatch.AttemptNo, Generation: dispatch.Generation, DispatchID: dispatch.DispatchID, BootstrapNonce: dispatch.BootstrapNonce, RunToken: dispatch.RunToken, RunDir: runDir, WorktreePath: dispatch.WorktreePath, Agent: runtime.BootstrapAgent{ID: agent.ID, Executable: qualification.ExecutablePath, ExecutableSHA256: qualification.ExecutableSHA256, Args: agent.Args, TaskTransport: string(agent.TaskTransport)}, TaskSpecSnapshotID: dispatch.TaskSpecID, TaskSpec: json.RawMessage(dispatch.TaskSpec)}
+		bootstrap := runtime.Bootstrap{SchemaVersion: 2, ProtocolMajor: controlplane.ProtocolMajor, ProtocolMinor: controlplane.ProtocolMinor, DaemonVersion: controlplane.Version, WrapperVersion: controlplane.Version, RunID: dispatch.RunID, AttemptNo: dispatch.AttemptNo, Generation: dispatch.Generation, DispatchID: dispatch.DispatchID, BootstrapNonce: dispatch.BootstrapNonce, RunToken: dispatch.RunToken, RunDir: runDir, WorktreePath: dispatch.WorktreePath, Agent: runtime.BootstrapAgent{ID: agent.ID, Executable: qualification.ExecutablePath, ExecutableSHA256: qualification.ExecutableSHA256, Args: agent.Args, TaskTransport: string(agent.TaskTransport), LaunchEnv: agent.LaunchEnv}, TaskSpecSnapshotID: dispatch.TaskSpecID, TaskSpec: json.RawMessage(dispatch.TaskSpec)}
 		b, err = json.Marshal(bootstrap)
 		if err != nil {
 			return err
@@ -301,7 +301,20 @@ func matchesDispatch(b runtime.Bootstrap, d storage.LaunchDispatch, agent config
 		b.DispatchID == d.DispatchID && b.BootstrapNonce == d.BootstrapNonce && b.RunToken == d.RunToken &&
 		b.RunDir == runDir && b.WorktreePath == d.WorktreePath && b.TaskSpecSnapshotID == d.TaskSpecID &&
 		b.Agent.ID == agent.ID && b.Agent.Executable == qualification.ExecutablePath && b.Agent.ExecutableSHA256 == qualification.ExecutableSHA256 && b.Agent.TaskTransport == string(agent.TaskTransport) &&
+		launchEnvEqual(b.Agent.LaunchEnv, agent.LaunchEnv) &&
 		bytes.Equal(b.TaskSpec, d.TaskSpec) && argsEqual(b.Agent.Args, agent.Args)
+}
+
+func launchEnvEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
 
 func argsEqual(a, b []string) bool {

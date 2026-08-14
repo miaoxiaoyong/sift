@@ -30,4 +30,8 @@ type BootstrapAgent struct {
 	ExecutableSHA256 string   `json:"executable_sha256,omitempty"`
 	Args             []string `json:"args"`
 	TaskTransport    string   `json:"task_transport"`
+	// LaunchEnv is the Agent's frozen HOME/PATH snapshot (config.md §3.2),
+	// carried so the wrapper's sole Launcher call uses the exact environment
+	// the qualification probe measured (issue #993).
+	LaunchEnv map[string]string `json:"launch_env,omitempty"`
 }

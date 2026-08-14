@@ -67,6 +67,11 @@ func normalizeAgents(raw []RawAgent, defaultConc int, defaultBackend Backend) ([
 			versionArgs = append([]string(nil), a.VersionArgs...)
 		}
 
+		launchEnv, err := normalizeLaunchEnv(f+".launch_env", a.LaunchEnv)
+		if err != nil {
+			return nil, err
+		}
+
 		out = append(out, Agent{
 			ID:            *a.ID,
 			Executable:    *a.Executable,
@@ -75,7 +80,37 @@ func normalizeAgents(raw []RawAgent, defaultConc int, defaultBackend Backend) ([
 			Backend:       backend,
 			MaxConcurrent: maxConc,
 			VersionArgs:   versionArgs,
+			LaunchEnv:     launchEnv,
 		})
+	}
+	return out, nil
+}
+
+// launchEnvWhitelist is the closed key set of agents[].launch_env
+// (config.md §3.2): HOME and PATH are not credentials, so the init-frozen
+// snapshot may enter the qualification probe and production launch
+// environment. No other key is accepted.
+var launchEnvWhitelist = map[string]bool{"HOME": true, "PATH": true}
+
+// normalizeLaunchEnv validates the frozen launch environment: whitelisted
+// keys only, non-empty values without NUL bytes. The map is copied so the
+// resolved config owns its snapshot.
+func normalizeLaunchEnv(field string, in map[string]string) (map[string]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if !launchEnvWhitelist[k] {
+			return nil, configError(field, "key %q is not in the HOME/PATH whitelist", k)
+		}
+		if v == "" {
+			return nil, configError(field+"."+k, "must be non-empty")
+		}
+		if strings.ContainsRune(v, '\x00') {
+			return nil, configError(field+"."+k, "contains NUL byte")
+		}
+		out[k] = v
 	}
 	return out, nil
 }

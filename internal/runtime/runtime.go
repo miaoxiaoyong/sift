@@ -142,11 +142,15 @@ type AgentLaunch struct {
 	// again by path.
 	ExecutableImage *os.File
 	Args            []string
-	Worktree        string
-	RunDir          string
-	Stdin           io.Reader
-	Stdout          io.Writer
-	Stderr          io.Writer
+	// Env is the Agent's init-frozen launch environment (K=V entries from
+	// config.md §3.2 launch_env, rendered by FrozenEnvList). It contains only
+	// the credential-free HOME/PATH whitelist.
+	Env      []string
+	Worktree string
+	RunDir   string
+	Stdin    io.Reader
+	Stdout   io.Writer
+	Stderr   io.Writer
 }
 
 // Launcher is the only interface wrapper code may use to start an Agent. V0's
@@ -160,7 +164,9 @@ type Launcher interface {
 type DirectLauncher struct{}
 
 // Start creates the Agent directly in the wrapper's process group. Its
-// environment intentionally contains only the non-secret run-directory hint.
+// environment contains only the non-secret run-directory hint plus the
+// Agent's frozen launch_env whitelist (issue #993); daemon credentials never
+// enter it.
 func (DirectLauncher) Start(ctx context.Context, launch AgentLaunch) (*exec.Cmd, error) {
 	if !filepath.IsAbs(launch.Executable) {
 		return nil, fmt.Errorf("runtime: agent executable must be absolute")
@@ -178,7 +184,7 @@ func (DirectLauncher) Start(ctx context.Context, launch AgentLaunch) (*exec.Cmd,
 	}
 	cmd := exec.CommandContext(ctx, executable, launch.Args...)
 	cmd.Dir = launch.Worktree
-	cmd.Env = []string{"SIFT_RUN_DIR=" + launch.RunDir}
+	cmd.Env = append([]string{"SIFT_RUN_DIR=" + launch.RunDir}, launch.Env...)
 	cmd.Stdin = launch.Stdin
 	cmd.Stdout = launch.Stdout
 	cmd.Stderr = launch.Stderr

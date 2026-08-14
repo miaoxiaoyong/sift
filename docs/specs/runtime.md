@@ -173,7 +173,7 @@ tmux attach-session -r -t =<session_name>
 }
 ```
 
-`agent_definition_hash` 是 closed canonical `{"schema_version":1,"args":[],"task_transport":"stdin|file","version_args":[]}` 的 SHA-256；不含 backend/max concurrency，因为两个 backend 必须共享 wrapper→Agent 拓扑。`executable_sha256` 对 symlink-resolved regular file bytes 计算。版本命令只经 argv、在有界 context 与无凭据空环境中执行且必须 exit 0；`version_output_digest = SHA256(stdout_bytes || 0x00 || stderr_bytes)`，不 trim/改码，原始输出不进入普通事件。launch bootstrap 携带被测量的 executable SHA-256；worker 在 host spawn 前重验该 hash。wrapper 在唯一 Launcher 调用前从已验证字节 materialize 独立的只读 image：Linux unlink 后经其 `/proc/self/fd` 执行，Darwin 保留 private-copy path 执行；Darwin sealed system volume 的不可复制 executable 经重验后只按其 immutable system path 执行。任一不匹配则不得启动 Agent。worker 清除该 attempt 的 key；wrapper 写入 durable invalidation marker，恢复不得让旧 verified row 授权自动 retry。digest 与 executable bytes 防止同路径替换后继承旧资格。
+`agent_definition_hash` 是 closed canonical `{"schema_version":1,"args":[],"task_transport":"stdin|file","version_args":[]}` 的 SHA-256；不含 backend/max concurrency，因为两个 backend 必须共享 wrapper→Agent 拓扑。`executable_sha256` 对 symlink-resolved regular file bytes 计算。版本命令只经 argv、在有界 context 与无凭据环境中执行且必须 exit 0——环境恰为该 Agent 在 config 中冻结的 `launch_env`（HOME/PATH 白名单，见 config.md §3.2；空环境是其空集特例），与生产启动环境一致（issue #993）；`version_output_digest = SHA256(stdout_bytes || 0x00 || stderr_bytes)`，不 trim/改码，原始输出不进入普通事件。launch bootstrap 携带被测量的 executable SHA-256；worker 在 host spawn 前重验该 hash。wrapper 在唯一 Launcher 调用前从已验证字节 materialize 独立的只读 image：Linux unlink 后经其 `/proc/self/fd` 执行，Darwin 保留 private-copy path 执行；Darwin sealed system volume 的不可复制 executable 经重验后只按其 immutable system path 执行。任一不匹配则不得启动 Agent。worker 清除该 attempt 的 key；wrapper 写入 durable invalidation marker，恢复不得让旧 verified row 授权自动 retry。digest 与 executable bytes 防止同路径替换后继承旧资格。
 
 ### 7.2 状态与门控
 
@@ -188,7 +188,7 @@ M6 交付持久化机制、生产查询接线和 synthetic verified/detached fix
 ## 8. 安全与错误分类
 
 - tmux/session/binding 数据均非 credential，但仍不得接受用户输入重建；所有 target 来自 current durable identity。
-- tmux argv、wrapper argv、PTY 和 attach 不继承 daemon credential。wrapper→Agent 环境仍只有 `SIFT_RUN_DIR`。
+- tmux argv、wrapper argv、PTY 和 attach 不继承 daemon credential。wrapper→Agent 环境只有 `SIFT_RUN_DIR` 加该 Agent 冻结的 `launch_env`（HOME/PATH，issue #993）。
 - expected session 不存在为 backend observer 的 transient/diagnostic；binding mismatch、multiple pane、dead pane 或 claim drift 为 semantic conflict；tmux executable/capability 缺失为 auth-or-capability/startup failure。`ops.attach` 将 absent/unknown 与 semantic mismatch 都投影为非重试 `conflict`，因为 attach 没有领域重试协议；不得把 session absence 误报为 Run `not_found`。
 - identity/session unknown 永远不能降级为 absent。不得向身份不确定 PID/PGID 发信号。
 - session observation 与 qualification evidence 不进入 Brain/Gate，不能抑制单条 HITL 或改变 merge 决策。

@@ -71,6 +71,10 @@ type Agent struct {
 	Backend       Backend       `json:"backend"`
 	MaxConcurrent int           `json:"max_concurrent"`
 	VersionArgs   []string      `json:"version_args"`
+	// LaunchEnv is the init-frozen HOME/PATH snapshot (config.md §3.2): the
+	// whitelisted, credential-free environment shared by the qualification
+	// probe and production launch.
+	LaunchEnv map[string]string `json:"launch_env,omitempty"`
 }
 
 // ForgeRef is the resolved project forge binding (config.md §3.3).

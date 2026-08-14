@@ -923,7 +923,75 @@ func addAgent(doc map[string]any, spec string, args *[]string) {
 	for i, arg := range *args {
 		argv[i] = arg
 	}
-	doc["agents"] = append(items, map[string]any{"id": id, "executable": executable, "args": argv, "task_transport": "stdin", "backend": "process"})
+	entry := map[string]any{"id": id, "executable": executable, "args": argv, "task_transport": "stdin", "backend": "process"}
+	// Issue #993: freeze what made detection succeed. The executable is
+	// resolved to an absolute path and the probe-time HOME/PATH snapshot is
+	// stored as launch_env, so the daemon's closed launchd PATH and the
+	// interactive init shell launch the Agent under the same environment.
+	// An unresolvable executable keeps its configured form (doctor flags it).
+	if abs, ok := resolveAgentExecutable(executable); ok {
+		entry["executable"] = abs
+		if env := frozenLaunchEnv(); env != nil {
+			entry["launch_env"] = env
+		}
+	}
+	doc["agents"] = append(items, entry)
+}
+
+// setupLookPath is the seam for executable resolution in addAgent
+// (issue #993); tests inject a fake so no host PATH probe runs.
+var setupLookPath = exec.LookPath
+
+// resolveAgentExecutable resolves a bare executable name through PATH and
+// makes every form absolute. The bool reports whether resolution succeeded.
+func resolveAgentExecutable(executable string) (string, bool) {
+	resolved := executable
+	if !strings.ContainsRune(executable, os.PathSeparator) {
+		path, err := setupLookPath(executable)
+		if err != nil {
+			return executable, false
+		}
+		resolved = path
+	}
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		return executable, false
+	}
+	return abs, true
+}
+
+// frozenLaunchEnv snapshots the credential-free HOME/PATH whitelist from the
+// environment where Agent detection succeeded (issue #993). PATH entries are
+// de-duplicated in order. Returns nil when nothing whitelisted is set.
+func frozenLaunchEnv() map[string]string {
+	env := map[string]string{}
+	if home := os.Getenv("HOME"); home != "" {
+		env["HOME"] = home
+	}
+	if path := dedupePathList(os.Getenv("PATH")); path != "" {
+		env["PATH"] = path
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
+}
+
+// dedupePathList removes duplicate PATH entries, keeping first-seen order.
+func dedupePathList(path string) string {
+	if path == "" {
+		return ""
+	}
+	seen := map[string]bool{}
+	kept := make([]string, 0, strings.Count(path, string(os.PathListSeparator))+1)
+	for _, dir := range strings.Split(path, string(os.PathListSeparator)) {
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		kept = append(kept, dir)
+	}
+	return strings.Join(kept, string(os.PathListSeparator))
 }
 
 func defaultAgentArgs(executable string) []string {
@@ -1081,6 +1149,25 @@ func setupCloseoutDoctor(in *bufio.Reader, out io.Writer, home config.Home) {
 		for _, id := range known {
 			fmt.Fprintf(out, "  - %s\n", id)
 		}
+	}
+	printFrozenLaunchEnvNote(out, home)
+}
+
+// printFrozenLaunchEnvNote closes the daemon-side visibility gap (issue #993
+// 验收): init runs in the interactive shell while siftd runs under the closed
+// launchd PATH. Agents carrying a frozen launch_env launch identically from
+// both, so this states the invariant and the re-init trigger instead of
+// letting users rediscover it through agent-cli errors.
+func printFrozenLaunchEnvNote(out io.Writer, home config.Home) {
+	snap, err := config.Load(home, time.Now())
+	if err != nil {
+		return
+	}
+	for _, agent := range snap.Config.Agents {
+		if len(agent.LaunchEnv) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "ℹ Agent %s 的启动环境（HOME/PATH）已在 init 冻结进配置，daemon 服务与本次自检使用同一份环境；重装或迁移该 Agent 后请重跑 `sift init`\n", agent.ID)
 	}
 }
 

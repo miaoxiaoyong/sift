@@ -230,3 +230,38 @@ func mustLoadYAMLOrErr(t *testing.T, yaml string) (*Snapshot, error) {
 func itoa(i int) string {
 	return strconv.Itoa(i)
 }
+
+// launch_env whitelist validation (config.md §3.2, issue #993): HOME/PATH
+// only, non-empty, no NUL; the frozen snapshot must survive normalization.
+
+func TestAgentLaunchEnvWhitelist(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string
+		wantErr string
+	}{
+		{name: "home_and_path_ok", env: "    launch_env:\n      HOME: /home/u\n      PATH: /home/u/.bun/bin:/usr/bin\n"},
+		{name: "path_only_ok", env: "    launch_env:\n      PATH: /usr/bin\n"},
+		{name: "arbitrary_key_rejected", env: "    launch_env:\n      API_TOKEN: secret\n", wantErr: "whitelist"},
+		{name: "lowercase_home_rejected", env: "    launch_env:\n      home: /home/u\n", wantErr: "whitelist"},
+		{name: "empty_value_rejected", env: "    launch_env:\n      PATH: \"\"\n", wantErr: "non-empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			yaml := "version: 1\nagents:\n  - id: claude\n    executable: claude\n" + tc.env
+			snap, err := mustLoadYAMLOrErr(t, yaml)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected accept, got %v", err)
+				}
+				if len(snap.Config.Agents) != 1 || len(snap.Config.Agents[0].LaunchEnv) == 0 {
+					t.Fatalf("launch_env lost in normalization: %#v", snap.Config.Agents)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
