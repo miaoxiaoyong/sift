@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
-	"github.com/miaoxiaoyong/sift/internal/runtime"
+	"github.com/xsift/sift/internal/controlplane"
+	"github.com/xsift/sift/internal/runtime"
 )
 
 // Run supervises the execution wrapper from outside its process group. This

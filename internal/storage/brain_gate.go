@@ -7,7 +7,7 @@ import (
 
 	"database/sql"
 	"encoding/json"
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 )
 
 type HumanDecisionAction string

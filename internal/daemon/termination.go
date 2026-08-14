@@ -12,11 +12,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/worktree"
+	"github.com/xsift/sift/internal/worktree"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/config"
+	runtimepkg "github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // TerminationCoordinator is the only application-level bridge from recovery,
@@ -321,8 +321,8 @@ func (c *TerminationCoordinator) terminateNoActiveAttempt(ctx context.Context, r
 		RunID: latest.RunID, AttemptNo: latest.AttemptNo,
 		ExpectedRunVersion: expectedVersion, ExpectedGeneration: latest.Generation,
 		Source: source, Absent: true,
-		Evidence: "no active attempt; operator controlled termination of a finished attempt",
-		NowMS:    c.nowMS(),
+		Evidence:            "no active attempt; operator controlled termination of a finished attempt",
+		NowMS:               c.nowMS(),
 		AttentionDailyQuota: c.AttentionDailyQuota, DayTimezone: c.DayTimezone, DailySummaryAt: c.DailySummaryAt,
 		CriticalWindowMS: c.CriticalWindowMS, CriticalTotalLimit: c.CriticalTotalLimit, CriticalPerRunLimit: c.CriticalPerRunLimit,
 		Channels: c.Channels,

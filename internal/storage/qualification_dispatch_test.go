@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
+	"github.com/xsift/sift/internal/config"
+	runtimepkg "github.com/xsift/sift/internal/runtime"
 )
 
 func TestQualificationDispatchBindsExactKeyOnce(t *testing.T) {

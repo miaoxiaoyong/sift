@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
-	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/worktree"
+	"github.com/xsift/sift/internal/controlplane"
+	runtimepkg "github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/worktree"
 )
 
 func TestProductionWrapperCrashWindows(t *testing.T) {

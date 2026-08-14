@@ -9,7 +9,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // ProjectForgeRef returns the immutable project routing facts needed by an

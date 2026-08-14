@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/version"
 )
 
 type statusDaemon struct {

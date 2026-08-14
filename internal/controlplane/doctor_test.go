@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/storage"
 )
 
 func TestDoctorBaselineChecksConfiguredDependencies(t *testing.T) {

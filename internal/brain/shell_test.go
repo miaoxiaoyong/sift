@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/schema"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/schema"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // Shell flow tests (brain.md §5/§6/§10): gate → provider → closed decode →

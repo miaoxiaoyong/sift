@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/storage"
 )
 
 func openT7DBAt(t *testing.T, path string, now int64) *storage.DB {

@@ -10,8 +10,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/schema"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // InterruptReason is the Brain view of the canonical storage Interrupt reason.

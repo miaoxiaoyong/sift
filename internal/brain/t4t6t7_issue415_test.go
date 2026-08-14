@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/schema"
+	"github.com/xsift/sift/internal/storage"
 )
 
 func issue415T7Input(key, project string, kinds []TaskKind) T7Input {

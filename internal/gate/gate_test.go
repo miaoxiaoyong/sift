@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/brain"
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/policy"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/brain"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/policy"
+	"github.com/xsift/sift/internal/storage"
 )
 
 func input(t *testing.T) Input {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
+	"github.com/xsift/sift/internal/command"
 )
 
 func freezeAttemptForRace(t *testing.T) (*DB, context.Context, int64) {

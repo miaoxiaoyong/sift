@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 	"sort"
 )
 

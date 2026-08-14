@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // M2 gate (WBS §2.3 / §2.5): a project whose forge credential or capability

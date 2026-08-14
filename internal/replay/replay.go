@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/miaoxiaoyong/sift/internal/brain"
-	"github.com/miaoxiaoyong/sift/internal/gate"
+	"github.com/xsift/sift/internal/brain"
+	"github.com/xsift/sift/internal/gate"
 )
 
 type GateDelta struct {

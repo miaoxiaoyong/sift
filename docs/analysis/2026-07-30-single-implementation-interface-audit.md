@@ -6,7 +6,7 @@ summary: 单实现接口保留与收敛结论
 
 # 单实现接口审计（T011）
 
-跟踪 Issue：[#752](https://github.com/miaoxiaoyong/sift/issues/752)。
+跟踪 Issue：[#752](https://github.com/xsift/sift/issues/752)。
 
 ## 结论
 

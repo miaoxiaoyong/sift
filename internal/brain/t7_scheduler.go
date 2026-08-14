@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/schema"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // T7Scheduler is the periodic aggregate caller. Offline replay evidence is

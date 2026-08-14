@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // V11 external-merge fact convergence, first segment (WBS M2 §2.5 / gate; PRD

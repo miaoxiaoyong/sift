@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // T1/T2 contract tests (brain.md §7/§8, §10.3): unknown fields, wrong types,

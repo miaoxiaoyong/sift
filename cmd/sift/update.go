@@ -23,18 +23,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/hosting"
-	"github.com/miaoxiaoyong/sift/internal/install"
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/hosting"
+	"github.com/xsift/sift/internal/install"
+	"github.com/xsift/sift/internal/version"
 )
 
 // releaseEndpoints locate the GitHub release metadata and download assets.
 // They are variables so tests can point them at an httptest server and run
 // `sift update` hermetically.
 var (
-	releaseAPIURL          = "https://api.github.com/repos/hexai-cn/sift/releases/latest"
-	releaseDownloadBaseURL = "https://github.com/hexai-cn/sift/releases/download"
+	releaseAPIURL          = "https://api.github.com/repos/xsift/sift/releases/latest"
+	releaseDownloadBaseURL = "https://github.com/xsift/sift/releases/download"
 )
 
 const (

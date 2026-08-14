@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
+	"github.com/xsift/sift/internal/command"
 )
 
 // This file closes WBS §5.4's unchecked startup_stall item end-to-end: a real

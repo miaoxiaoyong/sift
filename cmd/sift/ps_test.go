@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/xsift/sift/internal/controlplane"
 )
 
 // psServe serves one ops.ps request and replies with the given run list. The

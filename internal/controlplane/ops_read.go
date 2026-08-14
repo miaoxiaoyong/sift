@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // This file implements the read-side operator methods (control-plane.md §6):

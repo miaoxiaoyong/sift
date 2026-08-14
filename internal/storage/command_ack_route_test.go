@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
+	"github.com/xsift/sift/internal/command"
 )
 
 // ResolveCommandAckRouting must return the immutable target and project forge

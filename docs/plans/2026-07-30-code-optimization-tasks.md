@@ -18,7 +18,7 @@ summary: 代码精简整改任务清单 — 原因、必要性、证据支撑
 
 ## 核实结论（2026-07-30）
 
-相对撰写基线 `b6d89c0`，在 HEAD ≈ `29803d5` 上复核。跟踪 meta：[#746](https://github.com/miaoxiaoyong/sift/issues/746)。
+相对撰写基线 `b6d89c0`，在 HEAD ≈ `29803d5` 上复核。跟踪 meta：[#746](https://github.com/xsift/sift/issues/746)。
 
 | 任务 | 判定 | 说明 |
 |------|------|------|

@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/storage"
 )
 
 type attachParams struct {

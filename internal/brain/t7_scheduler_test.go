@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/storage"
 )
 
 const (

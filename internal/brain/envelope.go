@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/schema"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // claude-json-v1 outer-envelope adapter (brain.md §4.1). The envelope is open:

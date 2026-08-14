@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/storage"
 )
 
 type createChangePayload struct {

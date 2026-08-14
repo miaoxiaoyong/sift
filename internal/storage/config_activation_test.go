@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 )
 
 func TestActivateConfigProjectsOnEmptyDB(t *testing.T) {

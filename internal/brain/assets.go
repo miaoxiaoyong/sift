@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // Prompt assets are versioned, git-committed files embedded into the binary

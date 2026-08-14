@@ -19,7 +19,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // TopLevelExtender lets a boundary type contribute extra top-level schema

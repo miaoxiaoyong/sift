@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/version"
 )
 
 // releaseWrapperFixture writes an executable wrapper script next to daemonPath

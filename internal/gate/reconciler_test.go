@@ -12,15 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/brain"
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/forgeworker"
-	"github.com/miaoxiaoyong/sift/internal/gate"
-	"github.com/miaoxiaoyong/sift/internal/intake"
-	"github.com/miaoxiaoyong/sift/internal/replay"
-	"github.com/miaoxiaoyong/sift/internal/storage"
-	"github.com/miaoxiaoyong/sift/internal/worktree"
+	"github.com/xsift/sift/internal/brain"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/forgeworker"
+	"github.com/xsift/sift/internal/gate"
+	"github.com/xsift/sift/internal/intake"
+	"github.com/xsift/sift/internal/replay"
+	"github.com/xsift/sift/internal/storage"
+	"github.com/xsift/sift/internal/worktree"
 )
 
 // TestReconcilerAssemblyEvidence exercises Gate reconciliation inputs and

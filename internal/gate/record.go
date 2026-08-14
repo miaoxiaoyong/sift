@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sort"
 
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // EvaluateAndRecord is the Gate application boundary: callers receive the

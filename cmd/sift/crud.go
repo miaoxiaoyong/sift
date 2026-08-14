@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/agents"
-	"github.com/miaoxiaoyong/sift/internal/cli/render"
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/agents"
+	"github.com/xsift/sift/internal/cli/render"
+	"github.com/xsift/sift/internal/config"
 )
 
 // runResourceCommand dispatches the CRUD verbs of `sift project` / `sift

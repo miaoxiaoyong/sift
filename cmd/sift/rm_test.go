@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/xsift/sift/internal/controlplane"
 )
 
 // TestRmResolvesVersionAndArchives: `sift rm <id>` resolves the version via

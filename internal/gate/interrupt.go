@@ -4,8 +4,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/storage"
 )
 
 func interruptCommand(c storage.GateCandidate, in Input, v Verdict, attention config.Attention, channels []storage.InterruptChannel, nowMS int64) (storage.EmitInterruptCmd, error) {

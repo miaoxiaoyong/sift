@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/miaoxiaoyong/sift/internal/storage"
-	"github.com/miaoxiaoyong/sift/internal/worktree"
+	"github.com/xsift/sift/internal/storage"
+	"github.com/xsift/sift/internal/worktree"
 )
 
 // CreateChangePayload is frozen from EvaluateSuccess. Workers must use this

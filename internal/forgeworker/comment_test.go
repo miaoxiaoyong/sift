@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // V7 comment-worker crash-marker convergence (WBS M2 §2.3 / §2.5, outbox.md §5,

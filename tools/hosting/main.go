@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/miaoxiaoyong/sift/internal/hosting"
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/hosting"
+	"github.com/xsift/sift/internal/version"
 )
 
 func main() {

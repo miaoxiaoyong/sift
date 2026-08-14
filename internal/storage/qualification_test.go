@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
+	runtimepkg "github.com/xsift/sift/internal/runtime"
 )
 
 func topologyQualificationFixture(t *testing.T, status, reason string) TopologyQualification {

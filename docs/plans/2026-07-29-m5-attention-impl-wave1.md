@@ -94,7 +94,7 @@ WBS sync (docs)
 
 ## 派工约束
 
-- Forge=`gh` / `origin`→`miaoxiaoyong/sift`；Pi `run-pi-task.sh --issue … --approve`
+- Forge=`gh` / `origin`→`xsift/sift`；Pi `run-pi-task.sh --issue … --approve`
 - worktree：`setup_worktree.sh`；**勿**在卡住的 `ensure_agent_labels` 上阻塞
 - 审：Sol；修：Terra/Luna 交替；禁止自修自审
 - 合入以 `mergedAt` 为准；cleanup worktree

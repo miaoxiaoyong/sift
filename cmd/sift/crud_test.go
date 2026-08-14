@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 )
 
 // addTestProject provisions a git repo with a github.com origin and registers

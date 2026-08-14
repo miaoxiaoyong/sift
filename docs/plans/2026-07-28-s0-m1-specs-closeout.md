@@ -14,9 +14,9 @@ summary: S0 阶段：M1 五份基础规格评审闭环并解锁实现
 
 | Issue | PR | 结果 |
 |-------|----|------|
-| #1 brain 字段级评审 | [#4](https://github.com/miaoxiaoyong/sift/pull/4) | block（3×P1） |
-| #2 修订并转 active | [#5](https://github.com/miaoxiaoyong/sift/pull/5) | brain → active；交叉补丁 |
-| #3 WBS/PRD 结案 | [#6](https://github.com/miaoxiaoyong/sift/pull/6) | 勾选/索引同步 |
+| #1 brain 字段级评审 | [#4](https://github.com/xsift/sift/pull/4) | block（3×P1） |
+| #2 修订并转 active | [#5](https://github.com/xsift/sift/pull/5) | brain → active；交叉补丁 |
+| #3 WBS/PRD 结案 | [#6](https://github.com/xsift/sift/pull/6) | 勾选/索引同步 |
 | 阶段门禁 | [s0-phase-review](../reviews/2026-07-28-s0-phase-review-pi-gpt-5.6-sol.md) | **PASS WITH NOTES** |
 
 ## 遗留（非阻断）

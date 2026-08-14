@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
+	"github.com/xsift/sift/internal/command"
 )
 
 func (d *DB) applyCommandEffectTx(ctx context.Context, tx *sql.Tx, env command.CommandEventEnvelopeV1, c command.CompiledCommandV1, row *commandInterruptRow, nowMS int64, eventID, nextNonce string) error {

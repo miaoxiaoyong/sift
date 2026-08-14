@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/hooks"
-	"github.com/miaoxiaoyong/sift/internal/policy"
-	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/storage"
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/hooks"
+	"github.com/xsift/sift/internal/policy"
+	runtimepkg "github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/storage"
+	"github.com/xsift/sift/internal/version"
 )
 
 type doctorCheck struct {

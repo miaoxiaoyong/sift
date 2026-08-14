@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/command"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // command_ack worker (issue #803 / outbox.md §5): the acknowledgement is a

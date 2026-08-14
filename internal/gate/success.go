@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/attempt"
-	"github.com/miaoxiaoyong/sift/internal/storage"
-	"github.com/miaoxiaoyong/sift/internal/worktree"
+	"github.com/xsift/sift/internal/attempt"
+	"github.com/xsift/sift/internal/storage"
+	"github.com/xsift/sift/internal/worktree"
 )
 
 // SuccessReconciler is the production bridge from completed execution evidence

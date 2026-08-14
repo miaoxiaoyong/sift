@@ -7,9 +7,9 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
-	"github.com/miaoxiaoyong/sift/internal/version"
-	"github.com/miaoxiaoyong/sift/internal/wrapper"
+	"github.com/xsift/sift/internal/controlplane"
+	"github.com/xsift/sift/internal/version"
+	"github.com/xsift/sift/internal/wrapper"
 )
 
 func main() {

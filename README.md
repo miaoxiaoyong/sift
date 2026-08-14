@@ -15,7 +15,7 @@ Sift 同时支持 GitHub 和 GitLab。它不是另一个看板，也不托管你
 
 | 我想…… | 下一步 |
 |---|---|
-| **第一次安全体验**，不碰现有项目 | 查看 [`hexai-cn/bluff`](https://github.com/hexai-cn/bluff)。可玩游戏 MVP 由 [#1](https://github.com/hexai-cn/bluff/issues/1) 跟踪，Sift bootstrap/seed tasks 由 [#2](https://github.com/hexai-cn/bluff/issues/2) 跟踪；两项尚未合入可运行代码，因此当前只是预览入口，**还不是可以完成首次 Run 的教程**。 |
+| **第一次安全体验**，不碰现有项目 | 查看 [`xsift/bluff`](https://github.com/xsift/bluff)。可玩游戏 MVP 由 [#1](https://github.com/xsift/bluff/issues/1) 跟踪，Sift bootstrap/seed tasks 由 [#2](https://github.com/xsift/bluff/issues/2) 跟踪；两项尚未合入可运行代码，因此当前只是预览入口，**还不是可以完成首次 Run 的教程**。 |
 | **接入已有项目** | 安装后进入仓库运行 `sift init`；完整步骤见 [Getting Started](docs/guides/getting-started.md#路径-b接入已有仓库)。 |
 
 > 不要普通 Fork Bluff 来代替 Template：GitHub Fork 不复制 Issues，并且更容易把 PR 提回上游。Template 会创建一个属于你的独立仓库。
@@ -42,7 +42,7 @@ claude --version      # 换成你实际使用的 Agent，例如 codex、cursor �
 安装器默认查询并安装 **latest release**，不固定旧版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hexai-cn/sift/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/xsift/sift/main/scripts/install.sh | bash
 export PATH="$HOME/.sift/bin/current:$PATH"
 sift --version
 ```
@@ -50,7 +50,7 @@ sift --version
 默认不会修改 shell 配置。可将上面的 PATH 写入 `~/.zshrc` / `~/.bashrc`，或明确允许安装器添加：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hexai-cn/sift/main/scripts/install.sh | SIFT_AUTO_PATH=1 bash
+curl -fsSL https://raw.githubusercontent.com/xsift/sift/main/scripts/install.sh | SIFT_AUTO_PATH=1 bash
 ```
 
 如不接受 `curl | bash`，请按 [安装指南](docs/guides/installation.md) 下载 release 归档并先校验 SHA-256。

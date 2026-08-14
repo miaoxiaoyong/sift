@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/storage"
 )
 
 func parseErr(t *testing.T, raw string) *EnvelopeError {

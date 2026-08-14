@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
+	"github.com/xsift/sift/internal/command"
 )
 
 type commandInterruptRow struct {

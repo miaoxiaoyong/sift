@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/forge"
+	"github.com/xsift/sift/internal/forge"
 )
 
 func TestAutoMergeCapabilityPersistsFailClosedAcrossRestart(t *testing.T) {

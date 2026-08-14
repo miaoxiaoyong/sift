@@ -12,8 +12,8 @@ summary: 首次体验阻断分析与 Bluff Template 建设方案
 
 ## 当前建设状态（2026-08-14）
 
-- Bluff 可玩游戏 MVP 由 [`hexai-cn/bluff#1`](https://github.com/hexai-cn/bluff/issues/1) 跟踪，尚未合入可运行代码；
-- 仓库已设为 GitHub Template，但 onboarding bootstrap、合法 policy、seed tasks 与真实首次 Run 证据仍在 [`hexai-cn/bluff#2`](https://github.com/hexai-cn/bluff/issues/2) 建设；
+- Bluff 可玩游戏 MVP 由 [`xsift/bluff#1`](https://github.com/xsift/bluff/issues/1) 跟踪，尚未合入可运行代码；
+- 仓库已设为 GitHub Template，但 onboarding bootstrap、合法 policy、seed tasks 与真实首次 Run 证据仍在 [`xsift/bluff#2`](https://github.com/xsift/bluff/issues/2) 建设；
 - 因此 Sift README 可以链接 Bluff 并说明建设状态，但不得给出尚不存在的 bootstrap 命令、宣称“立即可玩”，或放置虚构截图/GIF。
 
 ## 动线与阻断点
@@ -51,7 +51,7 @@ CLI 易用性（help/completion/status/wizard/kill 免参）已扎实，但那�
 
 ## 方案：公开 Template Repository（用户创建独立副本即用）
 
-**不是** `sift demo` 命令（fake forge 是大工程；共享 demo 仓库有任务抢占问题），也不主推普通 Fork（GitHub Fork 不复制 Issues，且容易把 PR 错提回上游）。**而是**公开的 GitHub Template Repository [`hexai-cn/bluff`](https://github.com/hexai-cn/bluff)：把上下文工程文档（PRD/DESIGN/WBS/STATUS + AGENTS.md）按规范组织好，引导用户点 **Use this template** 创建自己的独立仓库 → 接 Sift → 跑自己的 seed Issue。README 面向中文用户可解释为“从模板复制一份自己的仓库”。
+**不是** `sift demo` 命令（fake forge 是大工程；共享 demo 仓库有任务抢占问题），也不主推普通 Fork（GitHub Fork 不复制 Issues，且容易把 PR 错提回上游）。**而是**公开的 GitHub Template Repository [`xsift/bluff`](https://github.com/xsift/bluff)：把上下文工程文档（PRD/DESIGN/WBS/STATUS + AGENTS.md）按规范组织好，引导用户点 **Use this template** 创建自己的独立仓库 → 接 Sift → 跑自己的 seed Issue。README 面向中文用户可解释为“从模板复制一份自己的仓库”。
 
 ### 为什么这个方案最优
 1. **真实可跑**：从 Template 创建后是用户自己的独立仓库，无抢占、无 fake-forge 工程。

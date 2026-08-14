@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/attempt"
+	"github.com/xsift/sift/internal/attempt"
 )
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)

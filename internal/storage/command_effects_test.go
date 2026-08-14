@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
+	"github.com/xsift/sift/internal/command"
 )
 
 // gateHITLFixture is the frozen identity shared by a Gate HITL Interrupt and

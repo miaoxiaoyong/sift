@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/storage"
 )
 
 func TestEmitInterruptT4PersistsProductionCanonicalTrace(t *testing.T) {

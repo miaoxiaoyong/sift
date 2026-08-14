@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // T1/T2 boundary contracts (specs/brain.md §7/§8). Input structs are built by

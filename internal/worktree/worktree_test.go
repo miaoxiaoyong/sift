@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/attempt"
+	"github.com/xsift/sift/internal/attempt"
 )
 
 func TestManagerCreatesIsolatedWorktreeAndReadsBaseOnly(t *testing.T) {

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/brain"
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/brain"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // A7 firewall at the Gate layer (brain.md §13.3 / §15.4, WBS §5.1 T7).

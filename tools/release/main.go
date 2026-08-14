@@ -25,8 +25,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/schema"
+	"github.com/xsift/sift/internal/version"
 )
 
 const (

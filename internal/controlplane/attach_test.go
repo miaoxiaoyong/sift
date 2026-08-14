@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/storage"
 )
 
 const opsAttachRequestID = "0123456789abcdef0123456789abcdef"

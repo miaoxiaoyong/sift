@@ -13,7 +13,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/version"
 )
 
 // runVersion implements `sift version [--json]`. It needs no home and never

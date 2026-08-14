@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/config"
+	runtimepkg "github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // recoverySequenceInspector makes every observation explicit. In particular,

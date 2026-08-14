@@ -9,8 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/miaoxiaoyong/sift/internal/brain"
-	"github.com/miaoxiaoyong/sift/tools/schema/schemagen"
+	"github.com/xsift/sift/internal/brain"
+	"github.com/xsift/sift/tools/schema/schemagen"
 )
 
 func main() {

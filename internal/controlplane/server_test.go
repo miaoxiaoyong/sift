@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // TestV12ZeroConfigStartsDaemon verifies the executable startup path accepts an

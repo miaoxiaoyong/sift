@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
+	runtimepkg "github.com/xsift/sift/internal/runtime"
 )
 
 type TopologyQualification struct {

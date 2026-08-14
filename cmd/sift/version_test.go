@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/version"
 )
 
 // TestVersionUpdateAvailable pins the primary human surface (issue #939): a

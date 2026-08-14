@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/brain"
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/policy"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/brain"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/policy"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // Reconciler freezes remote Change facts and drives the production M4 path.

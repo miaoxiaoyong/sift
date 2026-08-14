@@ -12,7 +12,7 @@
 // builds keep the placeholder default; release builds override it via ldflags
 // -X from goreleaser (`.goreleaser.yml`):
 //
-//	-X github.com/miaoxiaoyong/sift/internal/version.Release={{.Version}}
+//	-X github.com/xsift/sift/internal/version.Release={{.Version}}
 //
 // The CLI (`sift --version`), the wrapper (`sift-agent-wrapper --version`)
 // and the daemon (doctor + every RPC envelope) all report the same Release

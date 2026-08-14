@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // Task Spec v1 assembler (brain.md §9). The assembler is deterministic:

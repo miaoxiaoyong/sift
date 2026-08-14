@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
+	"github.com/xsift/sift/internal/command"
 )
 
 // cmdRun is a valid 32-lowercase-hex run id, as required by the /sift grammar.

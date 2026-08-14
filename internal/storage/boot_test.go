@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 )
 
 func TestLaunchClaimWaitsForCurrentBootRecoveryBarrier(t *testing.T) {

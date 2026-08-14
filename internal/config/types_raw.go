@@ -1,7 +1,7 @@
 package config
 
 import (
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 type RawConfig struct {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 )
 
 func TestRecordHumanDecisionSettlesBoundCalibrationAndProjectsCertification(t *testing.T) {

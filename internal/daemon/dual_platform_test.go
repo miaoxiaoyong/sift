@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/forgeworker"
-	"github.com/miaoxiaoyong/sift/internal/intake"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/forgeworker"
+	"github.com/xsift/sift/internal/intake"
+	"github.com/xsift/sift/internal/storage"
 )
 
 func TestDaemonTickExecutesDueGitHubAndGitLabRepliesWhileSkippingNotDuePoll(t *testing.T) {

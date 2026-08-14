@@ -9,8 +9,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // forgeBudgetCharger implements forge.Charger over the storage budget port.

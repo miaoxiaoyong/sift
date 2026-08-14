@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 )
 
 // canonicalMetricsSnapshot builds a config snapshot canonical JSON whose

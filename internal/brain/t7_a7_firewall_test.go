@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // A7 firewall at the Brain layer (brain.md §13 / WBS §5.1 T7 / wave1 I5).

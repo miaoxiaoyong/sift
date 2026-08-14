@@ -67,7 +67,7 @@ claude --version       # 示例；换成 codex、cursor、pi 等实际命令
 默认安装 latest release：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hexai-cn/sift/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/xsift/sift/main/scripts/install.sh | bash
 export PATH="$HOME/.sift/bin/current:$PATH"
 sift --version
 sift-agent-wrapper --version
@@ -83,16 +83,16 @@ sift-agent-wrapper --version
 
 ## 路径 A：Bluff Template
 
-[`hexai-cn/bluff`](https://github.com/hexai-cn/bluff) 是计划用于独立、安全试跑的入门项目。可玩游戏 MVP 由 [#1](https://github.com/hexai-cn/bluff/issues/1) 跟踪，Template bootstrap、合法 policy 和 seed Issues 由 [#2](https://github.com/hexai-cn/bluff/issues/2) 跟踪；两项尚未合入可运行代码。
+[`xsift/bluff`](https://github.com/xsift/bluff) 是计划用于独立、安全试跑的入门项目。可玩游戏 MVP 由 [#1](https://github.com/xsift/bluff/issues/1) 跟踪，Template bootstrap、合法 policy 和 seed Issues 由 [#2](https://github.com/xsift/bluff/issues/2) 跟踪；两项尚未合入可运行代码。
 
 ### 当前可做
 
 1. 打开 Bluff，点击 **Use this template**；
 2. 选择 **Create a new repository**，创建到你自己的账号/组织；
-3. clone 这个新仓库，而不是普通 Fork，也不要在 `hexai-cn/bluff` 上游操作；
+3. clone 这个新仓库，而不是普通 Fork，也不要在 `xsift/bluff` 上游操作；
 4. 阅读项目 README 和 `.sift/policy.yaml`。
 
-**成功预期**：新仓库不属于 `hexai-cn/bluff`，有独立的 Issues、分支和权限边界。
+**成功预期**：新仓库不属于 `xsift/bluff`，有独立的 Issues、分支和权限边界。
 
 **当前限制**：在 #2 完成前，不要运行或转述尚不存在的 `scripts/bootstrap.sh`，也不要期待 seed Issues 已被创建。当前没有可作为证据的 Sift 全链路截图/GIF。本路径到此是预览，不宣称已经完成首次 Run。
 

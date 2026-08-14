@@ -26,8 +26,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/miaoxiaoyong/sift/internal/install"
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/install"
+	"github.com/xsift/sift/internal/version"
 )
 
 // These OS directory resolvers are package-level variables so tests can pin
@@ -52,7 +52,7 @@ const (
 	// Label is the reverse-DNS identifier used for the launchd agent and as a
 	// stable, platform-neutral service handle. It never contains a path
 	// separator.
-	Label = "cn.hexai.sift"
+	Label = "com.xsift.sift"
 	// LegacyLabel was used by v0.1.0. Install removes its launchd agent before
 	// creating Label so an upgrade cannot leave two competing daemons.
 	LegacyLabel = "com.miaoxiaoyong.sift"
@@ -546,7 +546,7 @@ const systemdTemplate = `# Sift systemd user unit (DESIGN §11 / WBS M8 §8.2). 
 # in a terminal / tmux / screen. V0 does not autorestart in that mode.
 [Unit]
 Description=Sift local control-plane daemon (user)
-Documentation=https://github.com/hexai-cn/sift
+Documentation=https://github.com/xsift/sift
 
 [Service]
 Type=simple
@@ -662,8 +662,8 @@ func Formula(release, sha256 string) string {
 	b.WriteString("# Regenerate with: go run ./tools/hosting formula --version <v> --sha256 <h>\n")
 	b.WriteString("class Sift < Formula\n")
 	b.WriteString("  desc \"Local multi-agent task orchestration hub\"\n")
-	b.WriteString("  homepage \"https://github.com/hexai-cn/sift\"\n")
-	fmt.Fprintf(&b, "  url \"https://github.com/hexai-cn/sift/releases/download/v%s/sift_%s_darwin_arm64.tar.gz\"\n", release, release)
+	b.WriteString("  homepage \"https://github.com/xsift/sift\"\n")
+	fmt.Fprintf(&b, "  url \"https://github.com/xsift/sift/releases/download/v%s/sift_%s_darwin_arm64.tar.gz\"\n", release, release)
 	fmt.Fprintf(&b, "  version %q\n", release)
 	fmt.Fprintf(&b, "  sha256 %q\n", sha256)
 	b.WriteString("\n")

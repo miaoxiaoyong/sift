@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // tempHome returns a fresh SIFT_HOME under a temp dir, with the home directory
@@ -136,7 +136,7 @@ func TestV12Scenario2MinimalSchedulable(t *testing.T) {
 		"    repo: "+repo+"\n"+
 		"    forge:\n"+
 		"      kind: github\n"+
-		"      project: miaoxiaoyong/sift\n")
+		"      project: xsift/sift\n")
 
 	snap, err := Load(home, time.Now())
 	if err != nil {

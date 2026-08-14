@@ -21,10 +21,10 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
-	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/controlplane"
+	runtimepkg "github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // TestBackendV2CrashHarness is the dual-backend V2 crash suite. Every

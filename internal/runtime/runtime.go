@@ -13,7 +13,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/version"
 )
 
 const wrapperName = "sift-agent-wrapper"

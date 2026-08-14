@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 )
 
 // The daemon-down error is contextual (issue #939): an RPC command that

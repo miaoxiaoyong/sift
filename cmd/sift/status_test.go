@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 )
 
 // TestStatusFreshHome pins the fresh-home surface (issue #935 acceptance):

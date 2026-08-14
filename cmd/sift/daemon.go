@@ -12,13 +12,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/brain"
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
-	"github.com/miaoxiaoyong/sift/internal/daemon"
-	"github.com/miaoxiaoyong/sift/internal/launchworker"
-	"github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/brain"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/controlplane"
+	"github.com/xsift/sift/internal/daemon"
+	"github.com/xsift/sift/internal/launchworker"
+	"github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/storage"
 )
 
 func runDaemonCommand(home config.Home, stderr io.Writer) int {

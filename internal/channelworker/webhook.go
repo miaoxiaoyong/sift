@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/storage"
 )
 
 var (

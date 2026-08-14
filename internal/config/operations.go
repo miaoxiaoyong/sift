@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/runtime"
+	"github.com/xsift/sift/internal/runtime"
 )
 
 // DriftStatus is the outcome of a single drift check.

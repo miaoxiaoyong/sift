@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/forge"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/forge"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // ProduceReevaluation assembles and verifies Gate facts outside the

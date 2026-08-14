@@ -6,7 +6,7 @@ summary: M6 双后端 Runtime 收口顺序
 
 # M6：tmux 与完整故障矩阵
 
-跟踪 Issue：[#842](https://github.com/miaoxiaoyong/sift/issues/842)。判定基线为 [WBS M6](../WBS.md#m6tmux-与完整故障矩阵)、[DESIGN §8.4](../DESIGN.md#84-runtime)、[§10.1](../DESIGN.md#101-启动期恢复矩阵) 与 [§12 V2/V4](../DESIGN.md#12-验证策略)；字段与行为契约先由 #843 下沉到 focused runtime spec，不继续扩张已越过提醒线的 DESIGN。
+跟踪 Issue：[#842](https://github.com/xsift/sift/issues/842)。判定基线为 [WBS M6](../WBS.md#m6tmux-与完整故障矩阵)、[DESIGN §8.4](../DESIGN.md#84-runtime)、[§10.1](../DESIGN.md#101-启动期恢复矩阵) 与 [§12 V2/V4](../DESIGN.md#12-验证策略)；字段与行为契约先由 #843 下沉到 focused runtime spec，不继续扩张已越过提醒线的 DESIGN。
 
 ## 整体进度判断
 
@@ -31,16 +31,16 @@ summary: M6 双后端 Runtime 收口顺序
 
 | 顺序 | Issue | 交付 | 后置条件 |
 |---|---|---|---|
-| 1 | [#843](https://github.com/miaoxiaoyong/sift/issues/843) | Runtime/backend/PTY/session/attach/qualification 字段契约与矩阵 inventory | 独立字段评审后 active；每条 DESIGN 行有唯一归属 |
-| 2 | [#844](https://github.com/miaoxiaoyong/sift/issues/844) | wrapper-owned PTY 与 process 拓扑重构 | 真 PTY 不改变 direct-child/同 PGID/日志与信号契约 |
-| 3 | [#845](https://github.com/miaoxiaoyong/sift/issues/845) | tmux backend、确定性 session 与 effective backend router | 只启动 wrapper；response loss/reclaim 不双起 |
-| 4 | [#846](https://github.com/miaoxiaoyong/sift/issues/846) | `sift attach <run>` | 只读观察；session 名不可由调用方注入 |
-| 5 | [#847](https://github.com/miaoxiaoyong/sift/issues/847) | backend-session mismatch 与 qualification execution gate | session 仅为诊断；脱组 fixture 禁止自动 retry |
-| 6 | [#848](https://github.com/miaoxiaoyong/sift/issues/848) | hooks baseline 写入与 attempt 完成后自动复核 | 不执行 hooks、不用 Agent 修改覆盖可信 baseline |
-| 7 | [#849](https://github.com/miaoxiaoyong/sift/issues/849) | process/tmux 共用 V2 handoff/crash suite | lease→started 全边界原子；permit replay spawn=1 |
-| 8 | [#850](https://github.com/miaoxiaoyong/sift/issues/850) | 双后端非人工恢复矩阵 | §10.1 pending/starting/spawning/running 行逐项命名覆盖 |
-| 9 | [#851](https://github.com/miaoxiaoyong/sift/issues/851) | 人工态、kill/retry、迟到事实与四发现者并发 | 一条 Interrupt/一次收费/至多一个 successor owner |
-| 10 | [#852](https://github.com/miaoxiaoyong/sift/issues/852) | M6 综合门禁 | 独立评审后才更新 M6 结论并开放 M7 |
+| 1 | [#843](https://github.com/xsift/sift/issues/843) | Runtime/backend/PTY/session/attach/qualification 字段契约与矩阵 inventory | 独立字段评审后 active；每条 DESIGN 行有唯一归属 |
+| 2 | [#844](https://github.com/xsift/sift/issues/844) | wrapper-owned PTY 与 process 拓扑重构 | 真 PTY 不改变 direct-child/同 PGID/日志与信号契约 |
+| 3 | [#845](https://github.com/xsift/sift/issues/845) | tmux backend、确定性 session 与 effective backend router | 只启动 wrapper；response loss/reclaim 不双起 |
+| 4 | [#846](https://github.com/xsift/sift/issues/846) | `sift attach <run>` | 只读观察；session 名不可由调用方注入 |
+| 5 | [#847](https://github.com/xsift/sift/issues/847) | backend-session mismatch 与 qualification execution gate | session 仅为诊断；脱组 fixture 禁止自动 retry |
+| 6 | [#848](https://github.com/xsift/sift/issues/848) | hooks baseline 写入与 attempt 完成后自动复核 | 不执行 hooks、不用 Agent 修改覆盖可信 baseline |
+| 7 | [#849](https://github.com/xsift/sift/issues/849) | process/tmux 共用 V2 handoff/crash suite | lease→started 全边界原子；permit replay spawn=1 |
+| 8 | [#850](https://github.com/xsift/sift/issues/850) | 双后端非人工恢复矩阵 | §10.1 pending/starting/spawning/running 行逐项命名覆盖 |
+| 9 | [#851](https://github.com/xsift/sift/issues/851) | 人工态、kill/retry、迟到事实与四发现者并发 | 一条 Interrupt/一次收费/至多一个 successor owner |
+| 10 | [#852](https://github.com/xsift/sift/issues/852) | M6 综合门禁 | 独立评审后才更新 M6 结论并开放 M7 |
 
 ## WBS 对账
 

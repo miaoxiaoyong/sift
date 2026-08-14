@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/version"
 )
 
 // installFakeRelease provisions a temp SIFT_HOME with a release installed under
@@ -80,6 +80,15 @@ func TestDetectSelectsBackendByGOOS(t *testing.T) {
 		if got := Detect(tc.goos); got != tc.want {
 			t.Errorf("Detect(%q) = %q, want %q", tc.goos, got, tc.want)
 		}
+	}
+}
+
+func TestLaunchdIdentityKeepsLegacyMigrationLabel(t *testing.T) {
+	if Label != "com.xsift.sift" {
+		t.Fatalf("Label = %q, want com.xsift.sift", Label)
+	}
+	if LegacyLabel != "com.miaoxiaoyong.sift" {
+		t.Fatalf("LegacyLabel = %q, want original v0.1.0 label", LegacyLabel)
 	}
 }
 
@@ -668,11 +677,11 @@ func assertSystemdPathSemantics(t *testing.T, content []byte, spec Spec) {
 	if got := systemdValueOf(t, s, "Environment=SIFT_HOME="); got != spec.HomePath {
 		t.Errorf("SIFT_HOME decodes to %q, want %q", got, spec.HomePath)
 	}
-	if !strings.Contains(s, "Documentation=https://github.com/hexai-cn/sift") {
+	if !strings.Contains(s, "Documentation=https://github.com/xsift/sift") {
 		t.Error("systemd unit uses a non-canonical documentation URL")
 	}
-	if strings.Contains(s, "github.com/miaoxiaoyong/sift") {
-		t.Error("systemd unit retains the old repository URL")
+	if strings.Contains(s, "github.com/miaoxiaoyong/sift") || strings.Contains(s, "github.com/hexai-cn/sift") {
+		t.Error("systemd unit retains a legacy repository URL")
 	}
 }
 
@@ -840,7 +849,7 @@ func TestFormulaConsistentWithReleaseArchive(t *testing.T) {
 	if !strings.Contains(f, "no port") && !strings.Contains(f, "no network port") {
 		t.Error("formula does not declare the no-port posture")
 	}
-	if !strings.Contains(f, "https://github.com/hexai-cn/sift") || strings.Contains(f, "github.com/miaoxiaoyong/sift") {
+	if !strings.Contains(f, "https://github.com/xsift/sift") || strings.Contains(f, "github.com/miaoxiaoyong/sift") || strings.Contains(f, "github.com/hexai-cn/sift") {
 		t.Error("formula does not use the canonical repository URLs")
 	}
 }

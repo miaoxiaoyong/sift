@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/xsift/sift/internal/controlplane"
 )
 
 func renormalize(value any, out any) error {

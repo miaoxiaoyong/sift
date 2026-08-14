@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // startServerWithDB opens a real database under a temp home, starts a server

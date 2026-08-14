@@ -146,7 +146,7 @@ projects:
     repo: /absolute/path/to/sift
     forge:
       kind: github
-      project: miaoxiaoyong/sift
+      project: xsift/sift
       host: github.com
     enabled: true
     agents: [claude-code, codex]

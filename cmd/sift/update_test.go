@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/version"
 )
 
 // updateArchiveName returns the goreleaser per-combo archive name for a

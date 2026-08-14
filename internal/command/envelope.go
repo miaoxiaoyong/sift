@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // CommandSource is the closed set of candidate origins. It is exactly the

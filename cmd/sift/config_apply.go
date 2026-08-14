@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/hosting"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/hosting"
 )
 
 // announceConfigApplied applies a local config edit to a running daemon. The

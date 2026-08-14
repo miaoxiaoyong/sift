@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // Shell is the unified Brain call shell (brain.md §5). It is globally

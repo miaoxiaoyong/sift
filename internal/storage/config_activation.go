@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
+	"github.com/xsift/sift/internal/config"
 )
 
 // ActivateConfig atomically materializes a startup config snapshot and its

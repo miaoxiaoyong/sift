@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/cli/render"
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
+	"github.com/xsift/sift/internal/cli/render"
+	"github.com/xsift/sift/internal/controlplane"
 )
 
 // TestHumanPSEmptyAndRows pins the ps renderer: the empty-friendly hint, the

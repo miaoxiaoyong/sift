@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
+	"github.com/xsift/sift/internal/command"
 )
 
 // TestAttentionOnceChargeAcrossDeliveryCommandAndRestart closes the WBS §5.2

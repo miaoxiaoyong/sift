@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/policy"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/policy"
 )
 
 const Version = "gate/v1"

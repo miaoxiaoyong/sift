@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 // CommandEventV1 is the closed, canonical command event (§6.1, max 64 KiB). It

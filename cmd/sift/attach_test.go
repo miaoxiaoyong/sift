@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
-	"github.com/miaoxiaoyong/sift/internal/runtime"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/controlplane"
+	"github.com/xsift/sift/internal/runtime"
 )
 
 const attachSession = "sift-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

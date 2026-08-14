@@ -11,10 +11,10 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/miaoxiaoyong/sift/internal/command"
-	"github.com/miaoxiaoyong/sift/internal/config"
-	runtimepkg "github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/storage"
+	"github.com/xsift/sift/internal/command"
+	"github.com/xsift/sift/internal/config"
+	runtimepkg "github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/storage"
 )
 
 // These tests cover the startup_stall probe process-check worker (#810): the

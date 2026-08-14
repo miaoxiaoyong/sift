@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/miaoxiaoyong/sift/internal/schema"
+	"github.com/xsift/sift/internal/schema"
 )
 
 var headSHA = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)

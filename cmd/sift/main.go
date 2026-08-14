@@ -18,14 +18,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/miaoxiaoyong/sift/internal/cli/render"
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/controlplane"
-	"github.com/miaoxiaoyong/sift/internal/hosting"
-	"github.com/miaoxiaoyong/sift/internal/install"
-	"github.com/miaoxiaoyong/sift/internal/runtime"
-	"github.com/miaoxiaoyong/sift/internal/schema"
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/cli/render"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/controlplane"
+	"github.com/xsift/sift/internal/hosting"
+	"github.com/xsift/sift/internal/install"
+	"github.com/xsift/sift/internal/runtime"
+	"github.com/xsift/sift/internal/schema"
+	"github.com/xsift/sift/internal/version"
 )
 
 func main() {

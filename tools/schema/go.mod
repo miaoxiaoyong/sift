@@ -1,8 +1,8 @@
-module github.com/miaoxiaoyong/sift/tools/schema
+module github.com/xsift/sift/tools/schema
 
 go 1.25.0
 
-require github.com/miaoxiaoyong/sift v0.0.0
+require github.com/xsift/sift v0.0.0
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -18,4 +18,4 @@ require (
 	modernc.org/sqlite v1.54.0 // indirect
 )
 
-replace github.com/miaoxiaoyong/sift => ../..
+replace github.com/xsift/sift => ../..

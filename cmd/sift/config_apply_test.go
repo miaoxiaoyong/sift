@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miaoxiaoyong/sift/internal/config"
-	"github.com/miaoxiaoyong/sift/internal/hosting"
+	"github.com/xsift/sift/internal/config"
+	"github.com/xsift/sift/internal/hosting"
 )
 
 func managedConfigApplyFixture(t *testing.T) (string, hosting.Spec, net.Listener) {

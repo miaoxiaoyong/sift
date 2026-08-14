@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/miaoxiaoyong/sift/internal/version"
+	"github.com/xsift/sift/internal/version"
 )
 
 const (

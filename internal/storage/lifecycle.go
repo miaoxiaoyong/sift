@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/miaoxiaoyong/sift/internal/forge"
+	"github.com/xsift/sift/internal/forge"
 )
 
 // SetInitialTaskSpec is the T2 valid hitl=false commit port (storage.md §11).
