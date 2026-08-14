@@ -102,7 +102,7 @@ sift service <install|uninstall|start|stop|restart|reload|status>
 |------|------|
 | `install` | 生成单元文件（temp+rename 原子写）→ 探测平台工具存在则加载并启动（launchd 先 `bootout gui/<uid>/cn.hexai.sift`，不存在的 job 视为 fresh install，再 `bootstrap gui/<uid> <plist>`；systemd `daemon-reload` + `enable --now`）。因此重复安装会重载当前 plist 和其 EnvironmentVariables；`bootstrap` 失败必非 0，不能假报成功。工具缺失则打印 foreground 提示并 exit 0（可移植）。**要求已 `sift install` 一个 release**：单元必须指向真实二进制。 |
 | `uninstall` | 停 / 卸载单元（launchd `bootout`/`unload`；systemd `disable --now`）→ 删除单元文件（幂等）。 |
-| `start` | launchd 加载保留的 plist；systemd `systemctl --user start sift.service`；foreground 提示在终端运行 `sift daemon`。 |
+| `start` | launchd 先探测 current label：已加载则 `launchctl kickstart gui/<uid>/<Label>`，未加载且保留 plist 存在则 `launchctl bootstrap gui/<uid> <plist>`；不执行 install 的 bootout replacement，任何真实 launchctl 非零失败都失败。SSH/无 GUI user domain 输出登录 GUI 后重试或前台运行提示；systemd `systemctl --user start sift.service`；foreground 提示在终端运行 `sift daemon`。 |
 | `stop` | launchd `bootout`（防 `KeepAlive` 立即拉起）；systemd `systemctl --user stop sift.service`；foreground 提示停止该前台进程。 |
 | `reload` | V1 等价于 `restart`，明确输出 SIGHUP 热重载尚未实现。 |
 | `status` | 默认人话输出 `✓ 运行中` / `✗ 未运行` / `✗ 未安装`，包含 backend、可用时的 PID 和 operator socket；底层查询为 launchd `launchctl list <Label>` / systemd `systemctl --user status`，foreground 实探 socket。 |

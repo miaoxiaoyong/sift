@@ -412,6 +412,57 @@ func TestIsAlreadyUnloadedRecognizesLaunchctlNoSuchProcess(t *testing.T) {
 	}
 }
 
+func TestLaunchdStartIsIdempotentAndBootstrapsOnlyWhenUnloaded(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "launchctl.log")
+	launchctl := filepath.Join(bin, "launchctl")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log + "\"\n" +
+		"if [ \"$1\" = print ] && [ \"${LAUNCHD_LOADED:-}\" != 1 ]; then echo 'Could not find service' >&2; exit 3; fi\n" +
+		"if [ \"$1\" = kickstart ] && [ \"${LAUNCHD_FAIL:-}\" = 1 ]; then echo 'permission denied' >&2; exit 1; fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(launchctl, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	unit := filepath.Join(t.TempDir(), "sift.plist")
+	if err := os.WriteFile(unit, []byte("plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := Plan{Action: ActionStart, ProbeCmd: []string{"launchctl", "print", "gui/1/" + Label}, RunCmd: []string{"launchctl", "kickstart", "gui/1/" + Label}, FallbackCmd: []string{"launchctl", "bootstrap", "gui/1", unit}, StartUnit: unit}
+
+	t.Setenv("LAUNCHD_LOADED", "1")
+	if _, err := Exec(plan); err != nil {
+		t.Fatalf("loaded start = %v", err)
+	}
+	t.Setenv("LAUNCHD_LOADED", "")
+	if _, err := Exec(plan); err != nil {
+		t.Fatalf("unloaded start = %v", err)
+	}
+	calls, _ := os.ReadFile(log)
+	got := string(calls)
+	if !strings.Contains(got, "print gui/1/"+Label+"\nkickstart gui/1/"+Label) || !strings.Contains(got, "bootstrap gui/1 "+unit) {
+		t.Fatalf("launchctl calls = %q", got)
+	}
+	t.Setenv("LAUNCHD_LOADED", "1")
+	t.Setenv("LAUNCHD_FAIL", "1")
+	if _, err := Exec(plan); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("kickstart failure = %v, want permission error", err)
+	}
+}
+
+func TestLaunchdStartReportsMissingGUIActionably(t *testing.T) {
+	bin := t.TempDir()
+	launchctl := filepath.Join(bin, "launchctl")
+	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\necho 'Could not find domain for user' >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	_, err := Exec(Plan{Action: ActionStart, ProbeCmd: []string{"launchctl", "print", "gui/1/" + Label}, RunCmd: []string{"launchctl", "kickstart", "gui/1/" + Label}, FallbackCmd: []string{"launchctl", "bootstrap", "gui/1", "/tmp/sift.plist"}, StartUnit: "/tmp/sift.plist"})
+	if err == nil || !strings.Contains(err.Error(), "SSH") || !strings.Contains(err.Error(), "foreground") {
+		t.Fatalf("GUI-domain error = %v, want actionable SSH/foreground guidance", err)
+	}
+}
+
 func TestPlanInstallForegroundHasNoWrite(t *testing.T) {
 	home, _ := installFakeRelease(t)
 	spec, err := NewSpecFor(home, "freebsd")
@@ -465,7 +516,7 @@ func TestPlanLifecycleCommands(t *testing.T) {
 		action Action
 		want   []string
 	}{
-		{"launchd start", "darwin", ActionStart, []string{"launchctl", "load"}},
+		{"launchd start", "darwin", ActionStart, []string{"launchctl", "kickstart"}},
 		{"launchd stop", "darwin", ActionStop, []string{"launchctl", "bootout"}},
 		{"launchd uninstall", "darwin", ActionUninstall, []string{"launchctl", "bootout"}},
 		{"launchd reload", "darwin", ActionReload, []string{"launchctl", "kickstart", "-k"}},

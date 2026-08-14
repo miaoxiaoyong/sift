@@ -222,13 +222,16 @@ func launchdUnitPath(label string) (string, error) {
 // file (atomically) and run its platform command sequence. Keeping the two
 // separate lets the package stay exec-free while the thin CLI performs the IO.
 type Plan struct {
-	Action    Action
-	Summary   string
-	WriteFile string   // destination of an atomic unit-file write (empty = no write)
-	Content   []byte   // content for WriteFile
-	BeforeCmd []string // command run before RunCmd; used for launchd replacement
-	RunCmd    []string // command + args to execute; nil means manual/foreground only
-	Hint      string   // human step printed when RunCmd is nil or the backend is missing
+	Action      Action
+	Summary     string
+	WriteFile   string   // destination of an atomic unit-file write (empty = no write)
+	Content     []byte   // content for WriteFile
+	BeforeCmd   []string // command run before RunCmd; used for launchd replacement
+	ProbeCmd    []string // optional state probe used by idempotent start
+	RunCmd      []string // command + args to execute; nil means manual/foreground only
+	FallbackCmd []string // command used when ProbeCmd finds an unloaded service
+	StartUnit   string   // retained plist used by launchd start bootstrap
+	Hint        string   // human step printed when RunCmd is nil or the backend is missing
 	// Status is a machine-checkable verdict for ActionStatus plans that have
 	// no platform command (foreground): "present" when the operator socket
 	// exists at plan time, "absent" otherwise. SocketPath names the probed
@@ -317,7 +320,16 @@ func (s Spec) planUninstall() Plan {
 func (s Spec) planStart() Plan {
 	switch s.Backend {
 	case BackendLaunchd:
-		return Plan{Action: ActionStart, Summary: "start launchd user agent", RunCmd: []string{"launchctl", "load", s.UnitPath}, Hint: "launchctl load " + s.UnitPath}
+		target := "gui/" + osUserUID() + "/" + s.Label
+		return Plan{
+			Action:      ActionStart,
+			Summary:     "start launchd user agent",
+			ProbeCmd:    []string{"launchctl", "print", target},
+			RunCmd:      []string{"launchctl", "kickstart", target},
+			FallbackCmd: []string{"launchctl", "bootstrap", "gui/" + osUserUID(), s.UnitPath},
+			StartUnit:   s.UnitPath,
+			Hint:        "launchctl kickstart " + target + " (or bootstrap the retained plist when unloaded)",
+		}
 	case BackendSystemd:
 		return Plan{Action: ActionStart, Summary: "start systemd user unit", RunCmd: []string{"systemctl", "--user", "start", ServiceName + ".service"}, Hint: "systemctl --user start " + ServiceName + ".service"}
 	default:
@@ -647,7 +659,48 @@ func Exec(plan Plan) ([]byte, error) {
 			return reloadOut, fmt.Errorf("hosting: systemctl --user daemon-reload: %w\n%s", reloadErr, reloadOut)
 		}
 	}
+	if plan.Action == ActionStart && plan.RunCmd[0] == "launchctl" && len(plan.ProbeCmd) > 0 {
+		return execLaunchdStart(plan)
+	}
 	return runCommand(plan.RunCmd)
+}
+
+func execLaunchdStart(plan Plan) ([]byte, error) {
+	probeOut, probeErr := runCommand(plan.ProbeCmd)
+	if probeErr == nil {
+		out, err := runCommand(plan.RunCmd)
+		return out, launchdDomainHint(err)
+	}
+	if !isLaunchdUnloaded(probeErr) {
+		return probeOut, launchdDomainHint(probeErr)
+	}
+	if plan.StartUnit == "" {
+		return probeOut, fmt.Errorf("hosting: launchd label is not loaded and no plist is configured; run `sift service install` first")
+	}
+	if _, err := os.Stat(plan.StartUnit); err != nil {
+		return probeOut, fmt.Errorf("hosting: launchd label is not loaded and plist %s is unavailable; run `sift service install` first: %w", plan.StartUnit, err)
+	}
+	out, err := runCommand(plan.FallbackCmd)
+	return out, launchdDomainHint(err)
+}
+
+func isLaunchdUnloaded(err error) bool {
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "permission denied") || strings.Contains(text, "operation not permitted") {
+		return false
+	}
+	return strings.Contains(text, "no such process") || strings.Contains(text, "could not find service")
+}
+
+func launchdDomainHint(err error) error {
+	if err == nil {
+		return nil
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "could not find domain") || strings.Contains(text, "domain unavailable") {
+		return fmt.Errorf("hosting: launchd GUI user domain is unavailable (SSH sessions usually have no GUI domain); log into the macOS desktop and retry, or run `sift daemon` in the foreground: %w", err)
+	}
+	return err
 }
 
 func runCommand(cmd []string) ([]byte, error) {

@@ -393,6 +393,56 @@ func TestServiceInstallLaunchdReplacesFreshAndCurrentUnit(t *testing.T) {
 	}
 }
 
+func TestServiceStartLaunchdIsIdempotentWithoutRewritingUnit(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("service backend follows the host OS")
+	}
+	home := freshHome(t)
+	installReleaseLayout(t, home)
+	userHome := filepath.Join(t.TempDir(), "home")
+	unitDir := filepath.Join(userHome, "Library", "LaunchAgents")
+	if err := os.MkdirAll(unitDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	unit := filepath.Join(unitDir, hosting.Label+".plist")
+	if err := os.WriteFile(unit, []byte("retained plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "launchctl.log")
+	launchctl := filepath.Join(bin, "launchctl")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log + "\"\n" +
+		"if [ \"$1\" = print ] && [ \"${START_LOADED:-}\" != 1 ]; then echo 'Could not find service' >&2; exit 3; fi\nexit 0\n"
+	if err := os.WriteFile(launchctl, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	for _, loaded := range []string{"1", ""} {
+		t.Setenv("START_LOADED", loaded)
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"sift", "service", "start"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("loaded=%q exit=%d stdout=%q stderr=%q", loaded, code, stdout.String(), stderr.String())
+		}
+	}
+	after, err := os.ReadFile(unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("service start rewrote retained plist: before=%q after=%q", before, after)
+	}
+	calls, _ := os.ReadFile(log)
+	got := string(calls)
+	if !strings.Contains(got, "print gui/"+fmt.Sprint(os.Getuid())+"/"+hosting.Label) || !strings.Contains(got, "kickstart gui/") || !strings.Contains(got, "bootstrap gui/") {
+		t.Fatalf("launchctl calls = %q, want probe/kickstart/bootstrap", got)
+	}
+}
+
 func TestServiceInstallLaunchdSurfacesBootstrapFailure(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("service backend follows the host OS")

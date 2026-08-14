@@ -82,7 +82,15 @@ launchctl print "gui/$(id -u)/cn.hexai.sift"
 tail -n 200 "${SIFT_HOME:-$HOME/.sift}/logs/siftd.err.log"
 ```
 
-若单元未加载，重新运行 `sift service install`。重复安装会先卸载再 bootstrap 当前 `cn.hexai.sift`，使新 plist 环境生效；命令失败时不得把输出当作已重载。launchd 不继承终端 profile，服务 PATH 固定为 `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`，可用 `plutil -extract EnvironmentVariables.PATH raw -o - ~/Library/LaunchAgents/cn.hexai.sift.plist` 核验。Agent 可执行文件仍应在初始化时解析为绝对路径。
+若单元未加载且 plist 已存在，运行 `sift service start` 会 bootstrap 保留的 `cn.hexai.sift` plist；已加载时会按 label kickstart。start 不会 bootout 或重写 unit；只有 `sift service install` 才会替换 plist。命令失败时不得把输出当作已启动。launchd 不继承终端 profile，服务 PATH 固定为 `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`，可用 `plutil -extract EnvironmentVariables.PATH raw -o - ~/Library/LaunchAgents/cn.hexai.sift.plist` 核验。Agent 可执行文件仍应在初始化时解析为绝对路径。
+
+若提示 launchd GUI user domain 不存在，当前 SSH 会话通常没有 GUI domain：登录 macOS 图形桌面后在本机终端重试；不能登录 GUI 时运行前台命令：
+
+```bash
+sift daemon
+```
+
+权限拒绝、plist 无法读取或 bootstrap/kickstart 的其它非零错误都是真失败，应保留完整错误并按提示修复，不要把它们当作未加载。
 
 若配置修复后仍处于失败状态：
 
