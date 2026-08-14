@@ -912,6 +912,7 @@ func addAgent(doc map[string]any, spec string, args *[]string) {
 	items := list(doc, "agents")
 	for _, item := range items {
 		if m, ok := item.(map[string]any); ok && m["id"] == id {
+			refreshAgentEntry(m, executable, args)
 			return
 		}
 	}
@@ -936,6 +937,36 @@ func addAgent(doc map[string]any, spec string, args *[]string) {
 		}
 	}
 	doc["agents"] = append(items, entry)
+}
+
+// refreshAgentEntry updates an existing agent in place (issue #993 review
+// round 1 P1): the closeout note tells users to re-run `sift init` after
+// reinstalling or moving an Agent, so re-registration with the same id must
+// refresh the frozen executable/launch_env instead of silently keeping the
+// stale entry. User args survive the refresh; an explicit --agent-args
+// (non-nil args, even empty) replaces them.
+func refreshAgentEntry(entry map[string]any, executable string, args *[]string) {
+	if abs, ok := resolveAgentExecutable(executable); ok {
+		entry["executable"] = abs
+		if env := frozenLaunchEnv(); env != nil {
+			entry["launch_env"] = env
+		} else {
+			delete(entry, "launch_env")
+		}
+	} else {
+		// Unresolvable executable: keep the configured form for doctor to
+		// flag, and drop the stale frozen env — it described detection of
+		// the previous executable, not this one.
+		entry["executable"] = executable
+		delete(entry, "launch_env")
+	}
+	if args != nil {
+		argv := make([]any, len(*args))
+		for i, arg := range *args {
+			argv[i] = arg
+		}
+		entry["args"] = argv
+	}
 }
 
 // setupLookPath is the seam for executable resolution in addAgent
