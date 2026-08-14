@@ -82,7 +82,9 @@ launchctl print "gui/$(id -u)/cn.hexai.sift"
 tail -n 200 "${SIFT_HOME:-$HOME/.sift}/logs/siftd.err.log"
 ```
 
-若单元未加载，重新运行 `sift service install`。若配置修复后仍处于失败状态：
+若单元未加载，重新运行 `sift service install`。重复安装会先卸载再 bootstrap 当前 `cn.hexai.sift`，使新 plist 环境生效；命令失败时不得把输出当作已重载。launchd 不继承终端 profile，服务 PATH 固定为 `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`，可用 `plutil -extract EnvironmentVariables.PATH raw -o - ~/Library/LaunchAgents/cn.hexai.sift.plist` 核验。Agent 可执行文件仍应在初始化时解析为绝对路径。
+
+若配置修复后仍处于失败状态：
 
 ```bash
 sift service restart

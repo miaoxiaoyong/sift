@@ -12,7 +12,7 @@
 //
 // The package is deliberately free of platform syscalls: backends are selected
 // by runtime.GOOS (injectable for tests) and the platform tools (launchctl /
-// systemctl) are invoked by the thin CLI via exec.Plan.RunCmd, never here.
+// systemctl) are invoked by the thin CLI from Plan commands, never here.
 package hosting
 
 import (
@@ -58,6 +58,10 @@ const (
 	LegacyLabel = "com.miaoxiaoyong.sift"
 	// ServiceName is the file stem for the systemd unit (`sift.service`).
 	ServiceName = "sift"
+	// LaunchdPath is deliberately closed rather than inherited from the shell:
+	// launchd does not read interactive shell profiles. It covers Homebrew on
+	// Apple Silicon and Intel plus the macOS system tools.
+	LaunchdPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 )
 
 // Action is the CLI verb the hosting layer acts on.
@@ -215,13 +219,14 @@ func launchdUnitPath(label string) (string, error) {
 }
 
 // Plan is what the CLI does for one action: optionally write a generated unit
-// file (atomically) and optionally run a platform command. Keeping the two
+// file (atomically) and run its platform command sequence. Keeping the two
 // separate lets the package stay exec-free while the thin CLI performs the IO.
 type Plan struct {
 	Action    Action
 	Summary   string
 	WriteFile string   // destination of an atomic unit-file write (empty = no write)
 	Content   []byte   // content for WriteFile
+	BeforeCmd []string // command run before RunCmd; used for launchd replacement
 	RunCmd    []string // command + args to execute; nil means manual/foreground only
 	Hint      string   // human step printed when RunCmd is nil or the backend is missing
 	// Status is a machine-checkable verdict for ActionStatus plans that have
@@ -262,8 +267,12 @@ func (s Spec) planInstall() Plan {
 		return Plan{
 			Action: ActionInstall, Summary: "install launchd user agent",
 			WriteFile: s.UnitPath, Content: content,
-			RunCmd: []string{"launchctl", "load", s.UnitPath},
-			Hint:   "launchctl load " + s.UnitPath,
+			// bootstrap rejects an already-loaded label. Boot it out first so a
+			// repeated install applies the freshly rendered environment; exit 3
+			// means no current job and is the successful fresh-install case.
+			BeforeCmd: []string{"launchctl", "bootout", "gui/" + osUserUID() + "/" + s.Label},
+			RunCmd:    []string{"launchctl", "bootstrap", "gui/" + osUserUID(), s.UnitPath},
+			Hint:      "launchctl bootstrap gui/$(id -u) " + s.UnitPath,
 		}
 	case BackendSystemd:
 		content, _ := s.Render()
@@ -521,6 +530,8 @@ const launchdTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <dict>
         <key>SIFT_HOME</key>
         <string>{{xmlEscape .HomePath}}</string>
+        <key>PATH</key>
+        <string>` + LaunchdPath + `</string>
     </dict>
 </dict>
 </plist>
@@ -609,7 +620,7 @@ func IsAlreadyUnloaded(err error) bool {
 	return errors.As(err, &exitErr) && exitErr.ExitCode() == 3 && strings.Contains(strings.ToLower(err.Error()), "no such process")
 }
 
-// Exec runs a plan's RunCmd when the platform tool is present. It returns
+// Exec runs a plan's commands when the platform tool is present. It returns
 // ErrNoBackend (with the foreground hint available via Plan.Hint) when the
 // tool is absent, so the caller reports the foreground path instead of
 // failing. A systemd install reloads unit definitions before executing its
@@ -618,20 +629,31 @@ func Exec(plan Plan) ([]byte, error) {
 	if len(plan.RunCmd) == 0 {
 		return nil, ErrNoBackend
 	}
-	name := plan.RunCmd[0]
-	if _, err := exec.LookPath(name); err != nil {
+	if _, err := exec.LookPath(plan.RunCmd[0]); err != nil {
 		return nil, ErrNoBackend
 	}
-	if plan.Action == ActionInstall && name == "systemctl" {
+	if len(plan.BeforeCmd) > 0 {
+		if _, err := exec.LookPath(plan.BeforeCmd[0]); err != nil {
+			return nil, ErrNoBackend
+		}
+		out, err := runCommand(plan.BeforeCmd)
+		if err != nil && !(plan.Action == ActionInstall && IsAlreadyUnloaded(err)) {
+			return out, err
+		}
+	}
+	if plan.Action == ActionInstall && plan.RunCmd[0] == "systemctl" {
 		reloadOut, reloadErr := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput()
 		if reloadErr != nil {
 			return reloadOut, fmt.Errorf("hosting: systemctl --user daemon-reload: %w\n%s", reloadErr, reloadOut)
 		}
 	}
-	args := plan.RunCmd[1:]
-	out, err := exec.Command(name, args...).CombinedOutput()
+	return runCommand(plan.RunCmd)
+}
+
+func runCommand(cmd []string) ([]byte, error) {
+	out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
 	if err != nil {
-		return out, fmt.Errorf("hosting: %s: %w\n%s", strings.Join(plan.RunCmd, " "), err, out)
+		return out, fmt.Errorf("hosting: %s: %w\n%s", strings.Join(cmd, " "), err, out)
 	}
 	return out, nil
 }

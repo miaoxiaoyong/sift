@@ -46,6 +46,7 @@ summary: 用户级托管单元（launchd/systemd/foreground）的生成、安装
 - **ExecStart 指向 `bin/current/sift daemon`**：跟随 `current` 符号链接，因此升级只需 `sift install` 新版本（原子切换 `current`）后再 `sift service restart`，**绝不逐文件覆盖正在使用的安装**（release.md §3）。
 - **用户级**：launchd 是 user agent（非 system daemon，必须以用户身份跑才能用 `gh`/agent CLI 登录态）；systemd 是 user unit（非 system service）。
 - **SIFT_HOME 固定**：单元以 `Environment=SIFT_HOME=…`（systemd）/ `SIFT_HOME` 键（plist）固定运行 home，避免从不同 shell 环境漂移。
+- **launchd PATH 是闭集**：plist 固定 `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`，覆盖 Apple Silicon/Intel Homebrew 与 macOS system bins；绝不复制任意交互 shell 的 PATH。Agent 配置仍须在启动探测时冻结为绝对路径。
 - **日志落 `~/.sift/logs/`**（DESIGN §11）：`siftd.log` / `siftd.err.log`。
 
 ### 3.2 launchd plist 字段
@@ -58,6 +59,7 @@ summary: 用户级托管单元（launchd/systemd/foreground）的生成、安装
 | `KeepAlive` | `true` | 崩溃自启（§4） |
 | `ThrottleInterval` | `10` | 防崩溃紧循环重启风暴 |
 | `StandardOutPath` / `StandardErrorPath` | `<home>/logs/siftd{,err}.log` | DESIGN §11 日志路径 |
+| `EnvironmentVariables.PATH` | `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` | launchd 不读取 shell profile；可发现官方 Homebrew `gh`/`glab`，同时不接受任意 shell 注入 |
 | 无 `Sockets` | — | 不开端口 |
 
 ### 3.3 systemd unit 字段
@@ -98,7 +100,7 @@ sift service <install|uninstall|start|stop|restart|reload|status>
 
 | 动作 | 行为 |
 |------|------|
-| `install` | 生成单元文件（temp+rename 原子写）→ 探测平台工具存在则加载并启动（launchd `launchctl load`；systemd `daemon-reload` + `enable --now`）；工具缺失则打印 foreground 提示并 exit 0（可移植）。**要求已 `sift install` 一个 release**：单元必须指向真实二进制。 |
+| `install` | 生成单元文件（temp+rename 原子写）→ 探测平台工具存在则加载并启动（launchd 先 `bootout gui/<uid>/cn.hexai.sift`，不存在的 job 视为 fresh install，再 `bootstrap gui/<uid> <plist>`；systemd `daemon-reload` + `enable --now`）。因此重复安装会重载当前 plist 和其 EnvironmentVariables；`bootstrap` 失败必非 0，不能假报成功。工具缺失则打印 foreground 提示并 exit 0（可移植）。**要求已 `sift install` 一个 release**：单元必须指向真实二进制。 |
 | `uninstall` | 停 / 卸载单元（launchd `bootout`/`unload`；systemd `disable --now`）→ 删除单元文件（幂等）。 |
 | `start` | launchd 加载保留的 plist；systemd `systemctl --user start sift.service`；foreground 提示在终端运行 `sift daemon`。 |
 | `stop` | launchd `bootout`（防 `KeepAlive` 立即拉起）；systemd `systemctl --user stop sift.service`；foreground 提示停止该前台进程。 |

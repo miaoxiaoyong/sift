@@ -226,6 +226,9 @@ func TestRenderLaunchdTemplateContract(t *testing.T) {
 	if !strings.Contains(s, "<key>SIFT_HOME</key>") {
 		t.Error("launchd template does not pin SIFT_HOME")
 	}
+	if !strings.Contains(s, "<key>PATH</key>") || !strings.Contains(s, "<string>"+LaunchdPath+"</string>") {
+		t.Errorf("launchd template PATH is not the closed service PATH %q", LaunchdPath)
+	}
 	if !strings.Contains(s, home) {
 		t.Error("launchd template does not reference the resolved home")
 	}
@@ -306,12 +309,13 @@ func TestRenderForegroundReturnsNothing(t *testing.T) {
 
 func TestPlanInstallWritesUnitAndLoads(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		goos    string
-		wantCmd []string
+		name       string
+		goos       string
+		wantBefore []string
+		wantCmd    []string
 	}{
-		{"launchd", "darwin", []string{"launchctl", "load"}},
-		{"systemd", "linux", []string{"systemctl", "--user", "enable", "--now", ServiceName + ".service"}},
+		{"launchd", "darwin", []string{"launchctl", "bootout"}, []string{"launchctl", "bootstrap"}},
+		{"systemd", "linux", nil, []string{"systemctl", "--user", "enable", "--now", ServiceName + ".service"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, _ := installFakeRelease(t)
@@ -330,6 +334,9 @@ func TestPlanInstallWritesUnitAndLoads(t *testing.T) {
 			if len(plan.Content) == 0 {
 				t.Fatal("install plan has no unit content to write")
 			}
+			if len(plan.BeforeCmd) < len(tc.wantBefore) || strings.Join(plan.BeforeCmd[:len(tc.wantBefore)], "\x00") != strings.Join(tc.wantBefore, "\x00") {
+				t.Errorf("BeforeCmd = %v, want prefix %v", plan.BeforeCmd, tc.wantBefore)
+			}
 			if len(plan.RunCmd) < len(tc.wantCmd) {
 				t.Fatalf("RunCmd = %v, want prefix %v", plan.RunCmd, tc.wantCmd)
 			}
@@ -339,6 +346,26 @@ func TestPlanInstallWritesUnitAndLoads(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLaunchdInstallPlanReplacesCurrentUnit(t *testing.T) {
+	home, _ := installFakeRelease(t)
+	pinDirs(t)
+	spec, err := NewSpecFor(home, "darwin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := spec.Plan(ActionInstall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTarget := "gui/" + osUserUID() + "/" + Label
+	if got := strings.Join(plan.BeforeCmd, " "); got != "launchctl bootout "+wantTarget {
+		t.Errorf("BeforeCmd = %q, want bootout current label", got)
+	}
+	if got := strings.Join(plan.RunCmd, " "); got != "launchctl bootstrap gui/"+osUserUID()+" "+spec.UnitPath {
+		t.Errorf("RunCmd = %q, want bootstrap rendered plist", got)
 	}
 }
 
@@ -814,6 +841,52 @@ func TestExecForegroundPlanReturnsErrNoBackend(t *testing.T) {
 	}
 	if out != nil {
 		t.Errorf("foreground Exec output = %q, want nil", out)
+	}
+}
+
+func TestExecLaunchdInstallHandlesFreshAndCurrentUnits(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "launchctl.log")
+	launchctl := filepath.Join(bin, "launchctl")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log + "\"\n" +
+		"if [ \"$1\" = bootout ] && [ \"${LAUNCHD_LOADED:-}\" != 1 ]; then echo 'Boot-out failed: 3: No such process' >&2; exit 3; fi\n" +
+		"if [ \"$1\" = bootstrap ] && [ \"${LAUNCHD_BOOTSTRAP_FAIL:-}\" = 1 ]; then exit 1; fi\n"
+	if err := os.WriteFile(launchctl, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	for _, tc := range []struct {
+		name, loaded string
+	}{
+		{"fresh", ""},
+		{"current-loaded", "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LAUNCHD_LOADED", tc.loaded)
+			if _, err := Exec(Plan{Action: ActionInstall, BeforeCmd: []string{"launchctl", "bootout", "gui/1/" + Label}, RunCmd: []string{"launchctl", "bootstrap", "gui/1", "/tmp/sift.plist"}}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	got, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "bootout gui/1/" + Label + "\nbootstrap gui/1 /tmp/sift.plist\n"; strings.Count(string(got), want) != 2 {
+		t.Fatalf("launchctl calls = %q, want replacement sequence twice", got)
+	}
+}
+
+func TestExecLaunchdInstallDoesNotClaimBootstrapFailureSucceeded(t *testing.T) {
+	bin := t.TempDir()
+	launchctl := filepath.Join(bin, "launchctl")
+	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\nif [ \"$1\" = bootout ]; then echo 'Boot-out failed: 3: No such process' >&2; exit 3; fi\necho bootstrap failed >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	_, err := Exec(Plan{Action: ActionInstall, BeforeCmd: []string{"launchctl", "bootout", "gui/1/" + Label}, RunCmd: []string{"launchctl", "bootstrap", "gui/1", "/tmp/sift.plist"}})
+	if err == nil || !strings.Contains(err.Error(), "bootstrap") {
+		t.Fatalf("bootstrap failure = %v, want surfaced failure", err)
 	}
 }
 

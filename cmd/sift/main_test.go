@@ -337,6 +337,88 @@ func TestMigrateLegacyLaunchdRemovesLoadedAgentAndPlist(t *testing.T) {
 	}
 }
 
+func TestServiceInstallLaunchdReplacesFreshAndCurrentUnit(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("service backend follows the host OS")
+	}
+	for _, tc := range []struct {
+		name, loaded string
+	}{
+		{"fresh", ""},
+		{"current-loaded", "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := freshHome(t)
+			installReleaseLayout(t, home)
+			userHome := filepath.Join(t.TempDir(), "home")
+			if err := os.MkdirAll(filepath.Join(userHome, "Library", "LaunchAgents"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", userHome)
+			bin := t.TempDir()
+			log := filepath.Join(t.TempDir(), "launchctl.log")
+			launchctl := filepath.Join(bin, "launchctl")
+			script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log + "\"\n" +
+				"case \"$1\" in\n" +
+				"list) exit 3;;\n" +
+				"bootout) [ \"${CURRENT_LOADED:-}\" = 1 ] && exit 0; echo 'Boot-out failed: 3: No such process' >&2; exit 3;;\n" +
+				"bootstrap) exit 0;;\n" +
+				"esac\n"
+			if err := os.WriteFile(launchctl, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin)
+			t.Setenv("CURRENT_LOADED", tc.loaded)
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"sift", "service", "install"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			unit := filepath.Join(userHome, "Library", "LaunchAgents", hosting.Label+".plist")
+			content, err := os.ReadFile(unit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(content), "<key>PATH</key>") || !strings.Contains(string(content), hosting.LaunchdPath) {
+				t.Fatalf("unit does not contain closed launchd PATH: %s", content)
+			}
+			calls, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "bootout gui/" + fmt.Sprint(os.Getuid()) + "/" + hosting.Label + "\nbootstrap gui/" + fmt.Sprint(os.Getuid()) + " " + unit
+			if !strings.Contains(string(calls), want) {
+				t.Fatalf("launchctl calls = %q, want replacement sequence %q", calls, want)
+			}
+		})
+	}
+}
+
+func TestServiceInstallLaunchdSurfacesBootstrapFailure(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("service backend follows the host OS")
+	}
+	home := freshHome(t)
+	installReleaseLayout(t, home)
+	userHome := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(filepath.Join(userHome, "Library", "LaunchAgents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	bin := t.TempDir()
+	launchctl := filepath.Join(bin, "launchctl")
+	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\nif [ \"$1\" = bootout ]; then echo 'Boot-out failed: 3: No such process' >&2; exit 3; fi\necho bootstrap failed >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"sift", "service", "install"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit code = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "launchd: install launchd user agent") || !strings.Contains(stderr.String(), "bootstrap") {
+		t.Fatalf("failure output falsely reports success: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestRenderServiceStatusHumanizesBackendPIDAndSocket(t *testing.T) {
 	spec := hosting.Spec{Backend: hosting.BackendLaunchd, HomePath: "/tmp/sift"}
 	var out bytes.Buffer
