@@ -51,6 +51,16 @@ jobs:
           go build -o "$RUNNER_TEMP/sift-agent-wrapper" ./cmd/sift-agent-wrapper
           go build ./...
 
+  docs-prereq:
+    # Issue #949: README's Go minimum-version prerequisite must track the
+    # root module's `go` directive in go.mod. go.mod is the single source of
+    # truth; a doc that advertises a floor below it fails here.
+    name: docs go prerequisite check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/docs-go-prereq-check.sh
+
   schema-drift:
     # V14 schema invariant: structs are the single source of truth and the
     # generated schemas are checked in. If a struct changes without

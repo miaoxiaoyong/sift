@@ -118,7 +118,7 @@ Sift 是仍在快速演进的本地自动化工具。GitHub/GitLab 控制面、p
 
 ## 开发
 
-需要 Go 1.22+：
+需要 Go 1.25+：
 
 ```bash
 go test ./...
