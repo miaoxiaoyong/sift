@@ -2,6 +2,8 @@
 
 本目录是 Sift 项目所有文档的统一入口。文档同时服务两类读者：**人**（评审、决策、回溯）和 **AI 编码代理**（实现时的上下文来源）。目录规划围绕一个原则：**单一事实来源，互相引用，不复制内容**。
 
+用户首次使用请从 [`guides/getting-started.md`](guides/getting-started.md) 开始；安装与升级细节见 [`guides/installation.md`](guides/installation.md)，故障恢复见 [`runbooks/troubleshooting.md`](runbooks/troubleshooting.md)。这些用户入口不要求先读 PRD/DESIGN。
+
 ---
 
 ## 目录结构

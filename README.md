@@ -1,173 +1,133 @@
 # Sift
 
-本地多 Agent 任务编排中枢：把 GitHub / GitLab 的 Issue **筛**成已合并的变更，该自动的自动，该人审的绝不放过。
+**给 Issue 打一个标签，让你本机已有的 Coding Agent 完成修改；Sift 负责把工作推进到经过 Gate、必要时由人审批的 PR/MR。**
 
-> 概念验证（PoC）：M1–M6 已完成，M7 PoC 已验证，M8 自动化核心持续完善中。
+```text
+Issue + sift:run
+        │
+        ▼
+本机隔离 worktree → Coding Agent → Checks / Gate → PR 或 MR → 人工决定
+```
 
-## 快速开始
+Sift 同时支持 GitHub 和 GitLab。它不是另一个看板，也不托管你的代码或 Agent 凭证；Forge 仍是事实源，AI 可以提出和实现变更，但不能绕过确定性策略与人工决策。
 
-从零开始，把本机接到一个 forge Issue 的自动编排。字段契约与默认值以 [docs/specs/config.md](docs/specs/config.md) 为准，安装与升级细节见 [docs/guides/installation.md](docs/guides/installation.md)。
+## 选择起点
 
-### 1. 一键安装
+| 我想…… | 下一步 |
+|---|---|
+| **第一次安全体验**，不碰现有项目 | 查看 [`hexai-cn/bluff`](https://github.com/hexai-cn/bluff)，用 **Use this template** 创建独立仓库。Bluff 的游戏 MVP 已实现，但 Sift bootstrap/seed tasks 仍在 [#2](https://github.com/hexai-cn/bluff/issues/2) 建设；在 #2 完成前，它是预览入口，**还不是可按 bootstrap 命令跑通的教程**。 |
+| **接入已有项目** | 安装后进入仓库运行 `sift init`；完整步骤见 [Getting Started](docs/guides/getting-started.md#路径-b接入已有仓库)。 |
+
+> 不要普通 Fork Bluff 来代替 Template：GitHub Fork 不复制 Issues，并且更容易把 PR 提回上游。Template 会创建一个属于你的独立仓库。
+
+## 开始前需要
+
+- macOS 或 Linux（amd64/arm64），以及 Git；
+- 对应项目的官方 Forge CLI：[GitHub CLI `gh`](https://cli.github.com/) 或 [GitLab CLI `glab`](https://gitlab.com/gitlab-org/cli)，并已登录；
+- 一个可从终端启动的 Coding Agent。向导可识别 Claude Code、Codex CLI、Cursor CLI、pi、Gemini CLI、Aider、Qwen Code、Cody 等，也可登记其他可执行文件；**只有 Cursor GUI、不含 `cursor` CLI 时不能作为后台 Agent 启动**；
+- 该 Agent 所需的账号、API Key 或订阅。Sift 不附送模型额度，运行会消耗你自己的额度；开始前请确认供应商计费与 [`brain.daily_token_limit`](docs/specs/config.md#34-brain)。
+
+先验证认证和 Agent：
+
+```bash
+gh auth status        # GitHub；未登录：gh auth login
+# 或
+glab auth status      # GitLab；未登录：glab auth login
+
+claude --version      # 换成你实际使用的 Agent，例如 codex、cursor 或 pi
+```
+
+## 安装
+
+安装器默认查询并安装 **latest release**，不固定旧版本：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | bash
-```
-
-安装指定版本：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | SIFT_VERSION=0.1.0 bash
-```
-
-安装器把 `sift` 与 `sift-agent-wrapper` 装到 `~/.sift/bin/<version>`，`~/.sift/bin/current` 指向最新版本。**默认不修改你的 shell 配置文件**（`curl|bash` 非交互，只打印 next-steps 提示）；如需自动追加 PATH（按 `$SHELL` 探测：zsh→`~/.zshrc`、bash→`~/.bashrc`，已含去重、可安全重跑）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | SIFT_AUTO_PATH=1 bash
-# 或本地：
-./scripts/install.sh --add-to-path
-```
-
-### 2. 加 PATH
-
-当前终端临时生效：
-
-```bash
 export PATH="$HOME/.sift/bin/current:$PATH"
 sift --version
 ```
 
-永久生效（zsh；bash 把 `~/.zshrc` 换成 `~/.bashrc`）：
+默认不会修改 shell 配置。可将上面的 PATH 写入 `~/.zshrc` / `~/.bashrc`，或明确允许安装器添加：
 
 ```bash
-echo 'export PATH="$HOME/.sift/bin/current:$PATH"' >> ~/.zshrc && source ~/.zshrc
+curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | SIFT_AUTO_PATH=1 bash
 ```
 
-### 3. 登录 forge CLI
+如不接受 `curl | bash`，请按 [安装指南](docs/guides/installation.md) 下载 release 归档并先校验 SHA-256。
 
-Sift 经官方 CLI 驱动 GitHub / GitLab，**不管理任何凭证**：
-
-```bash
-gh auth login       # GitHub
-# 或
-glab auth login     # GitLab
-```
-
-### 4. 初始化配置
-
-使用向导生成并校验 `~/.sift/config.yaml`，避免手写配置出错：
+## 已有项目：最短真实路径
 
 ```bash
+cd /path/to/your/repo
 sift init
+sift doctor --offline
+sift service install            # 无 launchd/systemd 时会提示改用 sift daemon
 ```
 
-向导会交互式选择 Agent 与 operator，并绑定当前目录项目；Forge 类型从项目 git remote 自动探测，无需手选。非交互环境也可通过选项传入：
+然后给一个边界清楚、可丢弃的测试 Issue 加默认触发标签：
 
 ```bash
-sift init --agent claude --project . --forge github
+gh issue edit 42 --add-label "sift:run"       # GitHub
+# 或：glab issue update 42 --label "sift:run" # GitLab
 ```
 
-如需自动化或高级配置，也可以手工维护配置文件；字段契约见 [docs/specs/config.md](docs/specs/config.md) §3.1–3.3。配置存在时，`~/.sift` 与 `config.yaml` 必须为属主读写（§2.1）：
+观察真实运行：
 
 ```bash
-chmod 700 ~/.sift
-chmod 600 ~/.sift/config.yaml
+sift ps
+sift timeline
+sift logs <run-id>
 ```
 
-### 5. 检查
+需要人决定时，请复制 Sift 发布到 Issue/PR/MR 评论中的**完整命令**；批准命令包含本次 Run ID 和一次性 nonce，不能简写成 `/sift approve`。
 
-```bash
-sift doctor --offline   # 只读诊断，exit 0 表示健康
-```
+详细的成功预期、失败恢复与清理步骤见 **[Getting Started](docs/guides/getting-started.md)**。
 
-### 6. 启动
+## 先说明安全边界
 
-```bash
-sift daemon             # 前台运行
-# 或注册自启：
-sift service install
-```
+- **本地执行**：daemon、Agent、worktree 和 SQLite 状态都在你的机器；Sift 不监听 TCP/UDP 端口。
+- **隔离修改**：Agent 在独立 worktree/分支工作，不直接改主工作区。失败时可 `sift kill <run-id>`，检查后丢弃分支/worktree；已推送内容仍需在 Forge 上按常规权限处理。
+- **默认不自动合并**：`auto_merge` 默认是 `false`。即使显式开启，也必须通过策略认证、Gate 和 Forge 的 expected-head 能力检查。
+- **AI 没有最终决定权**：策略、Gate、可信 operator 与 Forge 事实约束最终动作；不确定信息 fail closed。
+- **凭证不托管**：Sift 调用你已登录的 `gh` / `glab` 和本机 Agent，不接管它们的凭证生命周期。
+- **单 Coordinator**：同一仓库、同一触发标签只运行一个主动 Sift Coordinator。多个独立 daemon 没有共享锁，会重复消费同一 Issue；团队成员可以作为多个 operator 操作同一个 Coordinator。
 
-### 7. 触发
+完整边界和恢复方式见 [Getting Started：安全、成本与清理](docs/guides/getting-started.md#安全成本与清理)。
 
-给 Issue 打上 trigger label（默认 `sift:run`，可在配置 `labels` 覆盖）：
+## Sift 做什么
 
-```bash
-gh issue edit 42 --add-label sift:run
-```
+- 从 Issue 出发，分解、执行、运行 Checks/Gate，并创建 Change；
+- 在需要人时，把带证据和可执行命令的决策请求发回 Forge；
+- 用 `ps`、`logs`、`timeline` 和 `metrics` 提供本地可观测性；
+- 统一 GitHub/GitLab 差异，同时保留 Forge 作为 Issue、PR/MR、审批和合并事实源；
+- 支持 process 与 tmux 运行后端，并保留审计、预算与恢复证据。
 
-观察运行：
+## 当前状态
 
-```bash
-sift ps            # 运行中 Run / attempt、注意力余量与隔离状态
-sift timeline      # append-only 事件时间线
-```
-
----
-
-## 一句话
-
-**LLM 有话语权、没有决定权；Forge 是事实源；需要人时系统主动找人。**
-
-## 形态
-
-| 维度 | 说明 |
-|------|------|
-| **双平台** | GitHub 与 GitLab 对等，经 `gh` / `glab` 官方 CLI 集成，不管理任何凭证 |
-| **零界面** | 不做看板。决策简报发到 Issue / PR 评论，一条 `/sift approve` 完成审批——手机上的 forge App 就是审批终端 |
-| **零暴露面** | 守护进程不监听任何端口，自适应轮询取代 webhook |
-| **本地执行** | 复用你已订阅的 coding agent，代码不出本机 |
+Sift 是仍在快速演进的本地自动化工具。GitHub/GitLab 控制面、process/tmux 运行时、Gate、人工命令、查询 CLI、安装与用户级服务已经落地；真实环境、Agent 版本和平台能力仍可能不同，请把 `sift doctor` 与小型试跑作为接入门禁。内部 M1–M8 进度不再放在用户首屏；需要项目执行状态时查看 [`docs/STATUS.md`](docs/STATUS.md)。
 
 ## 文档
 
 | 文档 | 内容 |
-|------|------|
-| [docs/PRD.md](docs/PRD.md) | 产品需求（问题、公理、范围、状态机、模块） |
-| [docs/guides/installation.md](docs/guides/installation.md) | 安装、升级与配置引导 |
-| [docs/specs/config.md](docs/specs/config.md) | 全局配置字段契约（`~/.sift/config.yaml`） |
-
-## 核心设计
-
-- **Issue → 变更流水线**：从 Issue 出发，经分解、执行、门禁、审查到合并，全程自动化编排
-- **注意力调度**：只在必要的检查点打扰人，推送已嚼碎的决策简报而非原始日志
-- **Agent 无关**：可替换底层 coding agent（Claude Code / Codex / Cursor 等），不绑定任何厂商
-- **Forge 抽象**：GitHub / GitLab 统一抽象，事实源由 forge 驱动，LLM 仅提供建议
-
-详细设计见 [docs/PRD.md](docs/PRD.md)。
+|---|---|
+| [Getting Started](docs/guides/getting-started.md) | 两条首次使用路径、成功预期、失败恢复和清理 |
+| [安装指南](docs/guides/installation.md) | release 校验、安装、升级与 service |
+| [故障排查](docs/runbooks/troubleshooting.md) | daemon、socket、配置与升级问题 |
+| [配置规格](docs/specs/config.md) | `~/.sift/config.yaml` 字段、默认值与预算 |
+| [产品需求](docs/PRD.md) | 产品边界与完整需求 |
 
 ## 开发
 
-### 依赖
-
-- Go 1.22+
-- `gh` CLI（GitHub 集成）
-- `glab` CLI（GitLab 集成）
-
-### 从源码构建两个发布二进制
+需要 Go 1.22+：
 
 ```bash
-go build -o sift ./cmd/sift
-go build -o sift-agent-wrapper ./cmd/sift-agent-wrapper
-./sift daemon
-```
-
-### 本地开发
-
-```bash
-# 运行测试
 go test ./...
-
-# 构建（含两个发布二进制）
 go build -o sift ./cmd/sift
 go build -o sift-agent-wrapper ./cmd/sift-agent-wrapper
 ```
 
-> 开发命令适用于本地源码检出；发布版本请优先使用上方安装器。
-
-## 状态
-
-Sift 仍是 PoC，但控制面、策略、运行时、注意力/命令/报告与发布自动化核心已经实质落地；真实生产规模与完整多平台发布证据仍在持续补齐。
+发布用户应优先使用安装器或已校验的 release 归档，而不是只复制一个二进制。
 
 ## 许可
 
-本项目使用 [MIT](LICENSE) 许可。
+[MIT](LICENSE)
