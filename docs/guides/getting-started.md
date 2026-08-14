@@ -8,7 +8,7 @@ summary: 从安全试跑或已有仓库完成首个 Sift Run
 
 本指南把首次使用分成两条真实路径：
 
-- **路径 A：Bluff Template**——安全试炼场，但 onboarding bootstrap 尚未完成；
+- **路径 A：Bluff Template**——已可从 Template 建立独立的安全试炼场；
 - **路径 B：已有仓库**——现在可用，建议先选一个可丢弃的小 Issue。
 
 安装和升级细节以 [安装指南](installation.md) 为准；这里聚焦从零到首个 Run。
@@ -83,31 +83,61 @@ sift-agent-wrapper --version
 
 ## 路径 A：Bluff Template
 
-[`xsift/bluff`](https://github.com/xsift/bluff) 是计划用于独立、安全试跑的入门项目。可玩游戏 MVP 由 [#1](https://github.com/xsift/bluff/issues/1) 跟踪，Template bootstrap、合法 policy 和 seed Issues 由 [#2](https://github.com/xsift/bluff/issues/2) 跟踪；两项尚未合入可运行代码。
+[`xsift/bluff`](https://github.com/xsift/bluff) 是独立、安全试跑的入门项目。请先在上游点击 **Use this template** → **Create a new repository**，创建到自己的账号或组织；不要使用普通 Fork，也不要在 `xsift/bluff` 上游操作。
 
-### 当前可做
+### A1. 创建、bootstrap 与试玩
 
-1. 打开 Bluff，点击 **Use this template**；
-2. 选择 **Create a new repository**，创建到你自己的账号/组织；
-3. clone 这个新仓库，而不是普通 Fork，也不要在 `xsift/bluff` 上游操作；
-4. 阅读项目 README 和 `.sift/policy.yaml`。
-
-**成功预期**：新仓库不属于 `xsift/bluff`，有独立的 Issues、分支和权限边界。
-
-**当前限制**：在 #2 完成前，不要运行或转述尚不存在的 `scripts/bootstrap.sh`，也不要期待 seed Issues 已被创建。当前没有可作为证据的 Sift 全链路截图/GIF。本路径到此是预览，不宣称已经完成首次 Run。
-
-### #2 完成后的路径
-
-以下是 **#2 验收通过后** 才可执行的目标流程；届时以 Bluff README 中的实际命令为准：
+clone 你刚创建的新仓库，并按 Bluff main README 的命令执行：
 
 ```bash
+git clone https://github.com/YOUR-OWNER/YOUR-REPO.git
+cd YOUR-REPO
+gh auth status             # 未认证：gh auth login
 ./scripts/bootstrap.sh
+
+pnpm install
+pnpm dev
+# 打开 http://localhost:3000，点击“开始一局”
+```
+
+bootstrap 会先验证 `origin`、GitHub 登录和仓库写权限，并拒绝修改模板上游；随后创建 `sift:run`、`sift:seed`、四个 priority labels，以及 `.github/sift-tasks/` 对应的 6 个 seed Issues。中途失败可直接重跑，已有 labels 和同标题 Issues 会被复用。
+
+**成功预期**：新仓库不属于 `xsift/bluff`；bootstrap 输出 `bootstrap complete for OWNER/REPO`；仓库中有 6 个 seed Issues，且都带 `sift:run`、`sift:seed` 和对应 priority label；本地可打开游戏。
+
+Template 创建、首次 bootstrap 生成 6 个 Issues，以及再次运行后仍保持 6 个 Issues，已经过 live 实测。该证据只覆盖 Template/bootstrap 与重跑幂等性，不覆盖真实 Agent→PR→人工审批链。
+
+**失败恢复**：按报错修复认证、`origin` 或权限后重跑 `./scripts/bootstrap.sh`。脚本不会删除已创建对象。若 `origin` 指向 `xsift/bluff`，停止操作并 clone 你通过 Template 创建的仓库。
+
+### A2. 初始化并启动 Sift
+
+```bash
 sift init
 sift doctor --offline
 sift service install
+sift service status
+sift doctor
 ```
 
-bootstrap 应幂等创建 label/seed Issues，并拒绝误操作上游。在它实际合入并验证前，请走下面的路径 B。
+无可用 launchd/systemd user service 时，按提示在一个保持打开的终端运行 `sift daemon`。成功预期与恢复方式同路径 B 的[初始化](#3-初始化)、[离线检查](#4-离线检查)和[启动 Coordinator](#5-启动-coordinator)。
+
+### A3. 触发并观察 seed Issues
+
+bootstrap 创建的 6 个 seed Issues 已带 `sift:run`，Coordinator 启动后会按轮询摄入。若要给某个已移除触发标签的 Issue 重新添加标签，先填入它的编号：
+
+```bash
+ISSUE_NUMBER=1
+gh issue edit "$ISSUE_NUMBER" --add-label "sift:run"
+sift ps
+sift timeline --limit 20
+sift logs <run-id>
+sift worktree <run-id>
+```
+
+也可以在仓库网页中添加 `sift:run`。`<run-id>` 使用 `sift ps` 显示的实际 Run ID。
+
+**成功预期**：Issue 出现在 `sift ps`，随后可从 timeline、日志和隔离 worktree 观察进展。需要人工决定时，只复制 Sift 评论中带 Run ID 与一次性 nonce 的完整命令；默认 `auto_merge=false`，Gate 通过不等于自动合并。
+
+**证据边界**：Bluff 的真实 Agent→PR→人工审批流程尚未验收通过。请把第一次运行视为小范围人工检查，不要据 Template/bootstrap 成功推断 Agent 产出、PR、Gate 或审批已经验证。失败恢复、审批和清理命令见路径 B 的[观察进度](#7-观察进度)、[审批或拒绝](#8-审批或拒绝)与[安全、成本与清理](#安全成本与清理)。
 
 ## 路径 B：接入已有仓库
 

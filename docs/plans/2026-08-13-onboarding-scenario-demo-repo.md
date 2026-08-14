@@ -12,9 +12,9 @@ summary: 首次体验阻断分析与 Bluff Template 建设方案
 
 ## 当前建设状态（2026-08-14）
 
-- Bluff 可玩游戏 MVP 由 [`xsift/bluff#1`](https://github.com/xsift/bluff/issues/1) 跟踪，尚未合入可运行代码；
-- 仓库已设为 GitHub Template，但 onboarding bootstrap、合法 policy、seed tasks 与真实首次 Run 证据仍在 [`xsift/bluff#2`](https://github.com/xsift/bluff/issues/2) 建设；
-- 因此 Sift README 可以链接 Bluff 并说明建设状态，但不得给出尚不存在的 bootstrap 命令、宣称“立即可玩”，或放置虚构截图/GIF。
+- [`xsift/bluff`](https://github.com/xsift/bluff) 的可玩游戏、合法 Sift policy、bootstrap 脚本和 6 个 seed tasks 已合入 main，仓库已设为 GitHub Template；
+- 从 Template 创建独立仓库、首次 bootstrap 生成 6 个带完整 labels 的 Issues，以及重跑后仍保持 6 个 Issues，已经过 live 实测；不公开临时 smoke 仓库地址；
+- 建设结论仅升级为「Template/bootstrap 路径可用且重跑幂等性已验证」。真实 Coding Agent→PR→人工审批链尚未验收，不放置或暗示该全链路已经通过的截图/GIF。
 
 ## 动线与阻断点
 
@@ -63,7 +63,7 @@ CLI 易用性（help/completion/status/wizard/kill 免参）已扎实，但那�
 - **规范的上下文工程文档**：`docs/PRD.md`（需求/状态机）、`docs/DESIGN.md`（架构/为什么）、`docs/WBS.md`（任务分解/验收）、`docs/STATUS.md`（执行跟踪）、`docs/README.md`（文档地图/上下文加载规则）、`AGENTS.md`（agent 导航/上下文规则）。参考 sift 自身结构。
 - **一个小而完整的项目**：让 sift 跑 Issue→分解→执行→门禁→PR→审批 全链路有实际意义（不是空壳）。
 - **`.sift/policy.yaml`**（仓内策略范本）+ seed Issues（带 trigger label，涵盖简单/需审查两种）。
-- **README 引导（#2 完成后路径）**：Use this template → clone 自己的仓库 → `gh auth status`（未认证才 `gh auth login`）→ `scripts/bootstrap.sh` 幂等创建 labels/seed Issues → `sift init` → `sift service install`（或前台 daemon）→ 在 seed Issue 打标签观察 → 复制 Sift 评论中带 Run ID 与 nonce 的完整 `/sift approve …` 命令。
+- **README 引导（当前可执行路径）**：Use this template → clone 自己的仓库 → `gh auth status`（未认证才 `gh auth login`）→ `./scripts/bootstrap.sh` 幂等创建 labels/6 个 seed Issues → `pnpm install && pnpm dev` 本地试玩 → `sift init` → `sift doctor --offline` → `sift service install`（或前台 daemon）→ 在 seed Issue 添加 `sift:run` → 用 `sift ps` / `timeline` / `logs` / `worktree` 观察 → 需要审批时只复制 Sift 评论中带 Run ID 与 nonce 的完整命令。
 - **前置依赖检查说明**：gh/glab 安装与认证、一个可从终端启动的 Coding Agent。
 
 ### gh/glab 未配置的处理
@@ -87,9 +87,9 @@ README/引导里**前置**：`gh auth status`（或 glab）检查，未登录给
 
 - GitHub About 描述同时写明 GitHub/GitLab 与本地 Coding Agent；
 - topics 建议：`ai-agents`、`coding-agent`、`github`、`gitlab`、`developer-tools`、`automation`、`golang`；
-- Bluff #2 验收后再采集真实运行截图/GIF，并更新 README 的建设状态；
+- 真实 Agent→PR→人工审批链独立验收后，才采集对应运行截图/GIF并升级 README 结论；
 - 社会证明通过真实使用、发布和分享积累，不创建虚假 badge、stars 或运行证据。
 
 ## 非目标
 - 不做 `sift demo` 命令（fake forge 大工程；公开 demo 仓库有抢占）。
-- 样板仓库是独立仓库，本仓提供 README/get-started 引导并指向它；Bluff #2 未达到可运行验收前不得宣传为“立即可玩”。
+- 样板仓库是独立仓库，本仓提供 README/get-started 引导并指向它；已验证的 Template/bootstrap 不得外推为真实 Agent→PR→人工审批链通过。
