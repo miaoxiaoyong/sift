@@ -100,7 +100,7 @@ sift service <install|uninstall|start|stop|restart|reload|status>
 
 | 动作 | 行为 |
 |------|------|
-| `install` | 生成单元文件（temp+rename 原子写）→ 探测平台工具存在则加载并启动（launchd 先 `bootout gui/<uid>/cn.hexai.sift`，不存在的 job 视为 fresh install，再 `bootstrap gui/<uid> <plist>`；systemd `daemon-reload` + `enable --now`）。因此重复安装会重载当前 plist 和其 EnvironmentVariables；`bootstrap` 失败必非 0，不能假报成功。工具缺失则打印 foreground 提示并 exit 0（可移植）。**要求已 `sift install` 一个 release**：单元必须指向真实二进制。 |
+| `install` | 生成单元文件（temp+rename 原子写）→ 探测平台工具存在则加载并启动（launchd 先 `bootout gui/<uid>/cn.hexai.sift`，不存在的 job 视为 fresh install；随后用 `launchctl print gui/<uid>/<label>` **有界等待 teardown quiescence**（最长 5s、每 250ms 探测一次），确认服务已 absent 后才 `bootstrap gui/<uid> <plist>`；bootstrap 若返回已知瞬时 exit 5（`Input/output error`）且服务仍确认 absent，做**有界重试**（最多 2 次重试、间隔 500ms）；权限 / 无 GUI domain / malformed plist / 状态 ambiguous-or-present 一律**不重试**并立即失败；重试耗尽返回非 0 且可操作的错误（提示重跑 install）。systemd `daemon-reload` + `enable --now`）。因此重复安装会重载当前 plist 和其 EnvironmentVariables，且不会在 launchd 尚未来得及完成 teardown 时竞态 bootstrap（Issue #968）；`bootstrap` 失败必非 0，不能假报成功。工具缺失则打印 foreground 提示并 exit 0（可移植）。**要求已 `sift install` 一个 release**：单元必须指向真实二进制。 |
 | `uninstall` | 停 / 卸载单元（launchd `bootout`/`unload`；systemd `disable --now`）→ 删除单元文件（幂等）。 |
 | `start` | launchd 先探测 current label：已加载则 `launchctl kickstart gui/<uid>/<Label>`，未加载且保留 plist 存在则 `launchctl bootstrap gui/<uid> <plist>`；不执行 install 的 bootout replacement，任何真实 launchctl 非零失败都失败。SSH/无 GUI user domain 输出登录 GUI 后重试或前台运行提示；systemd `systemctl --user start sift.service`；foreground 提示在终端运行 `sift daemon`。 |
 | `stop` | launchd `bootout`（防 `KeepAlive` 立即拉起）；systemd `systemctl --user stop sift.service`；foreground 提示停止该前台进程。 |

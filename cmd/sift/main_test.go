@@ -361,6 +361,7 @@ func TestServiceInstallLaunchdReplacesFreshAndCurrentUnit(t *testing.T) {
 			script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log + "\"\n" +
 				"case \"$1\" in\n" +
 				"list) exit 3;;\n" +
+				"print) echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 3;;\n" +
 				"bootout) [ \"${CURRENT_LOADED:-}\" = 1 ] && exit 0; echo 'Boot-out failed: 3: No such process' >&2; exit 3;;\n" +
 				"bootstrap) exit 0;;\n" +
 				"esac\n"
@@ -385,7 +386,9 @@ func TestServiceInstallLaunchdReplacesFreshAndCurrentUnit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "bootout gui/" + fmt.Sprint(os.Getuid()) + "/" + hosting.Label + "\nbootstrap gui/" + fmt.Sprint(os.Getuid()) + " " + unit
+			// The issue #968 quiescence sequence: bootout the current label, confirm
+			// absence with a print probe, then bootstrap the freshly rendered plist.
+			want := "bootout gui/" + fmt.Sprint(os.Getuid()) + "/" + hosting.Label + "\nprint gui/" + fmt.Sprint(os.Getuid()) + "/" + hosting.Label + "\nbootstrap gui/" + fmt.Sprint(os.Getuid()) + " " + unit
 			if !strings.Contains(string(calls), want) {
 				t.Fatalf("launchctl calls = %q, want replacement sequence %q", calls, want)
 			}
@@ -456,7 +459,10 @@ func TestServiceInstallLaunchdSurfacesBootstrapFailure(t *testing.T) {
 	t.Setenv("HOME", userHome)
 	bin := t.TempDir()
 	launchctl := filepath.Join(bin, "launchctl")
-	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\nif [ \"$1\" = bootout ]; then echo 'Boot-out failed: 3: No such process' >&2; exit 3; fi\necho bootstrap failed >&2\nexit 1\n"), 0o700); err != nil {
+	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\ncase \"$1\" in\n"+
+		"print) echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 3;;\n"+
+		"bootstrap) echo bootstrap failed >&2; exit 1;;\n"+
+		"esac\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
@@ -466,6 +472,54 @@ func TestServiceInstallLaunchdSurfacesBootstrapFailure(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "launchd: install launchd user agent") || !strings.Contains(stderr.String(), "bootstrap") {
 		t.Fatalf("failure output falsely reports success: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+// TestServiceInstallLaunchdRetriesTransientBootstrap is the issue #968 end-to-end
+// gate on the CLI wiring: the absence probe confirms the label is gone, the
+// first bootstrap hits the known transient exit 5 (Input/output error), and the
+// bounded retry then succeeds — `sift service install` exits 0 having actually
+// loaded the unit, without any unconditional sleep masking the race.
+func TestServiceInstallLaunchdRetriesTransientBootstrap(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("service backend follows the host OS")
+	}
+	home := freshHome(t)
+	installReleaseLayout(t, home)
+	userHome := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(filepath.Join(userHome, "Library", "LaunchAgents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	bin := t.TempDir()
+	state := t.TempDir()
+	log := filepath.Join(t.TempDir(), "launchctl.log")
+	launchctl := filepath.Join(bin, "launchctl")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"" + log + "\"\n" +
+		"state=\"" + state + "\"\n" +
+		"cnt() { c=0; [ -f \"$state/$1.cnt\" ] && c=$(cat \"$state/$1.cnt\"); c=$((c+1)); printf '%s' \"$c\" > \"$state/$1.cnt\"; echo \"$c\"; }\n" +
+		"case \"$1\" in\n" +
+		"print) echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 3;;\n" +
+		"bootstrap) n=$(cnt bootstrap); [ \"$n\" -eq 1 ] && { echo 'Input/output error' >&2; exit 5; }; exit 0;;\n" +
+		"esac\nexit 0\n"
+	if err := os.WriteFile(launchctl, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"sift", "service", "install"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	calls, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(calls), "bootstrap gui/"); got != 2 {
+		t.Errorf("bootstrap invocations = %d, want 2 (transient then success); calls=%q", got, calls)
+	}
+	if got := strings.Count(string(calls), "print gui/"); got != 2 {
+		t.Errorf("print probes = %d, want 2 (absence before bootstrap and before retry); calls=%q", got, calls)
 	}
 }
 

@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xsift/sift/internal/version"
 )
@@ -938,6 +940,320 @@ func TestExecLaunchdInstallDoesNotClaimBootstrapFailureSucceeded(t *testing.T) {
 	_, err := Exec(Plan{Action: ActionInstall, BeforeCmd: []string{"launchctl", "bootout", "gui/1/" + Label}, RunCmd: []string{"launchctl", "bootstrap", "gui/1", "/tmp/sift.plist"}})
 	if err == nil || !strings.Contains(err.Error(), "bootstrap") {
 		t.Fatalf("bootstrap failure = %v, want surfaced failure", err)
+	}
+}
+
+// launchdScript describes the scripted behavior of a fake launchctl binary
+// used by the issue #968 install-sequence tests. Behavior is driven by
+// per-command invocation counters written under the fake's state dir, so a
+// single test can script a full bootout→probe→bootstrap sequence
+// deterministically.
+//
+//   - printAbsentAfter: the print probe reports the label absent from this
+//     invocation on (1 = always absent, 2 = present once, then absent, ...).
+//   - printPresentAt: the single print invocation that reports the label
+//     present (overrides absent for that probe; 0 = never).
+//   - bootoutAbsent: bootout reports the label already gone (fresh install).
+//   - bootstrapFailAt: the bootstrap invocation that fails (0 = never).
+//   - bootstrapAlwaysFail: every bootstrap invocation fails (for exhaustion).
+//   - bootstrapFailMsg / bootstrapFailExit: the failure the bootstrap emits.
+type launchdScript struct {
+	printAbsentAfter    int
+	printPresentAt      int
+	bootoutAbsent       bool
+	bootstrapFailAt     int
+	bootstrapAlwaysFail bool
+	bootstrapFailMsg    string
+	bootstrapFailExit   int
+}
+
+// scriptedLaunchctl writes a fake launchctl into bin whose behavior follows
+// script, points PATH at bin, and returns the state dir holding the per-command
+// invocation counters (readable afterwards with scriptCount). The script exits
+// 0 for every command it does not explicitly script, so bootout "succeeds" for
+// a loaded label by default.
+func scriptedLaunchctl(t *testing.T, bin string, script launchdScript) (stateDir string) {
+	t.Helper()
+	stateDir = t.TempDir()
+	launchctl := filepath.Join(bin, "launchctl")
+	absentAfter := 1
+	if script.printAbsentAfter > 0 {
+		absentAfter = script.printAbsentAfter
+	}
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	b.WriteString("state=\"$FAKE_LAUNCHD_STATE\"\n")
+	b.WriteString("cnt() { c=0; [ -f \"$state/$1.cnt\" ] && c=$(cat \"$state/$1.cnt\"); c=$((c+1)); printf '%s' \"$c\" > \"$state/$1.cnt\"; echo \"$c\"; }\n")
+	b.WriteString("case \"$1\" in\n")
+	b.WriteString("bootout)")
+	if script.bootoutAbsent {
+		b.WriteString(" echo 'Boot-out failed: 3: No such process' >&2; exit 3;")
+	}
+	b.WriteString(" exit 0;;\n")
+	b.WriteString("print)\n")
+	b.WriteString("  n=$(cnt print)\n")
+	if script.printPresentAt > 0 {
+		fmt.Fprintf(&b, "  if [ \"$n\" -eq %d ]; then echo active; else\n", script.printPresentAt)
+	}
+	fmt.Fprintf(&b, "    if [ \"$n\" -lt %d ]; then echo active; else echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 3; fi\n", absentAfter)
+	if script.printPresentAt > 0 {
+		b.WriteString("  fi\n")
+	}
+	b.WriteString("  ;;\n")
+	b.WriteString("bootstrap)\n")
+	b.WriteString("  n=$(cnt bootstrap)\n")
+	if script.bootstrapAlwaysFail {
+		fmt.Fprintf(&b, "  echo '%s' >&2; exit %d\n", script.bootstrapFailMsg, script.bootstrapFailExit)
+	} else if script.bootstrapFailAt > 0 {
+		fmt.Fprintf(&b, "  if [ \"$n\" -eq %d ]; then echo '%s' >&2; exit %d; fi\n", script.bootstrapFailAt, script.bootstrapFailMsg, script.bootstrapFailExit)
+	}
+	b.WriteString("  ;;\n")
+	b.WriteString("esac\n")
+	b.WriteString("exit 0\n")
+	if err := os.WriteFile(launchctl, []byte(b.String()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_LAUNCHD_STATE", stateDir)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return stateDir
+}
+
+// scriptCount reads how many times the fake launchctl ran cmd.
+func scriptCount(t *testing.T, stateDir, cmd string) int {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(stateDir, cmd+".cnt"))
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// sleepRecorder replaces the package sleeper so install-sequence tests never
+// block on real time; it records the sleeps the sequence actually performed.
+type sleepRecorder struct {
+	sleeps []time.Duration
+}
+
+func (r *sleepRecorder) sleep(d time.Duration) { r.sleeps = append(r.sleeps, d) }
+
+// pinLaunchdPacing shrinks the issue #968 pacing windows and swaps in a
+// no-op sleeper, making the sequence tests deterministic and millisecond-fast;
+// production pacing is restored on cleanup. Tests that need no teardown wait
+// at all can set the returned recorder's patience to zero by shrinking
+// launchdTeardownTimeout further via the package vars.
+func pinLaunchdPacing(t *testing.T) *sleepRecorder {
+	t.Helper()
+	oldTimeout, oldPoll := launchdTeardownTimeout, launchdTeardownPoll
+	oldRetries, oldBackoff := launchdBootstrapRetries, launchdBootstrapBackoff
+	oldSleep := sleep
+	launchdTeardownTimeout = 60 * time.Millisecond
+	launchdTeardownPoll = 5 * time.Millisecond
+	launchdBootstrapRetries = 2
+	launchdBootstrapBackoff = 5 * time.Millisecond
+	r := &sleepRecorder{}
+	sleep = r.sleep
+	t.Cleanup(func() {
+		launchdTeardownTimeout, launchdTeardownPoll = oldTimeout, oldPoll
+		launchdBootstrapRetries, launchdBootstrapBackoff = oldRetries, oldBackoff
+		sleep = oldSleep
+	})
+	return r
+}
+
+// launchdInstallPlan is the install plan the issue #968 tests drive; the
+// domain (gui/1) and plist path are arbitrary fakes resolved by the scripted
+// launchctl.
+func launchdInstallPlan() Plan {
+	return Plan{
+		Action:       ActionInstall,
+		BeforeCmd:    []string{"launchctl", "bootout", "gui/1/" + Label},
+		AbsenceProbe: []string{"launchctl", "print", "gui/1/" + Label},
+		RunCmd:       []string{"launchctl", "bootstrap", "gui/1", "/tmp/sift.plist"},
+	}
+}
+
+// TestLaunchdInstallImmediateSuccess pins the happy path (issue #968): a
+// loaded current label is booted out, launchctl confirms absence, and the
+// freshly rendered plist bootstraps on the first try. The fresh-install
+// variant (bootout exit 3 "No such process") must reach the same success.
+func TestLaunchdInstallImmediateSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		bootoutAbsent bool
+	}{
+		{"current-loaded", false},
+		{"fresh", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := pinLaunchdPacing(t)
+			state := scriptedLaunchctl(t, t.TempDir(), launchdScript{bootoutAbsent: tc.bootoutAbsent})
+			if _, err := Exec(launchdInstallPlan()); err != nil {
+				t.Fatalf("install = %v, want success", err)
+			}
+			if got := scriptCount(t, state, "print"); got != 1 {
+				t.Errorf("print probes = %d, want 1", got)
+			}
+			if got := scriptCount(t, state, "bootstrap"); got != 1 {
+				t.Errorf("bootstrap calls = %d, want 1", got)
+			}
+			if len(r.sleeps) != 0 {
+				t.Errorf("immediate success must not sleep, slept %v", r.sleeps)
+			}
+		})
+	}
+}
+
+// TestLaunchdInstallDelayedDisappearance pins the teardown quiescence wait
+// (issue #968): the label is still present on the first probe, then disappears
+// before the bounded deadline; install must keep probing rather than racing
+// the teardown with a blind bootstrap.
+func TestLaunchdInstallDelayedDisappearance(t *testing.T) {
+	r := pinLaunchdPacing(t)
+	state := scriptedLaunchctl(t, t.TempDir(), launchdScript{printAbsentAfter: 2})
+	if _, err := Exec(launchdInstallPlan()); err != nil {
+		t.Fatalf("install = %v, want success after waiting for teardown", err)
+	}
+	if got := scriptCount(t, state, "print"); got != 2 {
+		t.Errorf("print probes = %d, want 2 (present then absent)", got)
+	}
+	if got := scriptCount(t, state, "bootstrap"); got != 1 {
+		t.Errorf("bootstrap calls = %d, want 1", got)
+	}
+	if len(r.sleeps) == 0 {
+		t.Error("delayed disappearance must poll between probes, no sleep recorded")
+	}
+}
+
+// TestLaunchdInstallTransientBootstrapThenSuccess pins the bounded exit-5
+// retry (issue #968): the first bootstrap hits the known transient
+// Input/output error while the label stays confirmed absent; the retry then
+// succeeds. The absence probe must be re-run before each retry.
+func TestLaunchdInstallTransientBootstrapThenSuccess(t *testing.T) {
+	r := pinLaunchdPacing(t)
+	state := scriptedLaunchctl(t, t.TempDir(), launchdScript{
+		bootstrapFailAt:   1,
+		bootstrapFailMsg:  "Input/output error",
+		bootstrapFailExit: 5,
+	})
+	if _, err := Exec(launchdInstallPlan()); err != nil {
+		t.Fatalf("install = %v, want success after one transient retry", err)
+	}
+	if got := scriptCount(t, state, "bootstrap"); got != 2 {
+		t.Errorf("bootstrap calls = %d, want 2 (transient then success)", got)
+	}
+	if got := scriptCount(t, state, "print"); got != 2 {
+		t.Errorf("print probes = %d, want 2 (pre-install + pre-retry absence check)", got)
+	}
+	if len(r.sleeps) == 0 {
+		t.Error("transient retry must back off between attempts, no sleep recorded")
+	}
+}
+
+// TestLaunchdInstallRetryExhaustion pins the bounded failure surface: a
+// bootstrap that keeps failing with transient exit 5 while absence stays
+// confirmed must exhaust the retry budget and return a non-zero actionable
+// error — never claim success.
+func TestLaunchdInstallRetryExhaustion(t *testing.T) {
+	pinLaunchdPacing(t)
+	state := scriptedLaunchctl(t, t.TempDir(), launchdScript{
+		bootstrapAlwaysFail: true,
+		bootstrapFailMsg:    "Input/output error",
+		bootstrapFailExit:   5,
+	})
+	_, err := Exec(launchdInstallPlan())
+	if err == nil {
+		t.Fatal("install succeeded after retry exhaustion")
+	}
+	if !strings.Contains(err.Error(), "retry `sift service install`") && !strings.Contains(err.Error(), "rerun `sift service install`") {
+		t.Errorf("exhaustion error = %v, want actionable rerun hint", err)
+	}
+	if got := scriptCount(t, state, "bootstrap"); got != launchdBootstrapRetries+1 {
+		t.Errorf("bootstrap calls = %d, want %d", got, launchdBootstrapRetries+1)
+	}
+}
+
+// TestLaunchdInstallTeardownTimeoutNeverBootstraps pins the bounded teardown
+// wait: when launchctl never confirms absence, install must abort before any
+// bootstrap — bootstrapping over a half-torn job is exactly the issue #968
+// race.
+func TestLaunchdInstallTeardownTimeoutNeverBootstraps(t *testing.T) {
+	pinLaunchdPacing(t)
+	state := scriptedLaunchctl(t, t.TempDir(), launchdScript{printAbsentAfter: 1 << 20})
+	_, err := Exec(launchdInstallPlan())
+	if err == nil {
+		t.Fatal("install succeeded while the label never disappeared")
+	}
+	if !strings.Contains(err.Error(), "did not quiesce") {
+		t.Errorf("teardown-timeout error = %v, want quiescence disclosure", err)
+	}
+	if got := scriptCount(t, state, "bootstrap"); got != 0 {
+		t.Errorf("bootstrap calls = %d, want 0 (aborted before bootstrap)", got)
+	}
+}
+
+// TestLaunchdInstallPermissionErrorDoesNotRetry pins the no-retry rule for
+// permanent failures: a permission-denied bootstrap must surface immediately
+// with exactly one bootstrap attempt.
+func TestLaunchdInstallPermissionErrorDoesNotRetry(t *testing.T) {
+	pinLaunchdPacing(t)
+	state := scriptedLaunchctl(t, t.TempDir(), launchdScript{
+		bootstrapFailAt:   1,
+		bootstrapFailMsg:  "Bootstrap failed: 5: Input/output error: Operation not permitted",
+		bootstrapFailExit: 5,
+	})
+	_, err := Exec(launchdInstallPlan())
+	if err == nil || !strings.Contains(err.Error(), "not permitted") {
+		t.Fatalf("install = %v, want surfaced permission error", err)
+	}
+	if got := scriptCount(t, state, "bootstrap"); got != 1 {
+		t.Errorf("bootstrap calls = %d, want exactly 1 (no retry)", got)
+	}
+}
+
+// TestLaunchdInstallDomainErrorDoesNotRetry pins the no-retry rule for the
+// wrong-domain / no-GUI case: it must fail immediately with the actionable
+// SSH / foreground hint.
+func TestLaunchdInstallDomainErrorDoesNotRetry(t *testing.T) {
+	pinLaunchdPacing(t)
+	state := scriptedLaunchctl(t, t.TempDir(), launchdScript{
+		bootstrapFailAt:   1,
+		bootstrapFailMsg:  "Bootstrap failed: 5: Input/output error: Could not find domain for user",
+		bootstrapFailExit: 5,
+	})
+	_, err := Exec(launchdInstallPlan())
+	if err == nil || !strings.Contains(err.Error(), "SSH") || !strings.Contains(err.Error(), "foreground") {
+		t.Fatalf("install = %v, want actionable SSH/foreground domain hint", err)
+	}
+	if got := scriptCount(t, state, "bootstrap"); got != 1 {
+		t.Errorf("bootstrap calls = %d, want exactly 1 (no retry)", got)
+	}
+}
+
+// TestLaunchdInstallAmbiguousStateDoesNotRetry pins the no-retry rule for a
+// bootstrap that fails with the transient exit 5 but whose label is still
+// present or otherwise not confirmed absent: the state is ambiguous, so
+// install must fail now rather than fight launchd.
+func TestLaunchdInstallAmbiguousStateDoesNotRetry(t *testing.T) {
+	pinLaunchdPacing(t)
+	state := scriptedLaunchctl(t, t.TempDir(), launchdScript{
+		printPresentAt:    2, // absent for the wait probe, present for the retry gate
+		bootstrapFailAt:   1,
+		bootstrapFailMsg:  "Input/output error",
+		bootstrapFailExit: 5,
+	})
+	_, err := Exec(launchdInstallPlan())
+	if err == nil || !strings.Contains(err.Error(), "not confirmed absent") {
+		t.Fatalf("install = %v, want ambiguous-state failure", err)
+	}
+	if got := scriptCount(t, state, "bootstrap"); got != 1 {
+		t.Errorf("bootstrap calls = %d, want exactly 1 (no retry on ambiguous state)", got)
 	}
 }
 

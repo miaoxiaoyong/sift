@@ -130,15 +130,15 @@ socket_inode() {
 }
 
 # socket_responds proves the operator socket is connectable AND a live daemon
-# answers on it, not merely that the socket file exists. It runs `sift doctor`
-# (online) which dials siftd.sock through the operator client: a stale leftover
-# socket file (no listener) fails the dial with "connection refused" and writes
-# NO JSON to stdout, while a live daemon returns its doctor result as JSON
-# regardless of that result's exit_code. stdout-JSON is therefore the live-
-# listener signal, independent of doctor's findings.
+# answers on it, not merely that the socket file exists. It runs `sift doctor
+# --json` (online) which dials siftd.sock through the operator client: a stale
+# leftover socket file (no listener) fails the dial with "connection refused"
+# and writes NO JSON to stdout, while a live daemon returns its doctor result
+# as a JSON envelope regardless of that result's exit_code. stdout-JSON is
+# therefore the live-listener signal, independent of doctor's findings.
 socket_responds() {
 	local out
-	out="$("$SIFT_BIN" doctor 2>/dev/null || true)"
+	out="$("$SIFT_BIN" doctor --json 2>/dev/null || true)"
 	[[ -n "$out" ]] && grep -q '"ok"' <<<"$out"
 }
 

@@ -90,6 +90,8 @@ tail -n 200 "${SIFT_HOME:-$HOME/.sift}/logs/siftd.err.log"
 sift daemon
 ```
 
+重复 `sift service install` 时，install 会在 bootout 成功后**有界等待** launchctl 确认服务已 absent（teardown quiescence，最长 5s），再 bootstrap 新 plist；若 bootstrap 遇到瞬时 exit 5（`Input/output error`）且服务仍确认 absent，会短暂重试（最多 2 次）后成功。权限拒绝、无 GUI domain、plist 格式错误或服务状态不明都不会被重试或吞掉——它们是真失败，请按错误提示修复后重跑 `sift service install`。
+
 权限拒绝、plist 无法读取或 bootstrap/kickstart 的其它非零错误都是真失败，应保留完整错误并按提示修复，不要把它们当作未加载。
 
 若配置修复后仍处于失败状态：

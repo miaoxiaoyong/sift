@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/xsift/sift/internal/install"
 	"github.com/xsift/sift/internal/version"
@@ -37,6 +38,27 @@ import (
 var (
 	userHomeDir   = os.UserHomeDir
 	userConfigDir = os.UserConfigDir
+)
+
+// launchd install teardown pacing (issue #968). These are variables, not
+// constants, so tests can shrink the windows and swap the sleeper: the install
+// command sequences stay fully deterministic and finish in milliseconds
+// instead of real seconds.
+var (
+	// launchdTeardownTimeout bounds how long install waits after a successful
+	// bootout for launchctl to confirm the label is absent. 5s matches the
+	// observed macOS recovery window in issue #968 (waiting 5s and rerunning
+	// install succeeded).
+	launchdTeardownTimeout = 5 * time.Second
+	// launchdTeardownPoll is the interval between absence probes while waiting.
+	launchdTeardownPoll = 250 * time.Millisecond
+	// launchdBootstrapRetries is how many extra bootstrap attempts follow a
+	// known-transient exit-5 failure while absence stays confirmed.
+	launchdBootstrapRetries = 2
+	// launchdBootstrapBackoff is the pause before each bootstrap retry.
+	launchdBootstrapBackoff = 500 * time.Millisecond
+	// sleep is the wait primitive; injectable so tests never block on real time.
+	sleep = time.Sleep
 )
 
 // Backend names the hosting mechanism a platform uses.
@@ -222,16 +244,17 @@ func launchdUnitPath(label string) (string, error) {
 // file (atomically) and run its platform command sequence. Keeping the two
 // separate lets the package stay exec-free while the thin CLI performs the IO.
 type Plan struct {
-	Action      Action
-	Summary     string
-	WriteFile   string   // destination of an atomic unit-file write (empty = no write)
-	Content     []byte   // content for WriteFile
-	BeforeCmd   []string // command run before RunCmd; used for launchd replacement
-	ProbeCmd    []string // optional state probe used by idempotent start
-	RunCmd      []string // command + args to execute; nil means manual/foreground only
-	FallbackCmd []string // command used when ProbeCmd finds an unloaded service
-	StartUnit   string   // retained plist used by launchd start bootstrap
-	Hint        string   // human step printed when RunCmd is nil or the backend is missing
+	Action       Action
+	Summary      string
+	WriteFile    string   // destination of an atomic unit-file write (empty = no write)
+	Content      []byte   // content for WriteFile
+	BeforeCmd    []string // command run before RunCmd; used for launchd replacement
+	ProbeCmd     []string // optional state probe used by idempotent start
+	AbsenceProbe []string // optional launchctl probe that must confirm the label is absent before install bootstraps (teardown quiescence, issue #968)
+	RunCmd       []string // command + args to execute; nil means manual/foreground only
+	FallbackCmd  []string // command used when ProbeCmd finds an unloaded service
+	StartUnit    string   // retained plist used by launchd start bootstrap
+	Hint         string   // human step printed when RunCmd is nil or the backend is missing
 	// Status is a machine-checkable verdict for ActionStatus plans that have
 	// no platform command (foreground): "present" when the operator socket
 	// exists at plan time, "absent" otherwise. SocketPath names the probed
@@ -273,9 +296,13 @@ func (s Spec) planInstall() Plan {
 			// bootstrap rejects an already-loaded label. Boot it out first so a
 			// repeated install applies the freshly rendered environment; exit 3
 			// means no current job and is the successful fresh-install case.
-			BeforeCmd: []string{"launchctl", "bootout", "gui/" + osUserUID() + "/" + s.Label},
-			RunCmd:    []string{"launchctl", "bootstrap", "gui/" + osUserUID(), s.UnitPath},
-			Hint:      "launchctl bootstrap gui/$(id -u) " + s.UnitPath,
+			// After bootout, launchd needs a moment to finish tearing the job
+			// down; AbsenceProbe gates bootstrap on launchctl confirming the
+			// label is absent (issue #968), instead of racing the teardown.
+			BeforeCmd:    []string{"launchctl", "bootout", "gui/" + osUserUID() + "/" + s.Label},
+			AbsenceProbe: []string{"launchctl", "print", "gui/" + osUserUID() + "/" + s.Label},
+			RunCmd:       []string{"launchctl", "bootstrap", "gui/" + osUserUID(), s.UnitPath},
+			Hint:         "launchctl bootstrap gui/$(id -u) " + s.UnitPath,
 		}
 	case BackendSystemd:
 		content, _ := s.Render()
@@ -662,7 +689,118 @@ func Exec(plan Plan) ([]byte, error) {
 	if plan.Action == ActionStart && plan.RunCmd[0] == "launchctl" && len(plan.ProbeCmd) > 0 {
 		return execLaunchdStart(plan)
 	}
+	if plan.Action == ActionInstall && plan.RunCmd[0] == "launchctl" {
+		return execLaunchdInstall(plan)
+	}
 	return runCommand(plan.RunCmd)
+}
+
+// execLaunchdInstall runs the launchd install continuation after Exec has
+// already booted out the current label (tolerating "No such process" as the
+// fresh-install case): wait boundedly until launchctl confirms the label is
+// absent (teardown quiescence, issue #968), then bootstrap. A bootstrap that
+// fails with the known transient exit 5 (Input/output error) is retried a
+// bounded number of times, and only while absence stays confirmed. Everything
+// else — permission, missing GUI domain, malformed plist, or a state that is
+// ambiguous or still present — fails immediately without retry, and exhaustion
+// returns a non-zero actionable error rather than claiming success.
+func execLaunchdInstall(plan Plan) ([]byte, error) {
+	if len(plan.AbsenceProbe) > 0 {
+		if waitOut, waitErr := waitForLaunchdAbsent(plan.AbsenceProbe); waitErr != nil {
+			return waitOut, waitErr
+		}
+	}
+	var lastOut []byte
+	var lastErr error
+	for attempt := 0; attempt <= launchdBootstrapRetries; attempt++ {
+		if attempt > 0 {
+			sleep(launchdBootstrapBackoff)
+		}
+		out, err := runCommand(plan.RunCmd)
+		if err == nil {
+			return out, nil
+		}
+		lastOut, lastErr = out, err
+		// Only the known transient exit 5 while the label is still confirmed
+		// absent is retryable. Any other failure, or any state that is not
+		// unambiguously absent, is permanent: surface it now.
+		if !isTransientBootstrapFailure(err) || len(plan.AbsenceProbe) == 0 {
+			return out, launchdDomainHint(err)
+		}
+		if _, probeErr := runCommand(plan.AbsenceProbe); probeErr == nil || !isServiceAbsent(probeErr) {
+			return out, fmt.Errorf("hosting: launchctl bootstrap failed with transient exit 5 but the service label is not confirmed absent; not retrying: %w", err)
+		}
+	}
+	return lastOut, fmt.Errorf("hosting: launchctl bootstrap failed %d consecutive times with transient exit 5 (input/output error) while the label stayed absent; launchd teardown did not quiesce; aborting install — rerun `sift service install`: %w", launchdBootstrapRetries+1, lastErr)
+}
+
+// waitForLaunchdAbsent polls the absence probe until launchctl confirms the
+// label is gone, the bounded deadline passes, or the probe fails in a way that
+// is not a clear "absent" verdict (permission, domain, ambiguous). A label
+// that never disappears is an install abort: bootstrapping over a half-torn
+// job is exactly the race issue #968 reproduces.
+func waitForLaunchdAbsent(probe []string) ([]byte, error) {
+	target := strings.Join(probe, " ")
+	deadline := time.Now().Add(launchdTeardownTimeout)
+	for {
+		out, err := runCommand(probe)
+		if err == nil {
+			// Probe succeeded: the label is still loaded. Keep waiting, but only
+			// until the bounded deadline.
+			if time.Now().After(deadline) {
+				return out, fmt.Errorf("hosting: launchd label %s is still loaded %s after bootout; launchd teardown did not quiesce; aborting install — rerun `sift service install`", target, launchdTeardownTimeout)
+			}
+			sleep(launchdTeardownPoll)
+			continue
+		}
+		if isServiceAbsent(err) {
+			return out, nil
+		}
+		return out, launchdDomainHint(fmt.Errorf("hosting: cannot confirm launchd label %s is absent after bootout: %w", target, err))
+	}
+}
+
+// isServiceAbsent reports whether a launchctl result unambiguously means the
+// label does not exist. Absence must be proven by the message text, never by a
+// bare non-zero exit: permission, domain and malformed-input failures must not
+// be mistaken for a clean teardown.
+func isServiceAbsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	for _, hard := range []string{"permission denied", "operation not permitted", "could not find domain", "domain unavailable", "invalid property list", "malformed"} {
+		if strings.Contains(text, hard) {
+			return false
+		}
+	}
+	for _, absent := range []string{"no such process", "could not find service", "service not found", "does not exist"} {
+		if strings.Contains(text, absent) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTransientBootstrapFailure reports launchctl's known teardown-race bootstrap
+// failure: exit 5 / "Input/output error" (errno EIO), which a bounded retry
+// after confirmed absence can recover from. Every other failure — permission,
+// missing domain, malformed plist, different exit code — is permanent and must
+// never be retried. Hard markers win even when launchd bundles them into the
+// same stderr as an EIO text, so a permission or domain problem is never
+// masked as transient.
+func isTransientBootstrapFailure(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 5 {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	for _, hard := range []string{"permission denied", "operation not permitted", "could not find domain", "domain unavailable", "invalid property list", "malformed"} {
+		if strings.Contains(text, hard) {
+			return false
+		}
+	}
+	return strings.Contains(text, "input/output error") || strings.Contains(text, "eio")
 }
 
 func execLaunchdStart(plan Plan) ([]byte, error) {

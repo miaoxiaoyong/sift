@@ -117,9 +117,10 @@ FAKE
 	chmod +x "$tools_dir/systemctl"
 }
 
-# write_fake_launchctl is the launchd analog: load starts the daemon, list
-# reports the pid and exit status (registration), kickstart -k restarts it,
-# bootout/remove stop it.
+# write_fake_launchctl is the launchd analog: bootstrap/load start the daemon
+# (RunAtLoad semantics), list/print report registration (print also answers the
+# install absence probe, issue #968), kickstart -k restarts it, bootout/remove
+# stop it.
 write_fake_launchctl() {
 	local state="$1" on_kill="$2" restart_cmd="$3"
 	FAKE_LAUNCHD_STATE="$state" FAKE_ON_KILL="$on_kill" FAKE_RESTART_CMD="$restart_cmd" cat >"$tools_dir/launchctl" <<'FAKE'
@@ -169,8 +170,19 @@ case "${1:-}" in
 		fi
 		exit 1
 		;;
+	print)
+		# `sift service install` probes the label's absence after bootout
+		# (teardown quiescence, issue #968): present iff a live process is
+		# registered, absent otherwise.
+		if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+			printf '"PID" = %s;\n' "$(cat "$pid_file")"
+			exit 0
+		fi
+		echo 'Could not find service "cn.hexai.sift" in domain for user gui/1' >&2
+		exit 1
+		;;
 	kickstart) stop_daemon; [[ "${FAKE_RESTART_CMD:-1}" == "1" ]] && start_daemon; exit 0 ;;
-	load) start_daemon; exit 0 ;;
+	load|bootstrap) start_daemon; exit 0 ;;
 	bootout|remove|unload) stop_daemon; exit 0 ;;
 esac
 exit 0
