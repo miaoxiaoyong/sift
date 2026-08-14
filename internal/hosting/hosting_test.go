@@ -83,12 +83,15 @@ func TestDetectSelectsBackendByGOOS(t *testing.T) {
 	}
 }
 
-func TestLaunchdIdentityKeepsLegacyMigrationLabel(t *testing.T) {
-	if Label != "com.xsift.sift" {
-		t.Fatalf("Label = %q, want com.xsift.sift", Label)
+func TestLaunchdIdentityKeepsCurrentAndLegacyLabels(t *testing.T) {
+	if Label != "cn.hexai.sift" {
+		t.Fatalf("Label = %q, want installed v0.5.4 label cn.hexai.sift", Label)
 	}
 	if LegacyLabel != "com.miaoxiaoyong.sift" {
 		t.Fatalf("LegacyLabel = %q, want original v0.1.0 label", LegacyLabel)
+	}
+	if Label == LegacyLabel {
+		t.Fatal("current and legacy launchd labels must remain distinct")
 	}
 }
 

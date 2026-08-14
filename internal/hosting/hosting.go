@@ -52,7 +52,7 @@ const (
 	// Label is the reverse-DNS identifier used for the launchd agent and as a
 	// stable, platform-neutral service handle. It never contains a path
 	// separator.
-	Label = "com.xsift.sift"
+	Label = "cn.hexai.sift"
 	// LegacyLabel was used by v0.1.0. Install removes its launchd agent before
 	// creating Label so an upgrade cannot leave two competing daemons.
 	LegacyLabel = "com.miaoxiaoyong.sift"

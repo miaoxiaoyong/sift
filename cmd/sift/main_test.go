@@ -340,7 +340,7 @@ func TestMigrateLegacyLaunchdRemovesLoadedAgentAndPlist(t *testing.T) {
 func TestRenderServiceStatusHumanizesBackendPIDAndSocket(t *testing.T) {
 	spec := hosting.Spec{Backend: hosting.BackendLaunchd, HomePath: "/tmp/sift"}
 	var out bytes.Buffer
-	renderServiceStatus(&out, spec, "{\n\t\"PID\" = 123;\n\t\"LastExitStatus\" = 0;\n\t\"Label\" = \"com.xsift.sift\";\n}\n", true)
+	renderServiceStatus(&out, spec, "{\n\t\"PID\" = 123;\n\t\"LastExitStatus\" = 0;\n\t\"Label\" = \"cn.hexai.sift\";\n}\n", true)
 	if got := out.String(); !strings.Contains(got, "✓ 运行中") || !strings.Contains(got, "launchd") || !strings.Contains(got, "PID 123") || !strings.Contains(got, "/tmp/sift/siftd.sock") {
 		t.Errorf("launchd status = %q, want humanized backend, pid, and socket", got)
 	}

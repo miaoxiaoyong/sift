@@ -77,8 +77,8 @@ sift doctor --offline
 ### macOS / launchd
 
 ```bash
-launchctl list com.xsift.sift
-launchctl print "gui/$(id -u)/com.xsift.sift"
+launchctl list cn.hexai.sift
+launchctl print "gui/$(id -u)/cn.hexai.sift"
 tail -n 200 "${SIFT_HOME:-$HOME/.sift}/logs/siftd.err.log"
 ```
 
