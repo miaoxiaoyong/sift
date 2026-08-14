@@ -1056,7 +1056,7 @@ func runService(args []string, home config.Home, stdout, stderr io.Writer) int {
 		}
 	}
 	out, execErr := hosting.Exec(plan)
-	if (action == hosting.ActionUninstall || action == hosting.ActionStop) && hosting.IsAlreadyUnloaded(execErr) {
+	if (action == hosting.ActionUninstall || action == hosting.ActionStop) && hosting.IsLaunchdUnloaded(execErr) {
 		// "No such process" is the successful idempotent case; do not render
 		// launchctl's diagnostic as though the CLI had failed.
 		out, execErr = nil, nil
@@ -1129,7 +1129,7 @@ func migrateLegacyLaunchd(stdout io.Writer) (bool, error) {
 	}
 	if !errors.Is(probeErr, hosting.ErrNoBackend) {
 		_, bootoutErr := hosting.Exec(hosting.LegacyLaunchdBootoutPlan())
-		if bootoutErr != nil && !hosting.IsAlreadyUnloaded(bootoutErr) {
+		if bootoutErr != nil && !hosting.IsLaunchdUnloaded(bootoutErr) {
 			return false, bootoutErr
 		}
 	}

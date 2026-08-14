@@ -652,11 +652,46 @@ func Write(plan Plan) error {
 	return nil
 }
 
-// IsAlreadyUnloaded reports launchctl's documented "No such process" result
-// for bootout. That result makes uninstall and label migration idempotent.
-func IsAlreadyUnloaded(err error) bool {
+// IsLaunchdUnloaded reports whether a launchctl error unambiguously means the
+// managed label is absent/unloaded — the idempotent success state for bootout
+// (uninstall/stop/migration, issue #959) and the "needs bootstrap" state for a
+// start probe (issue #965). It consolidates the former IsAlreadyUnloaded
+// (bootout) and isLaunchdUnloaded (print-probe) classifiers into one tested
+// classifier.
+//
+// It matches the real macOS exit-code mapping: bootout absent = 3 ("No such
+// process"), print-probe missing service = 113 ("Could not find service"),
+// while missing domain = 112 and permission/malformed failures must never read
+// as absent. Absence is proven by a matching exit code AND message text, never
+// by a bare non-zero exit or a coincidental text match.
+func IsLaunchdUnloaded(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	// Hard markers win even when launchd bundles them into the same stderr as
+	// an absent-like text, so a permission, domain (exit 112) or malformed
+	// plist failure is never mistaken for a clean teardown.
+	for _, hard := range []string{"permission denied", "operation not permitted", "could not find domain", "domain unavailable", "invalid property list", "malformed"} {
+		if strings.Contains(text, hard) {
+			return false
+		}
+	}
+	absent := strings.Contains(text, "no such process") ||
+		strings.Contains(text, "could not find service") ||
+		strings.Contains(text, "service not found") ||
+		strings.Contains(text, "does not exist")
+	if !absent {
+		return false
+	}
+	// Require the documented macOS exit code for the absent verdict (bootout
+	// 3, print probe 113) so a coincidental text match under a different exit
+	// code is not read as absence.
 	var exitErr *exec.ExitError
-	return errors.As(err, &exitErr) && exitErr.ExitCode() == 3 && strings.Contains(strings.ToLower(err.Error()), "no such process")
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode() == 3 || exitErr.ExitCode() == 113
+	}
+	return true
 }
 
 // Exec runs a plan's commands when the platform tool is present. It returns
@@ -676,7 +711,7 @@ func Exec(plan Plan) ([]byte, error) {
 			return nil, ErrNoBackend
 		}
 		out, err := runCommand(plan.BeforeCmd)
-		if err != nil && !(plan.Action == ActionInstall && IsAlreadyUnloaded(err)) {
+		if err != nil && !(plan.Action == ActionInstall && IsLaunchdUnloaded(err)) {
 			return out, err
 		}
 	}
@@ -727,7 +762,7 @@ func execLaunchdInstall(plan Plan) ([]byte, error) {
 		if !isTransientBootstrapFailure(err) || len(plan.AbsenceProbe) == 0 {
 			return out, launchdDomainHint(err)
 		}
-		if _, probeErr := runCommand(plan.AbsenceProbe); probeErr == nil || !isServiceAbsent(probeErr) {
+		if _, probeErr := runCommand(plan.AbsenceProbe); probeErr == nil || !IsLaunchdUnloaded(probeErr) {
 			return out, fmt.Errorf("hosting: launchctl bootstrap failed with transient exit 5 but the service label is not confirmed absent; not retrying: %w", err)
 		}
 	}
@@ -753,33 +788,11 @@ func waitForLaunchdAbsent(probe []string) ([]byte, error) {
 			sleep(launchdTeardownPoll)
 			continue
 		}
-		if isServiceAbsent(err) {
+		if IsLaunchdUnloaded(err) {
 			return out, nil
 		}
 		return out, launchdDomainHint(fmt.Errorf("hosting: cannot confirm launchd label %s is absent after bootout: %w", target, err))
 	}
-}
-
-// isServiceAbsent reports whether a launchctl result unambiguously means the
-// label does not exist. Absence must be proven by the message text, never by a
-// bare non-zero exit: permission, domain and malformed-input failures must not
-// be mistaken for a clean teardown.
-func isServiceAbsent(err error) bool {
-	if err == nil {
-		return false
-	}
-	text := strings.ToLower(err.Error())
-	for _, hard := range []string{"permission denied", "operation not permitted", "could not find domain", "domain unavailable", "invalid property list", "malformed"} {
-		if strings.Contains(text, hard) {
-			return false
-		}
-	}
-	for _, absent := range []string{"no such process", "could not find service", "service not found", "does not exist"} {
-		if strings.Contains(text, absent) {
-			return true
-		}
-	}
-	return false
 }
 
 // isTransientBootstrapFailure reports launchctl's known teardown-race bootstrap
@@ -809,7 +822,7 @@ func execLaunchdStart(plan Plan) ([]byte, error) {
 		out, err := runCommand(plan.RunCmd)
 		return out, launchdDomainHint(err)
 	}
-	if !isLaunchdUnloaded(probeErr) {
+	if !IsLaunchdUnloaded(probeErr) {
 		return probeOut, launchdDomainHint(probeErr)
 	}
 	if plan.StartUnit == "" {
@@ -820,14 +833,6 @@ func execLaunchdStart(plan Plan) ([]byte, error) {
 	}
 	out, err := runCommand(plan.FallbackCmd)
 	return out, launchdDomainHint(err)
-}
-
-func isLaunchdUnloaded(err error) bool {
-	text := strings.ToLower(err.Error())
-	if strings.Contains(text, "permission denied") || strings.Contains(text, "operation not permitted") {
-		return false
-	}
-	return strings.Contains(text, "no such process") || strings.Contains(text, "could not find service")
 }
 
 func launchdDomainHint(err error) error {

@@ -361,7 +361,7 @@ func TestServiceInstallLaunchdReplacesFreshAndCurrentUnit(t *testing.T) {
 			script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log + "\"\n" +
 				"case \"$1\" in\n" +
 				"list) exit 3;;\n" +
-				"print) echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 3;;\n" +
+				"print) echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 113;;\n" +
 				"bootout) [ \"${CURRENT_LOADED:-}\" = 1 ] && exit 0; echo 'Boot-out failed: 3: No such process' >&2; exit 3;;\n" +
 				"bootstrap) exit 0;;\n" +
 				"esac\n"
@@ -420,7 +420,7 @@ func TestServiceStartLaunchdIsIdempotentWithoutRewritingUnit(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "launchctl.log")
 	launchctl := filepath.Join(bin, "launchctl")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log + "\"\n" +
-		"if [ \"$1\" = print ] && [ \"${START_LOADED:-}\" != 1 ]; then echo 'Could not find service' >&2; exit 3; fi\nexit 0\n"
+		"if [ \"$1\" = print ] && [ \"${START_LOADED:-}\" != 1 ]; then echo 'Could not find service' >&2; exit 113; fi\nexit 0\n"
 	if err := os.WriteFile(launchctl, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -446,6 +446,45 @@ func TestServiceStartLaunchdIsIdempotentWithoutRewritingUnit(t *testing.T) {
 	}
 }
 
+// TestServiceStartLaunchdSurfacesProbeFailure is the issue #967 CLI-level start
+// regression: when the launchctl print probe fails in a way that is not a clean
+// "unloaded" verdict (permission denied, missing domain, ambiguous), `sift
+// service start` must return non-zero and must not print any success output.
+func TestServiceStartLaunchdSurfacesProbeFailure(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("service backend follows the host OS")
+	}
+	home := freshHome(t)
+	installReleaseLayout(t, home)
+	userHome := filepath.Join(t.TempDir(), "home")
+	unitDir := filepath.Join(userHome, "Library", "LaunchAgents")
+	if err := os.MkdirAll(unitDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", userHome)
+	if err := os.WriteFile(filepath.Join(unitDir, hosting.Label+".plist"), []byte("retained plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	launchctl := filepath.Join(bin, "launchctl")
+	// The probe fails with a missing GUI domain (real macOS exit 112), never an
+	// "unloaded" verdict: start must surface the failure, not bootstrap blindly.
+	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\nif [ \"$1\" = print ]; then echo 'Could not find domain for user' >&2; exit 112; fi\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"sift", "service", "start"}, &stdout, &stderr); code == 0 {
+		t.Fatalf("service start exit = 0, want non-zero; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "launchd: start") || strings.Contains(stdout.String(), "wrote") {
+		t.Fatalf("start failure printed success output: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "domain") {
+		t.Fatalf("start failure stderr = %q, want surfaced probe failure", stderr.String())
+	}
+}
+
 func TestServiceInstallLaunchdSurfacesBootstrapFailure(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("service backend follows the host OS")
@@ -460,7 +499,7 @@ func TestServiceInstallLaunchdSurfacesBootstrapFailure(t *testing.T) {
 	bin := t.TempDir()
 	launchctl := filepath.Join(bin, "launchctl")
 	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\ncase \"$1\" in\n"+
-		"print) echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 3;;\n"+
+		"print) echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 113;;\n"+
 		"bootstrap) echo bootstrap failed >&2; exit 1;;\n"+
 		"esac\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -500,7 +539,7 @@ func TestServiceInstallLaunchdRetriesTransientBootstrap(t *testing.T) {
 		"state=\"" + state + "\"\n" +
 		"cnt() { c=0; [ -f \"$state/$1.cnt\" ] && c=$(cat \"$state/$1.cnt\"); c=$((c+1)); printf '%s' \"$c\" > \"$state/$1.cnt\"; echo \"$c\"; }\n" +
 		"case \"$1\" in\n" +
-		"print) echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 3;;\n" +
+		"print) echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 113;;\n" +
 		"bootstrap) n=$(cnt bootstrap); [ \"$n\" -eq 1 ] && { echo 'Input/output error' >&2; exit 5; }; exit 0;;\n" +
 		"esac\nexit 0\n"
 	if err := os.WriteFile(launchctl, []byte(script), 0o700); err != nil {

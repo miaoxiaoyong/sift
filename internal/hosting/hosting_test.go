@@ -388,7 +388,13 @@ func TestLegacyLaunchdMigrationPlans(t *testing.T) {
 	}
 }
 
-func TestIsAlreadyUnloadedRecognizesLaunchctlNoSuchProcess(t *testing.T) {
+// TestIsLaunchdUnloaded pins the single launchctl-absent classifier that
+// replaced isLaunchdUnloaded + IsAlreadyUnloaded (issue #967). It must map the
+// real macOS exit codes: bootout absent = 3 ("No such process"), print-probe
+// missing service = 113 ("Could not find service"); missing domain = 112 and
+// permission/malformed failures must never read as absent, and a coincidental
+// text match under the wrong exit code is not proof of absence.
+func TestIsLaunchdUnloaded(t *testing.T) {
 	bin := t.TempDir()
 	launchctl := filepath.Join(bin, "launchctl")
 	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\necho \"$LAUNCHCTL_MESSAGE\" >&2\nexit \"$LAUNCHCTL_EXIT\"\n"), 0o700); err != nil {
@@ -399,18 +405,25 @@ func TestIsAlreadyUnloadedRecognizesLaunchctlNoSuchProcess(t *testing.T) {
 		name, message, exit string
 		want                bool
 	}{
-		{"no such process", "Boot-out failed: 3: No such process", "3", true},
-		{"different exit", "No such process", "1", false},
-		{"different message", "Boot-out failed: 3: permission denied", "3", false},
+		{"bootout no such process", "Boot-out failed: 3: No such process", "3", true},
+		{"print could not find service", "Could not find service \"cn.hexai.sift\" in domain for user gui/1", "113", true},
+		{"missing domain exit 112", "Could not find domain for user", "112", false},
+		{"permission denied", "Bootstrap failed: 5: Operation not permitted", "5", false},
+		{"malformed plist", "invalid property list", "6", false},
+		{"coincidental text wrong exit", "No such process", "1", false},
+		{"bootout message with hard marker", "Boot-out failed: 3: permission denied", "3", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("LAUNCHCTL_MESSAGE", tc.message)
 			t.Setenv("LAUNCHCTL_EXIT", tc.exit)
 			_, err := Exec(Plan{RunCmd: []string{"launchctl", "bootout"}})
-			if got := IsAlreadyUnloaded(err); got != tc.want {
-				t.Fatalf("IsAlreadyUnloaded(%v) = %v, want %v", err, got, tc.want)
+			if got := IsLaunchdUnloaded(err); got != tc.want {
+				t.Fatalf("IsLaunchdUnloaded(%v) = %v, want %v", err, got, tc.want)
 			}
 		})
+	}
+	if IsLaunchdUnloaded(nil) {
+		t.Fatal("IsLaunchdUnloaded(nil) = true, want false")
 	}
 }
 
@@ -419,7 +432,7 @@ func TestLaunchdStartIsIdempotentAndBootstrapsOnlyWhenUnloaded(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "launchctl.log")
 	launchctl := filepath.Join(bin, "launchctl")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + log + "\"\n" +
-		"if [ \"$1\" = print ] && [ \"${LAUNCHD_LOADED:-}\" != 1 ]; then echo 'Could not find service' >&2; exit 3; fi\n" +
+		"if [ \"$1\" = print ] && [ \"${LAUNCHD_LOADED:-}\" != 1 ]; then echo 'Could not find service' >&2; exit 113; fi\n" +
 		"if [ \"$1\" = kickstart ] && [ \"${LAUNCHD_FAIL:-}\" = 1 ]; then echo 'permission denied' >&2; exit 1; fi\n" +
 		"exit 0\n"
 	if err := os.WriteFile(launchctl, []byte(script), 0o700); err != nil {
@@ -455,7 +468,7 @@ func TestLaunchdStartIsIdempotentAndBootstrapsOnlyWhenUnloaded(t *testing.T) {
 func TestLaunchdStartReportsMissingGUIActionably(t *testing.T) {
 	bin := t.TempDir()
 	launchctl := filepath.Join(bin, "launchctl")
-	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\necho 'Could not find domain for user' >&2\nexit 1\n"), 0o700); err != nil {
+	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\necho 'Could not find domain for user' >&2\nexit 112\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
@@ -995,7 +1008,7 @@ func scriptedLaunchctl(t *testing.T, bin string, script launchdScript) (stateDir
 	if script.printPresentAt > 0 {
 		fmt.Fprintf(&b, "  if [ \"$n\" -eq %d ]; then echo active; else\n", script.printPresentAt)
 	}
-	fmt.Fprintf(&b, "    if [ \"$n\" -lt %d ]; then echo active; else echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 3; fi\n", absentAfter)
+	fmt.Fprintf(&b, "    if [ \"$n\" -lt %d ]; then echo active; else echo 'Could not find service \"cn.hexai.sift\" in domain for user gui/1' >&2; exit 113; fi\n", absentAfter)
 	if script.printPresentAt > 0 {
 		b.WriteString("  fi\n")
 	}
