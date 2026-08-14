@@ -12,7 +12,7 @@ summary: 首次体验阻断分析与 Bluff Template 建设方案
 
 ## 当前建设状态（2026-08-14）
 
-- Bluff 游戏 MVP 的实现由 [`hexai-cn/bluff#1`](https://github.com/hexai-cn/bluff/issues/1) 跟踪，实施已完成；
+- Bluff 可玩游戏 MVP 由 [`hexai-cn/bluff#1`](https://github.com/hexai-cn/bluff/issues/1) 跟踪，尚未合入可运行代码；
 - 仓库已设为 GitHub Template，但 onboarding bootstrap、合法 policy、seed tasks 与真实首次 Run 证据仍在 [`hexai-cn/bluff#2`](https://github.com/hexai-cn/bluff/issues/2) 建设；
 - 因此 Sift README 可以链接 Bluff 并说明建设状态，但不得给出尚不存在的 bootstrap 命令、宣称“立即可玩”，或放置虚构截图/GIF。
 

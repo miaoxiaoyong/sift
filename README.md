@@ -15,7 +15,7 @@ Sift 同时支持 GitHub 和 GitLab。它不是另一个看板，也不托管你
 
 | 我想…… | 下一步 |
 |---|---|
-| **第一次安全体验**，不碰现有项目 | 查看 [`hexai-cn/bluff`](https://github.com/hexai-cn/bluff)，用 **Use this template** 创建独立仓库。Bluff 的游戏 MVP 已实现，但 Sift bootstrap/seed tasks 仍在 [#2](https://github.com/hexai-cn/bluff/issues/2) 建设；在 #2 完成前，它是预览入口，**还不是可按 bootstrap 命令跑通的教程**。 |
+| **第一次安全体验**，不碰现有项目 | 查看 [`hexai-cn/bluff`](https://github.com/hexai-cn/bluff)。可玩游戏 MVP 由 [#1](https://github.com/hexai-cn/bluff/issues/1) 跟踪，Sift bootstrap/seed tasks 由 [#2](https://github.com/hexai-cn/bluff/issues/2) 跟踪；两项尚未合入可运行代码，因此当前只是预览入口，**还不是可以完成首次 Run 的教程**。 |
 | **接入已有项目** | 安装后进入仓库运行 `sift init`；完整步骤见 [Getting Started](docs/guides/getting-started.md#路径-b接入已有仓库)。 |
 
 > 不要普通 Fork Bluff 来代替 Template：GitHub Fork 不复制 Issues，并且更容易把 PR 提回上游。Template 会创建一个属于你的独立仓库。

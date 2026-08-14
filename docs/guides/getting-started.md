@@ -83,7 +83,7 @@ sift-agent-wrapper --version
 
 ## 路径 A：Bluff Template
 
-[`hexai-cn/bluff`](https://github.com/hexai-cn/bluff) 是一个独立、可丢弃的入门项目。Bluff [#1](https://github.com/hexai-cn/bluff/issues/1) 的游戏 MVP 已实现；把它变成 Sift onboarding Template 的 bootstrap、合法 policy 和 seed Issues 仍由 [#2](https://github.com/hexai-cn/bluff/issues/2) 建设。
+[`hexai-cn/bluff`](https://github.com/hexai-cn/bluff) 是计划用于独立、安全试跑的入门项目。可玩游戏 MVP 由 [#1](https://github.com/hexai-cn/bluff/issues/1) 跟踪，Template bootstrap、合法 policy 和 seed Issues 由 [#2](https://github.com/hexai-cn/bluff/issues/2) 跟踪；两项尚未合入可运行代码。
 
 ### 当前可做
 
