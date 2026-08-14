@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -1076,11 +1077,22 @@ func normalizeDoctorResult(value any) map[string]any {
 }
 
 // setupCloseoutService installs and starts the user service (step 2) through
-// the same entry point `sift service install`/`status` use. A host without a
-// supervisor gets the foreground `sift daemon` hint from the service layer
-// itself, exactly like the standalone command; a non-zero exit prints the
+// the same entry point `sift service install`/`status` use. It is idempotent
+// (issue #986): it checks status first and, when the service is already
+// running, prints the running state and skips the install prompt entirely; only
+// a not-running service asks to install and start. A host without a supervisor
+// gets the foreground `sift daemon` hint from the service layer itself, exactly
+// like the standalone command; a non-zero install exit prints the
 // troubleshooting pointer and the wizard continues with step 3.
 func setupCloseoutService(in *bufio.Reader, out, errOut io.Writer, home config.Home) {
+	var statusOut bytes.Buffer
+	setupServiceRun("status", home, &statusOut, errOut)
+	status := statusOut.String()
+	io.Copy(out, &statusOut)
+	if serviceStatusRunning(status) {
+		fmt.Fprintln(out, "  ✓ 服务已运行，跳过安装")
+		return
+	}
 	if !askYes(in, out, "安装用户级服务并启动（sift service install）") {
 		return
 	}
@@ -1091,39 +1103,82 @@ func setupCloseoutService(in *bufio.Reader, out, errOut io.Writer, home config.H
 	setupServiceRun("status", home, out, errOut)
 }
 
+// serviceStatusRunning reports whether a `sift service status` render already
+// shows the service running, so the closeout skips install on an idempotent
+// rerun (issue #986). It keys on the running-state marker both renderServiceStatus
+// and the foreground report print.
+func serviceStatusRunning(output string) bool {
+	return strings.Contains(output, "运行中")
+}
+
 // setupCloseoutLabel creates the trigger label (step 3), the only forge write
 // of the wizard, with double caution (issue #961 红线): it dedupes first via
 // the forge CLI's label list, shows the exact command and asks for an explicit
 // confirmation before creating, and every failure degrades to the printed
-// manual command. An existing label is skipped without re-creating or showing
-// a command. Without a bound project there is no repo context, so the step
-// degrades to the manual command too.
+// manual command. The command form is forked by forge kind (issue #986): gh
+// takes the label as a positional argument, glab requires the -n/-c/-R flags.
+// An existing label is skipped without re-creating or showing a command.
+// Without a bound project there is no repo context, so the step degrades to
+// the manual command too.
 func setupCloseoutLabel(in *bufio.Reader, out io.Writer, kind, projectKey, label string) {
 	if kind == "" || projectKey == "" {
-		fmt.Fprintf(out, "  %s 未绑定项目，跳过触发 label 创建；手动命令：%s label create %s --color 5319e7\n", render.Status("warning"), forgeCLI("github"), label)
+		fmt.Fprintf(out, "  %s 未绑定项目，跳过触发 label 创建；手动命令：%s\n", render.Status("warning"), labelCreateCommand(forgeCLI(kind), label, projectKey))
 		return
 	}
 	if !askYes(in, out, "创建触发 label "+label+"（Forge 仓库写操作）") {
 		return
 	}
 	cli := forgeCLI(kind)
-	listed, err := setupCmd.output(cli, "label", "list", "--repo", projectKey)
+	listed, err := setupCmd.output(cli, labelListArgs(cli, projectKey)...)
 	if err != nil {
-		fmt.Fprintf(out, "  %s 无法查询 %s 的 label 列表（%v），跳过创建；手动命令：%s label create %s --color 5319e7 --repo %s\n", render.Status("warning"), projectKey, err, cli, label, projectKey)
+		fmt.Fprintf(out, "  %s 无法查询 %s 的 label 列表（%v），跳过创建；手动命令：%s\n", render.Status("warning"), projectKey, err, labelCreateCommand(cli, label, projectKey))
 		return
 	}
 	if triggerLabelListed(listed, label) {
 		fmt.Fprintf(out, "  ✓ label 已存在：%s，跳过创建\n", label)
 		return
 	}
-	command := fmt.Sprintf("%s label create %s --color 5319e7 --repo %s", cli, label, projectKey)
+	command := labelCreateCommand(cli, label, projectKey)
 	fmt.Fprintf(out, "  将执行：%s\n", command)
 	if !askYes(in, out, "确认执行？") {
 		return
 	}
-	if err := setupCmd.run(cli, "label", "create", label, "--color", "5319e7", "--repo", projectKey); err != nil {
+	if err := setupCmd.run(cli, labelCreateArgs(cli, label, projectKey)...); err != nil {
 		fmt.Fprintf(out, "  %s 创建 label 失败：%v；手动执行：%s\n", render.Status("warning"), err, command)
 	}
+}
+
+// labelListArgs returns the forge CLI args that list labels for a project.
+// gh and glab both accept -R/--repo, but glab uses the short form in its help
+// (issue #986); the longer --repo is unambiguous and works for both, so a
+// single --repo form is shared.
+func labelListArgs(cli, projectKey string) []string {
+	return []string{"label", "list", "--repo", projectKey}
+}
+
+// labelCreateArgs returns the forge CLI args that create a label. The command
+// form is forked by forge (issue #986): gh takes the label name positionally
+// plus --color/--repo, while glab requires the -n/-c/-R flags — a positional
+// name is rejected by glab label create.
+func labelCreateArgs(cli, label, projectKey string) []string {
+	if cli == "glab" {
+		args := []string{"label", "create", "-n", label, "-c", "5319e7"}
+		if projectKey != "" {
+			args = append(args, "-R", projectKey)
+		}
+		return args
+	}
+	args := []string{"label", "create", label, "--color", "5319e7"}
+	if projectKey != "" {
+		args = append(args, "--repo", projectKey)
+	}
+	return args
+}
+
+// labelCreateCommand renders the exact forge CLI create command for display
+// and manual-fallback hints, matching labelCreateArgs.
+func labelCreateCommand(cli, label, projectKey string) string {
+	return cli + " " + strings.Join(labelCreateArgs(cli, label, projectKey), " ")
 }
 
 // triggerLabelListed reports whether the forge CLI's label list output already

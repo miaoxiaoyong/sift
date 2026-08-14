@@ -1486,15 +1486,18 @@ func TestSetupCloseoutDoctorDeclineSkips(t *testing.T) {
 }
 
 // TestSetupCloseoutServiceFailurePrintsTroubleshooting pins acceptance 2: a
-// failed install prints the troubleshooting pointer, skips status, and does
-// not stop the wizard (the label step and closing output still run below).
+// failed install prints the troubleshooting pointer, skips the confirming
+// status, and does not stop the wizard (the label step and closing output
+// still run below). The status probe still runs first (issue #986).
 func TestSetupCloseoutServiceFailurePrintsTroubleshooting(t *testing.T) {
 	_ = freshHome(t)
 	home, err := config.ResolveHome()
 	if err != nil {
 		t.Fatal(err)
 	}
+	var actions []string
 	replaceSetupService(t, func(action string, home config.Home, stdout, stderr io.Writer) int {
+		actions = append(actions, action)
 		fmt.Fprintf(stdout, "fake service %s output\n", action)
 		if action == "install" {
 			return 1
@@ -1506,21 +1509,26 @@ func TestSetupCloseoutServiceFailurePrintsTroubleshooting(t *testing.T) {
 	if !strings.Contains(out.String(), "troubleshooting.md") || !strings.Contains(out.String(), "sift daemon") {
 		t.Fatalf("install failure must print the troubleshooting pointer: %q", out.String())
 	}
-	if strings.Contains(out.String(), "fake service status output") {
-		t.Fatalf("status must not run after a failed install: %q", out.String())
+	// Status probes first; a failed install must not run status again.
+	if len(actions) != 2 || actions[0] != "status" || actions[1] != "install" {
+		t.Fatalf("service actions = %v, want [status install]", actions)
 	}
 }
 
 // TestSetupCloseoutServiceForegroundRunsStatus pins acceptance 2: a no-
 // supervisor install succeeds (service layer prints the foreground hint) and
 // status still runs afterwards, mirroring the standalone `sift service` flow.
+// The status probe runs first (issue #986), then install and a confirming
+// status.
 func TestSetupCloseoutServiceForegroundRunsStatus(t *testing.T) {
 	_ = freshHome(t)
 	home, err := config.ResolveHome()
 	if err != nil {
 		t.Fatal(err)
 	}
+	var actions []string
 	replaceSetupService(t, func(action string, home config.Home, stdout, stderr io.Writer) int {
+		actions = append(actions, action)
 		if action == "install" {
 			fmt.Fprintln(stdout, "foreground daemon (no supervisor)：前台运行 `sift daemon`")
 		} else {
@@ -1537,6 +1545,57 @@ func TestSetupCloseoutServiceForegroundRunsStatus(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "troubleshooting.md") {
 		t.Fatalf("foreground success must not print a failure pointer: %q", out.String())
+	}
+	// Status probes first, then install and a confirming status.
+	if len(actions) != 3 || actions[0] != "status" || actions[1] != "install" || actions[2] != "status" {
+		t.Fatalf("service actions = %v, want [status install status]", actions)
+	}
+}
+
+// TestSetupCloseoutServiceRunningSkipsInstall pins issue #986 idempotency: the
+// status step runs first and, when the service is already running, prints the
+// skip note without asking the install prompt at all.
+func TestSetupCloseoutServiceRunningSkipsInstall(t *testing.T) {
+	_ = freshHome(t)
+	home, err := config.ResolveHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []string
+	replaceSetupService(t, func(action string, home config.Home, stdout, stderr io.Writer) int {
+		actions = append(actions, action)
+		fmt.Fprintln(stdout, "运行中（launchd，PID 123，socket ...）")
+		return 0
+	})
+	var out bytes.Buffer
+	// Empty (EOF) input: no install prompt is asked, so nothing is consumed.
+	setupCloseoutService(bufio.NewReader(strings.NewReader("")), &out, io.Discard, home)
+	if len(actions) != 1 || actions[0] != "status" {
+		t.Fatalf("service actions = %v, want [status]", actions)
+	}
+	if !strings.Contains(out.String(), "服务已运行，跳过安装") {
+		t.Fatalf("running service must print the skip note: %q", out.String())
+	}
+}
+
+// TestSetupCloseoutServiceDeclineSkipsInstall pins that a not-running service
+// asks to install, and declining runs only the initial status probe.
+func TestSetupCloseoutServiceDeclineSkipsInstall(t *testing.T) {
+	_ = freshHome(t)
+	home, err := config.ResolveHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []string
+	replaceSetupService(t, func(action string, home config.Home, stdout, stderr io.Writer) int {
+		actions = append(actions, action)
+		fmt.Fprintf(stdout, "fake service %s output\n", action)
+		return 0
+	})
+	var out bytes.Buffer
+	setupCloseoutService(bufio.NewReader(strings.NewReader("n\n")), &out, io.Discard, home)
+	if len(actions) != 1 || actions[0] != "status" {
+		t.Fatalf("declined install actions = %v, want [status]", actions)
 	}
 }
 
@@ -1561,6 +1620,47 @@ func TestSetupCloseoutLabelCreatesAfterDedupeAndConfirm(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "将执行：gh label create sift:run --color 5319e7 --repo owner/repo") {
 		t.Fatalf("must show the exact command before confirming: %q", out.String())
+	}
+}
+
+// TestSetupCloseoutLabelGlabUsesNamedFlags pins issue #986: glab label create
+// takes -n/-c/-R flags (a positional name is rejected), while gh keeps the
+// positional form. The dedupe list and the shown command follow the same fork.
+func TestSetupCloseoutLabelGlabUsesNamedFlags(t *testing.T) {
+	fake := &fakeCommand{found: map[string]bool{"glab": true}}
+	fake.outputFn = func(name string, args ...string) (string, error) {
+		if name == "glab" && len(args) >= 2 && args[0] == "label" && args[1] == "list" {
+			return "NAME  DESCRIPTION  COLOR\n", nil
+		}
+		return "", errors.New("fake command: not found")
+	}
+	replaceSetupCmd(t, fake)
+	var out bytes.Buffer
+	setupCloseoutLabel(bufio.NewReader(strings.NewReader("y\ny\n")), &out, "gitlab", "group/proj", "sift:run")
+	want := []string{"glab", "label", "create", "-n", "sift:run", "-c", "5319e7", "-R", "group/proj"}
+	if len(fake.runs) != 1 || strings.Join(fake.runs[0], " ") != strings.Join(want, " ") {
+		t.Fatalf("glab label create = %#v, want %v", fake.runs, want)
+	}
+	if !strings.Contains(out.String(), "将执行：glab label create -n sift:run -c 5319e7 -R group/proj") {
+		t.Fatalf("must show the exact glab command before confirming: %q", out.String())
+	}
+}
+
+// TestSetupCloseoutLabelGlabDegradesManualCommand pins issue #986: a failed
+// glab create degrades to the flag-based manual command.
+func TestSetupCloseoutLabelGlabDegradesManualCommand(t *testing.T) {
+	fake := &fakeCommand{found: map[string]bool{"glab": true}}
+	fake.outputFn = func(string, ...string) (string, error) {
+		return "NAME\n", nil
+	}
+	fake.runFn = func(string, ...string) error {
+		return errors.New("permission denied")
+	}
+	replaceSetupCmd(t, fake)
+	var out bytes.Buffer
+	setupCloseoutLabel(bufio.NewReader(strings.NewReader("y\ny\n")), &out, "gitlab", "group/proj", "sift:run")
+	if !strings.Contains(out.String(), "手动执行：glab label create -n sift:run -c 5319e7 -R group/proj") {
+		t.Fatalf("failed glab create must degrade to the flag-based manual command: %q", out.String())
 	}
 }
 
@@ -1719,6 +1819,92 @@ func TestInteractiveInitCloseoutThreeSteps(t *testing.T) {
 	}
 	if len(snap.Config.Projects) != 1 || snap.Config.Projects[0].Forge.Project != "owner/repo" {
 		t.Fatalf("projects = %#v", snap.Config.Projects)
+	}
+}
+
+// TestInteractiveInitCloseoutIdempotentRerun pins issue #986 idempotency at the
+// wizard level: a repeated interactive init over an already-provisioned setup
+// must not re-create an existing label and must skip the install prompt when
+// the service reports running. The first run provisions (label create + service
+// install), the second run only probes status and the label list.
+func TestInteractiveInitCloseoutIdempotentRerun(t *testing.T) {
+	home := initTestRepo(t)
+	gitOnlyPATH(t)
+	listCount := 0
+	fake := &fakeCommand{found: map[string]bool{"gh": true}}
+	fake.outputFn = func(name string, args ...string) (string, error) {
+		switch {
+		case name == "gh" && len(args) == 2 && args[0] == "auth" && args[1] == "status":
+			return "github.com\n  ✓ Logged in to github.com account alice (keyring)\n", nil
+		case name == "gh" && len(args) >= 2 && args[0] == "label" && args[1] == "list":
+			listCount++
+			if listCount > 1 {
+				return "NAME  DESCRIPTION  COLOR\nsift:run  5319e7  \n", nil
+			}
+			return "NAME  DESCRIPTION  COLOR\n", nil
+		}
+		return "", errors.New("fake command: not found")
+	}
+	replaceSetupCmd(t, fake)
+	replaceSetupDoctor(t, func(config.Home) map[string]any {
+		return fakeDoctorResult(0, "ok")
+	})
+	installDone := false
+	replaceSetupService(t, func(action string, home config.Home, stdout, stderr io.Writer) int {
+		if action == "install" {
+			installDone = true
+			return 0
+		}
+		if installDone {
+			fmt.Fprintln(stdout, "运行中（launchd，PID 123，socket ...）")
+		} else {
+			fmt.Fprintln(stdout, "未运行")
+		}
+		return 0
+	})
+
+	runInit := func(answers string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if code := runWithInput([]string{"sift", "init"}, strings.NewReader(answers), &out, io.Discard); code != 0 {
+			t.Fatalf("init = %d: %s", code, out.String())
+		}
+		return out.String()
+	}
+
+	// First run answers: gh install=n ; glab install=n ; pi=n ; agent=Enter ;
+	// closeout: doctor=y, service=y, label=y, create-confirm=y.
+	first := runInit("n\nn\nn\n\ny\ny\ny\ny\n")
+	if !strings.Contains(first, "将执行：gh label create sift:run --color 5319e7 --repo owner/repo") {
+		t.Fatalf("first init must create the label: %q", first)
+	}
+	if len(fake.runs) != 1 {
+		t.Fatalf("first init label create = %#v", fake.runs)
+	}
+
+	// Second run: the label already exists and the service reports running, so
+	// the closeout must skip both the create and the install prompt.
+	fake.runs = nil
+	var out bytes.Buffer
+	// Answers: gh install=n ; glab install=n ; pi=n ; agent=Enter ; closeout:
+	// doctor=y, label=y (service runs already and asks nothing).
+	if code := runWithInput([]string{"sift", "init"}, strings.NewReader("n\nn\nn\n\ny\ny\n"), &out, io.Discard); code != 0 {
+		t.Fatalf("second init = %d: %s", code, out.String())
+	}
+	if len(fake.runs) != 0 {
+		t.Fatalf("second init must not create an existing label: %#v", fake.runs)
+	}
+	for _, want := range []string{"label 已存在：sift:run，跳过创建", "服务已运行，跳过安装"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("second init closeout must be idempotent, missing %q:\n%s", want, out.String())
+		}
+	}
+	snap, err := config.Load(home, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Config.Projects) != 1 {
+		t.Fatalf("projects = %#v, want still one project", snap.Config.Projects)
 	}
 }
 
