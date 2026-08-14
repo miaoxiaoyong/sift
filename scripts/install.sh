@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Install the Sift release for the current machine.
-# Intended for: curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | bash
+# Intended for: curl -fsSL https://raw.githubusercontent.com/hexai-cn/sift/main/scripts/install.sh | bash
 set -euo pipefail
 
-readonly RELEASE_API_URL="https://api.github.com/repos/miaoxiaoyong/sift/releases/latest"
-readonly RELEASE_DOWNLOAD_BASE_URL="https://github.com/miaoxiaoyong/sift/releases/download"
+readonly RELEASE_API_URL="https://api.github.com/repos/hexai-cn/sift/releases/latest"
+readonly RELEASE_DOWNLOAD_BASE_URL="https://github.com/hexai-cn/sift/releases/download"
 readonly INSTALL_ROOT="${SIFT_INSTALL_ROOT:-${HOME}/.sift}"
 
 fail() {
@@ -227,5 +227,5 @@ Next steps
      sift doctor --offline   # read-only check; exit 0 = healthy
      sift daemon             # foreground; or: sift service install (autostart)
 
-Docs: https://github.com/miaoxiaoyong/sift#readme
+Docs: https://github.com/hexai-cn/sift#readme
 EOF

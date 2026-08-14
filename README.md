@@ -42,7 +42,7 @@ claude --version      # 换成你实际使用的 Agent，例如 codex、cursor �
 安装器默认查询并安装 **latest release**，不固定旧版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hexai-cn/sift/main/scripts/install.sh | bash
 export PATH="$HOME/.sift/bin/current:$PATH"
 sift --version
 ```
@@ -50,7 +50,7 @@ sift --version
 默认不会修改 shell 配置。可将上面的 PATH 写入 `~/.zshrc` / `~/.bashrc`，或明确允许安装器添加：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | SIFT_AUTO_PATH=1 bash
+curl -fsSL https://raw.githubusercontent.com/hexai-cn/sift/main/scripts/install.sh | SIFT_AUTO_PATH=1 bash
 ```
 
 如不接受 `curl | bash`，请按 [安装指南](docs/guides/installation.md) 下载 release 归档并先校验 SHA-256。

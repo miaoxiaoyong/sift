@@ -8,8 +8,8 @@
 # Regenerate with: go run ./tools/hosting formula --version <v> --sha256 <h>
 class Sift < Formula
   desc "Local multi-agent task orchestration hub"
-  homepage "https://github.com/miaoxiaoyong/sift"
-  url "https://github.com/miaoxiaoyong/sift/releases/download/v0.1.0-dev/sift_0.1.0-dev_darwin_arm64.tar.gz"
+  homepage "https://github.com/hexai-cn/sift"
+  url "https://github.com/hexai-cn/sift/releases/download/v0.1.0-dev/sift_0.1.0-dev_darwin_arm64.tar.gz"
   version "0.1.0-dev"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 

@@ -33,8 +33,8 @@ import (
 // They are variables so tests can point them at an httptest server and run
 // `sift update` hermetically.
 var (
-	releaseAPIURL          = "https://api.github.com/repos/miaoxiaoyong/sift/releases/latest"
-	releaseDownloadBaseURL = "https://github.com/miaoxiaoyong/sift/releases/download"
+	releaseAPIURL          = "https://api.github.com/repos/hexai-cn/sift/releases/latest"
+	releaseDownloadBaseURL = "https://github.com/hexai-cn/sift/releases/download"
 )
 
 const (

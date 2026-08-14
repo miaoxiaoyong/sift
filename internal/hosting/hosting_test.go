@@ -668,6 +668,12 @@ func assertSystemdPathSemantics(t *testing.T, content []byte, spec Spec) {
 	if got := systemdValueOf(t, s, "Environment=SIFT_HOME="); got != spec.HomePath {
 		t.Errorf("SIFT_HOME decodes to %q, want %q", got, spec.HomePath)
 	}
+	if !strings.Contains(s, "Documentation=https://github.com/hexai-cn/sift") {
+		t.Error("systemd unit uses a non-canonical documentation URL")
+	}
+	if strings.Contains(s, "github.com/miaoxiaoyong/sift") {
+		t.Error("systemd unit retains the old repository URL")
+	}
 }
 
 // systemdValueOf mirrors systemd's token rule for the quoting we emit: a
@@ -833,6 +839,9 @@ func TestFormulaConsistentWithReleaseArchive(t *testing.T) {
 	// States the no-port posture.
 	if !strings.Contains(f, "no port") && !strings.Contains(f, "no network port") {
 		t.Error("formula does not declare the no-port posture")
+	}
+	if !strings.Contains(f, "https://github.com/hexai-cn/sift") || strings.Contains(f, "github.com/miaoxiaoyong/sift") {
+		t.Error("formula does not use the canonical repository URLs")
 	}
 }
 

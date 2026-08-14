@@ -67,7 +67,7 @@ claude --version       # 示例；换成 codex、cursor、pi 等实际命令
 默认安装 latest release：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/miaoxiaoyong/sift/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hexai-cn/sift/main/scripts/install.sh | bash
 export PATH="$HOME/.sift/bin/current:$PATH"
 sift --version
 sift-agent-wrapper --version
